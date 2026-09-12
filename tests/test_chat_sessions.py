@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
+import types
 
 import pytest
 
+from hunter.chat import sessions as chat_sessions
 from hunter.chat.sessions import ChatStore
 
 
@@ -35,7 +38,16 @@ def test_create_session_and_get(store):
     assert store.get_session("S-does-not-exist") is None
 
 
-def test_set_title_and_list_order(store):
+def test_set_title_and_list_order(store, monkeypatch):
+    # The three writes below can land inside one wall-clock tick (Windows
+    # time.time() ticks every ~15.6ms before py3.13), tying last_active_at and
+    # letting the session_id DESC tie-break flip the order. Drive a strictly
+    # increasing fake clock so the "most recently active first" contract is
+    # tested deterministically on every OS/Python.
+    tick = itertools.count(1.0)
+    monkeypatch.setattr(
+        chat_sessions, "time", types.SimpleNamespace(time=lambda: next(tick))
+    )
     first = store.create_session("first")
     second = store.create_session("second")
     store.append_message(first, "user", "wake")  # bumps last_active_at
