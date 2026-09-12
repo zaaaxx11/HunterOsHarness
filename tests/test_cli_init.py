@@ -30,6 +30,12 @@ def _string_console() -> tuple[Console, Console, io.StringIO]:
 
 
 def _cli_env(monkeypatch, tmp_path):
+    # HOME/USERPROFILE -> tmp_path: pytest's tmp_path sits under /tmp on Linux
+    # CI, which the $HUNTEROS_CONFIG containment guard refuses; with the
+    # sandbox as home the env target is in-home on every OS (see
+    # writing.resolve_config_target).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HUNTEROS_CONFIG", str(tmp_path / "config.yaml"))
     monkeypatch.delenv("HUNTEROS_VERBOSE", raising=False)
 

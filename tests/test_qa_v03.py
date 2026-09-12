@@ -594,6 +594,10 @@ def test_cli_provider_add_type_conflict_exits_8_without_traceback(monkeypatch, t
 
     config = tmp_path / "config.yaml"
     config.write_text("providers:\n  corp: flat-string\n", encoding="utf-8")
+    # HOME/USERPROFILE -> tmp_path keeps the env target in-home for the
+    # $HUNTEROS_CONFIG containment guard on Linux CI (tmp_path is under /tmp).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HUNTEROS_CONFIG", str(config))
     monkeypatch.delenv("HUNTEROS_VERBOSE", raising=False)
     monkeypatch.setattr("sys.argv", ["hunter", "config", "provider", "add", "corp",
@@ -668,6 +672,10 @@ def test_inline_api_key_survives_regeneration_and_never_printed(monkeypatch, tmp
     from hunter.cli.main import app
     from hunter.llm.config import load_config
 
+    # HOME/USERPROFILE -> tmp_path keeps the env target in-home for the
+    # $HUNTEROS_CONFIG containment guard on Linux CI (tmp_path is under /tmp).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HUNTEROS_CONFIG", str(tmp_path / "config.yaml"))
     runner = CliRunner()
     key = "sk-inline-9183-secret"
