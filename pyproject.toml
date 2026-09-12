@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hunteros-harness"
-version = "0.1.0"
+version = "0.2.0"
 description = "HunterOs — evidence-first security-audit harness. Deterministic engine today, pluggable LLM brain tomorrow."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,10 +16,12 @@ dependencies = [
     "rich>=13.0",
     "textual>=0.86",
     "httpx>=0.27",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 llm = ["litellm>=1.40"]
+telegram = ["python-telegram-bot>=21"]
 dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
 
 [project.scripts]
@@ -29,7 +31,7 @@ hunter = "hunter.cli.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-hunter = ["_data/**/*.md", "vault/*.json"]
+hunter = ["_data/**/*.md", "_data/**/*.jinja", "_data/**/*.j2", "_data/**/*.yaml", "vault/*.json"]
 
 [tool.ruff]
 line-length = 110

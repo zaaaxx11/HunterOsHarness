@@ -1,0 +1,5 @@
+{
+  "name": "client-x-staging",
+  "hosts": ["staging.client-x.com", "api.client-x.com"],
+  "allow_subdomains": false
+}

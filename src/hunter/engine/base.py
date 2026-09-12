@@ -1,9 +1,14 @@
 """EngineDriver contract — the plug point for brains.
 
-An engine receives a scope-gated HTTP client and an emit callback; it NEVER
-touches the ledger directly (the pipeline owns persistence and applies the
-claim gate). Engines return ``CandidateFinding``s with evidence; the pipeline
-binds evidence, dedupes, and promotes through the ladder.
+An engine receives a scope-gated HTTP client and an emit callback; v0.1
+engines never touch the ledger — they return ``CandidateFinding``s with
+evidence and the pipeline binds evidence, dedupes, and promotes through the
+ladder. v0.2 adds an opt-in ledger path for the LLM brain: the pipeline binds
+``ledger`` and ``run_id`` onto :class:`EngineContext` (additive, default
+``None``/""), and the agent persists findings ONLY through the governance
+tool (``create_finding_request``), which re-validates evidence against the
+ledger before ``Ledger.create_finding`` applies RULE-E1 again below it.
+The claim gate is therefore never bypassed by either path.
 
 Replay contract: ``replay`` re-executes ONLY the check that produced the
 candidate and returns True when the signal reproduces. The pipeline uses it
@@ -80,6 +85,14 @@ class EngineContext:
     http: ScopedHttpClient
     emit: EmitFn
     config: dict[str, Any] = field(default_factory=dict)
+    # Additive v0.2 fields (defaults keep every v0.1 engine working unchanged):
+    # the pipeline binds the run's Ledger and run id so ledger-backed engines
+    # (the LLM agent) can persist findings through the claim gate. The
+    # deterministic/mock engines ignore them; the pipeline still owns the run
+    # lifecycle and re-applies the claim gate on anything returned as
+    # candidates.
+    ledger: Any = None
+    run_id: str = ""
 
 
 class EngineDriver(Protocol):

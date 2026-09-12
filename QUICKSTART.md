@@ -45,7 +45,8 @@ hunter doctor
 
 Checks Python version, package version, dependencies (textual, rich, httpx,
 typer), the state directory (`HUNTER_STATE_DIR` or `./.hunter`), the ledger
-hash chain, and available engines. Everything green → continue.
+hash chain, and available engines. Everything green → continue. (LLM items
+below it are opt-in notes — they never block the deterministic core.)
 
 ## 3. `hunter demo` (~10s)
 
@@ -97,10 +98,62 @@ prefixes, excerpt), **Events** (live tail of the last 100 ledger events),
 
 ---
 
+## 6. Add the brain (optional, ~60s)
+
+The deterministic core above runs with zero keys. To add the LLM agent:
+
+```bash
+pip install 'hunteros-harness[llm]'
+export OPENAI_API_KEY=sk-...       # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+export HUNTEROS_MODEL=gpt-4o
+```
+
+That is the whole setup — full config reference, provider examples
+(Anthropic, OpenRouter, local Ollama), budget governor, and the governance
+model: **[docs/LLM.md](docs/LLM.md)**.
+
+## 7. Talk to it (`hunter chat`)
+
+```bash
+hunter chat
+```
+
+```
+HunterOs chat — Evidence or Nothing.
+model: gpt-4o (planner) · tier: advanced · budget: $5.00 max / 60 iters
+type a request, or /help for commands
+
+you> scan the practice target and tell me what is verified
+hunter> mapped 12 routes · 2 verified findings (1 high, 1 medium) ·
+        chain ok — say `report` to render from the ledger
+```
+
+Sessions persist; slash commands (`/help`, `/model`, `/usage`, …) work
+the same here and over the gateway. The agent's findings pass through the
+same machine validation (R1–R6) and debunk replay as every other run — the
+chat cannot promote a claim the ledger cannot prove.
+
+## 8. Connect Telegram (optional)
+
+Expose the agent to your phone with a default-deny allowlist:
+
+```bash
+pip install 'hunteros-harness[telegram]'
+export HUNTEROS_TELEGRAM_TOKEN="123456:AAE..."       # from @BotFather
+export HUNTEROS_TELEGRAM_ALLOWED_USERS="111111111"   # numeric ids, CSV
+hunter gateway start
+```
+
+Bot setup, the HMAC-signed webhook transport, and the security model:
+**[docs/GATEWAY.md](docs/GATEWAY.md)**.
+
+---
+
 ## Scanning a real (authorized) target
 
 Define a scope manifest — the only way the gate opens for a non-loopback
-host:
+host (a documented copy ships at
+[examples/scope.manifest.json](examples/scope.manifest.json)):
 
 ```json
 {
@@ -111,15 +164,15 @@ host:
 ```
 
 ```bash
-HUNTER_SCOPE_MANIFEST=scope.json hunter scan https://staging.client-x.com
+hunter scan https://staging.client-x.com --scope scope.json
 ```
 
 Fail-closed means: missing manifest, missing host, unknown scheme — all
 violations. Silence is not consent.
 
 State lives in `HUNTER_STATE_DIR` (or `./.hunter` by default). The ledger is
-append-only and hash-chained; `hunter verify` recomputes the chain at any
-time.
+append-only and hash-chained; `hunter doctor` recomputes and reports chain
+health at any time.
 
 ## Troubleshooting
 
@@ -144,3 +197,8 @@ recreates everything from scratch.
 
 **`pip install` fails behind a proxy** — export `HTTPS_PROXY`/`HTTP_PROXY`
 before running the installer.
+
+**LLM errors** — auth and rate-limit exits, `config.model_unresolved`,
+context overflow: see the troubleshooting table in
+[docs/LLM.md](docs/LLM.md). `hunter doctor` shows which keys and models are
+actually resolved.

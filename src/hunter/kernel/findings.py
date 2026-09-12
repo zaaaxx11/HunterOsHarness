@@ -55,8 +55,17 @@ class Finding:
 
 
 def dedupe_key(check_id: str, method: str, endpoint: str, param: str | None) -> str:
-    """Stable identity for a finding within a run (used for dedupe)."""
-    return f"{check_id}|{method.upper()}|{endpoint}|{param or '-'}"
+    """Stable identity for a finding within a run (used for dedupe).
+
+    Normalization is deliberate (QA red-audit v0.2): case/whitespace variants
+    of the same check_id/endpoint/param MUST collapse onto one key, or R5's
+    dedupe can be bypassed with ``"SQL-ERROR"``/``"/SEARCH"``-style mutations
+    of an already-reported finding. The key is an identity, not a label.
+    """
+    return (
+        f"{str(check_id).strip().lower()}|{method.upper()}"
+        f"|{str(endpoint).strip().lower()}|{(str(param).strip().lower() if param else '-')}"
+    )
 
 
 def finding_id(n: int) -> str:

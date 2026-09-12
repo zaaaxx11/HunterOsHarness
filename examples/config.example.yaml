@@ -1,0 +1,50 @@
+# HunterOs LLM configuration — copy to ~/.hunteros/config.yaml
+# Any provider reachable through LiteLLM works: set a key env var and a model.
+# Every value here can be overridden per-run with env vars:
+#   HUNTEROS_MODEL, HUNTEROS_TIER, HUNTEROS_BUDGET_USD, HUNTEROS_MAX_ITERATIONS
+
+model_tiers:
+  planner:                     # task decomposition — the "top default" model
+    provider: anthropic        # auto | openai | anthropic | openrouter | groq | gemini | ollama | ...
+    model: claude-sonnet-4-5   # empty or "auto" inherits $HUNTEROS_MODEL
+    # base_url: https://internal-gateway.example.com/v1
+    # key_env: ANTHROPIC_API_KEY
+    timeout: 120               # seconds per completion
+    # reasoning_effort: medium # low | medium | high (models that support it)
+
+  exploit:                     # payload/craft tier — inherits planner unless set
+    provider: auto
+    model: ""
+
+  verify:                      # evidence checking — a cheap, careful model
+    provider: auto
+    model: ""
+
+  utility:                     # summarizing/formatting — cheapest model
+    provider: auto
+    model: ""
+
+providers:                     # credentials per provider name
+  anthropic:
+    key_env: ANTHROPIC_API_KEY # env var is preferred over inline api_key
+  openai:
+    key_env: OPENAI_API_KEY
+# Keyless providers (e.g. ollama) get NO block here at all:
+#   local:
+#     base_url: http://127.0.0.1:11434   (set on the tier, not the provider)
+
+# Tried in order when the primary provider fails with auth/billing/404-class
+# errors (deduped against the primary by provider+model+base_url).
+fallback_providers: []
+#  - provider: openrouter
+#    model: anthropic/claude-sonnet-4.5
+#    key_env: OPENROUTER_API_KEY
+
+budget:                        # per-run governor (RunBudget)
+  max_cost_usd: 5.0            # hard spend cap; warnings at 70/85/95%
+  max_iterations: 60           # agent tool-loop turns
+  wall_seconds: 1800           # 30 minute wall clock
+
+agent:
+  tier: basic                  # basic | advanced | planner | exploit | verify | utility
+  api_max_retries: 3           # attempts per provider before failing over

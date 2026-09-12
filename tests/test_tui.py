@@ -234,7 +234,8 @@ async def test_doctor_tab_renders_version_and_engines(ledger: Ledger) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_show_tab("tab-doctor")
-        assert await _wait_until(lambda: "0.1.0" in app.doctor_summary)
+        from hunter import __version__
+        assert await _wait_until(lambda: __version__ in app.doctor_summary)
         assert "engine: deterministic" in app.doctor_summary
         assert "state dir" in app.doctor_summary
 

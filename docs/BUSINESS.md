@@ -15,6 +15,30 @@ commitment published at engagement time. If it cannot be replayed, it is a
 `candidate`, not a `verified`, and it does not bill. The customer's trust is
 placed in the chain, not in the vendor's reputation.
 
+## v0.2 changes the pitch
+
+v0.2 ships the LLM auditor — and the pitch stops being a roadmap promise:
+
+1. **Pay-per-verified-vuln now has an LLM auditor whose findings are
+   machine-verified.** The model proposes; `create_finding_request` (R1–R6)
+   machine-validates every claim against the ledger; the deterministic
+   debunk replay — not a model's confidence — decides what bills.
+2. **FP adjudication = debunk replay.** A dispute is answered by
+   re-running the check and binding the replay exchange; the ledger settles
+   the argument in minutes, which is the SLA story made literal.
+3. **Tiers map to product tiers.** `agent.tier: basic` (passive-only,
+   self-serve, safe to point anywhere you own) vs `advanced` (active
+   probing, pro engagements) — the same structural gate that governs the
+   agent governs what each customer tier can do.
+4. **BYOK keeps unit economics honest** — the customer's key or ours, the
+   budget governor caps spend per run with staged warnings, and the
+   deterministic core keeps pre-filtering noise before the expensive brain
+   runs.
+
+The **$30 – $45** deep-scan estimate in Unit economics below now describes a
+real system, and the "verifiable evidence pack" differentiator is enforced
+below the agent, in code — not by policy documents.
+
 ## Tiers
 
 | Tier | Price | What it is |
