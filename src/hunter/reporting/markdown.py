@@ -147,7 +147,45 @@ def render_markdown(ledger: Ledger, run_id: str) -> str:
 
     # -- footer -------------------------------------------------------------------------
     lines += ["---", "", "*Rendered from ledger evidence only — hash-chained, tamper-evident.*", ""]
+
+    # -- retro appendix (only when a retro was recorded for this run) ---------------------
+    lines += _retro_section(events)
     return "\n".join(lines)
+
+
+def _retro_section(events: list[Any]) -> list[str]:
+    """Render the "## Retro" appendix from the run's retro_recorded event.
+
+    Pure ledger view: absent retro -> empty list -> unchanged output.
+    """
+    last = None
+    for event in events:
+        if event.kind_value() == "retro_recorded":
+            last = event
+    if last is None:
+        return []
+    payload = last.payload if isinstance(last.payload, dict) else {}
+    stats = payload.get("stats") or {}
+    lines: list[str] = ["---", "", "## Retro", ""]
+    lines += ["| Metric | Value |", "| --- | --- |"]
+    retro_keys = (
+        "duration_s", "requests", "blocked", "errors", "probes_run", "verified", "ruled_out",
+        "coverage_closed",
+    )
+    for key in retro_keys:
+        lines.append(f"| {key} | {_cell(stats.get(key, '-'))} |")
+    lines.append("")
+    coverage_pct = payload.get("coverage_pct")
+    if coverage_pct is not None:
+        lines += [f"**Coverage closed:** {coverage_pct}%", ""]
+    gaps = payload.get("gaps") or []
+    lines += ["### Gaps", ""]
+    lines += [f"- {_cell(gap)}" for gap in gaps] if gaps else ["_None recorded._"]
+    lessons = payload.get("lessons") or []
+    lines += ["", "### Lessons", ""]
+    lines += [f"- {_cell(lesson)}" for lesson in lessons] if lessons else ["_None recorded._"]
+    lines.append("")
+    return lines
 
 
 def _evidence_row(row: dict[str, Any] | None, evidence_id: str) -> str:

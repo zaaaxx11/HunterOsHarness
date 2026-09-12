@@ -18,6 +18,7 @@ ChatStore every turn, so what the model sees is exactly what was persisted.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,45 @@ __all__ = ["ChatEngine", "TurnOutput", "banner", "run_repl"]
 
 PROMPT = "[bold cyan]hunter>[/bold cyan] "
 _SESSION_TITLE_MAX = 60
+
+
+def _open_phase_machine(ledger: Any, run_id: str) -> Any:
+    """B9 phase contract, consumed LAZILY: a chat audit opens ``score`` and
+    closes it immediately (chat has no scoring pass), then spends its life in
+    ``recon``. Returns None whenever the phase engine is absent or disagrees —
+    phase surfacing is cosmetic and must never break an audit."""
+    try:
+        from hunter.phases import PhaseState
+    except Exception:  # noqa: BLE001 — ImportError or a half-landed module
+        return None
+    try:
+        machine = PhaseState(ledger, run_id)
+        start = getattr(machine, "start", None)
+        close = getattr(machine, "close_current", None)
+        if callable(start):
+            start("score")
+        if callable(close):
+            close()
+        if callable(start):
+            start("recon")
+        return machine
+    except Exception:  # noqa: BLE001 — best-effort bookkeeping
+        return None
+
+
+def _close_phase_machine(machine: Any) -> None:
+    """P2 tail contract, LAZY: close the open phase with its honest ledger
+    gate. Chat has no debunk pass, so verify/report/retro stay PENDING —
+    /report digest-stamps the report phase, `hunter retro --record` records
+    the retro. The machine never skips ahead (phase.out_of_order), so the
+    honest tail is exactly one close."""
+    if machine is None:
+        return
+    close = getattr(machine, "close_current", None)
+    if not callable(close):
+        return
+    with contextlib.suppress(Exception):  # best-effort bookkeeping
+        close()
 
 
 @dataclass
@@ -283,6 +323,9 @@ class ChatEngine:
             emit=lambda kind, payload: ledger.append(run_id, kind, payload),
             config={"tier": tier},
         )
+        phase_machine = _open_phase_machine(ledger, run_id)
+        if phase_machine is not None:
+            tool_ctx.config["phase_machine"] = phase_machine  # B9: tools observe phases
         self._audit = {
             "run_id": run_id,
             "ledger": ledger,
@@ -291,6 +334,7 @@ class ChatEngine:
             "budget": budget,
             "tier": tier,
             "target": target,
+            "phase_machine": phase_machine,
         }
         self.options["audit_active"] = True
         self.options["audit_status"] = (
@@ -356,11 +400,23 @@ class ChatEngine:
         ledger: Any = audit["ledger"]
         run_id = audit["run_id"]
         try:
+            # The phase close lands BEFORE run_ended: replaying the chain must
+            # never show a phase outliving its run. A completed audit closes
+            # with its honest ledger gate; an interrupted/aborted audit was
+            # abandoned, not gate-failed — it closes with {"aborted": true}.
+            machine = audit.get("phase_machine")
+            if status == "completed":
+                _close_phase_machine(machine)
+            else:
+                abort = getattr(machine, "abort", None)
+                if callable(abort):
+                    with contextlib.suppress(Exception):
+                        abort()
+            findings = ledger.findings(run_id)
             ledger.append(
                 run_id, EventKind.RUN_ENDED, {"status": status, "surface": "chat"}
             )
             ledger.finish_run(run_id, status)
-            findings = ledger.findings(run_id)
         finally:
             try:
                 audit["http"].close()
@@ -481,6 +537,13 @@ def run_repl(
                 out = _stream_turn(console, engine, line)
         except KeyboardInterrupt:
             out = TurnOutput("[interrupted]", kind="interrupted")
+            _print_output(console, out)
+        except Exception as exc:  # noqa: BLE001 — one bad turn must never kill the session
+            out = TurnOutput(
+                f"[ERROR engine] unexpected {type(exc).__name__}: {str(exc)[:200]}\n"
+                "Hint: the session stays alive — try again, or check `hunter doctor`.",
+                kind="error",
+            )
             _print_output(console, out)
         if out.kind == "interrupted":
             armed = 1  # the next Ctrl-C in this prompt cycle exits

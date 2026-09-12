@@ -106,6 +106,20 @@ def _evidence_rows(ctx: ToolContext) -> dict[str, dict[str, Any]]:
     return {row["id"]: row for row in ctx.ledger.evidence(ctx.run_id)}
 
 
+def _observe_tool(ctx: ToolContext, name: str) -> None:
+    """Additive v0.3 hook: fold one tool call into the canonical phase machine.
+
+    The pipeline mounts a :class:`hunter.phases.PhaseState` in
+    ``ctx.config["phase_machine"]``; while recon is open, the first surface
+    tool drives recon -> classify -> hunting (source "agent"). Without a
+    mounted machine every tool behaves exactly as in v0.2.
+    """
+    machine = ctx.config.get("phase_machine")
+    if machine is None:
+        return
+    machine.observe_tool(name)
+
+
 def _normalize_evidence_ids(raw: Any) -> list[str]:
     """Accept a list of ids or a single id string; dedupe, keep order."""
     if raw is None:
@@ -205,6 +219,7 @@ def _coverage_record(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
         "engine_event",
         {"tool": "coverage_record", "surface": surface, "risk_area": risk_area, "outcome": outcome},
     )
+    _observe_tool(ctx, "coverage_record")
     return ToolOutcome(
         result_for_model=(
             f"coverage recorded: {surface} / {risk_area} -> {outcome}"
@@ -286,6 +301,7 @@ def _http_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     ctx.emit(
         "engine_event", {"tool": "http_request", "method": method, "url": url, "status": exchange.status}
     )
+    _observe_tool(ctx, "http_request")
     result = (
         f"{method} {url} -> {exchange.status} ({exchange.elapsed_ms} ms)\n"
         f"response_body[:400]: {exchange.response_body[:400]!r}\n"
@@ -346,6 +362,7 @@ def _run_probe(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
         "engine_event",
         {"tool": "run_probe", "check_id": check_id, "candidates": len(candidates)},
     )
+    _observe_tool(ctx, "run_probe")
     return ToolOutcome(
         result_for_model="\n".join(lines),
         evidence=artifacts if artifacts else None,
@@ -652,7 +669,25 @@ def _finish_scan(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
         f"findings: {total} (critical: {counts['critical']}, high: {counts['high']}, "
         f"medium: {counts['medium']}, low: {counts['low']}, info: {counts['info']})"
     )
-    ctx.emit("engine_event", {"tool": "finish_scan", "findings": total, "coverage_rows": len(rows)})
+    # v0.3 phase line: the canonical machine's progress, straight from the
+    # ledger (ImportError-safe so a missing phases module can never break the
+    # lifecycle tool).
+    phase_now = "-"
+    try:
+        from hunter.phases import (  # noqa: PLC0415 — lazy, same package
+            current_phase,
+            phase_snapshots,
+            render_phase_progress,
+        )
+
+        lines.append(render_phase_progress(phase_snapshots(ctx.ledger, ctx.run_id)))
+        phase_now = current_phase(ctx.ledger, ctx.run_id) or "-"
+    except ImportError:  # pragma: no cover - same package, defensive only
+        pass
+    ctx.emit(
+        "engine_event",
+        {"tool": "finish_scan", "findings": total, "coverage_rows": len(rows), "phase": phase_now},
+    )
     return ToolOutcome(result_for_model="\n".join(lines), lifecycle_finish=True)
 
 

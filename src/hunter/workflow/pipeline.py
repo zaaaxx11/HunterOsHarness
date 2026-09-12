@@ -25,7 +25,7 @@ from __future__ import annotations
 import contextlib
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -33,9 +33,18 @@ from typing import TYPE_CHECKING, Any
 from hunter import __version__
 from hunter.engine.base import EngineContext, TargetSpec
 from hunter.kernel.claimgate import ClaimGateBlocked
-from hunter.kernel.events import Event, EventKind
+from hunter.kernel.events import Event, EventKind, sha256_hex
 from hunter.kernel.findings import Finding, FindingStatus
 from hunter.kernel.ledger import Ledger
+from hunter.phases import (
+    PhaseSnapshot,
+    PhaseState,
+    mark_report_rendered,
+    phase_snapshots,
+    record_retro,
+    render_phase_progress,
+)
+from hunter.reporting.markdown import ReportBlocked, render_markdown
 from hunter.tools.http_client import Exchange, ScopedHttpClient
 from hunter.tools.registry import get_engine
 
@@ -60,6 +69,10 @@ class RunSummary:
     verified: int
     candidates: int
     stats: dict[str, Any]  # engine stats + elapsed_ms + requests (+ additive fields)
+    # Additive v0.3 phase-machine fields (defaults keep every v0.2 consumer):
+    phases: list[PhaseSnapshot] = field(default_factory=list)  # one per canonical phase
+    phase_line: str = ""  # render_phase_progress() over `phases`
+    report_markdown: str = ""  # the rendered Markdown report ("" when blocked)
 
 
 def _ledger_db_path(state_dir: str | Path | None) -> str | Path | None:
@@ -155,11 +168,22 @@ def _failed_run(
     exc: Exception,
     t0: float,
 ) -> RunSummary:
-    """Close a fatally broken run: error event, failed finish, run_ended."""
+    """Close a fatally broken run: error event, phase abort, failed finish."""
     message = f"{type(exc).__name__}: {exc}"
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+    snapshots: list[PhaseSnapshot] = []
+    phase_line = ""
     with contextlib.suppress(Exception):  # the ledger itself may be unusable
         ledger.append(run_id, EventKind.ERROR, {"stage": "pipeline", "error": message})
+        if ledger.events(run_id):
+            # The phase machine must record the abort as a fact: whatever
+            # canonical phase was open ends as {"aborted": true} — no gate,
+            # no lie. Then the run fails and ends.
+            with contextlib.suppress(Exception):
+                machine = PhaseState(ledger, run_id)
+                machine.abort()
+                snapshots = phase_snapshots(ledger, run_id)
+                phase_line = render_phase_progress(snapshots)
         ledger.finish_run(run_id, "failed")
         ledger.append(
             run_id,
@@ -175,6 +199,8 @@ def _failed_run(
         verified=0,
         candidates=0,
         stats={"requests": 0, "blocked": 0, "errors": 0, "elapsed_ms": elapsed_ms, "error": message},
+        phases=snapshots,
+        phase_line=phase_line,
     )
 
 
@@ -188,16 +214,28 @@ def _execute_scan(
     config: dict[str, Any] | None,
     t0: float,
 ) -> RunSummary:
-    """Drive one run through plan -> probe -> collect -> verify.
+    """Drive one run through score -> recon -> classify -> hunting -> verify -> report -> retro.
 
     Raises on fatal failures (the caller turns that into a failed run);
     per-candidate gate refusals and replay failures are absorbed here.
+
+    The canonical HunterOS phase machine (:mod:`hunter.phases`) is mounted
+    here: the machine's own transitions are appended directly to the ledger,
+    and every other event flows through ``emit`` first, then into
+    ``machine.observe`` — so engine sub-phase events (plan/probe/collect,
+    recon detail) fold into canonical transitions without ever bypassing a
+    gate. The old plan/probe/collect wrapper phase events are kept as engine
+    detail events; the canonical verify phase is owned by the machine.
     """
 
-    def emit(kind: str, payload: dict[str, Any]) -> Event:
-        return ledger.append(run_id, kind, payload)
-
     ledger.create_run(run_id, target_url, engine_name, scope.name)
+    machine = PhaseState(ledger, run_id)
+
+    def emit(kind: str, payload: dict[str, Any]) -> Event:
+        event = ledger.append(run_id, kind, payload)
+        machine.observe(event.kind_value(), event.payload)
+        return event
+
     emit(
         EventKind.RUN_STARTED,
         {
@@ -208,6 +246,11 @@ def _execute_scan(
             "started": _utc_now_iso(),
         },
     )
+    # Canonical pipeline head: score must open first and pass its gate (the
+    # run row + run_started event above are exactly its evidence).
+    machine.start("score")
+    machine.close_current()
+    machine.start("recon")
     target = TargetSpec(url=target_url, scope=scope, notes={})
 
     # -- plan -------------------------------------------------------------------
@@ -228,12 +271,33 @@ def _execute_scan(
     emit(EventKind.PHASE_STARTED, {"phase": "probe"})
     with ScopedHttpClient(scope) as http:
         # ledger/run_id are additive v0.2 bindings for ledger-backed engines
-        # (the LLM agent); deterministic/mock engines ignore them.
+        # (the LLM agent); deterministic/mock engines ignore them. The phase
+        # machine rides config so agent tools can fold their surface actions
+        # into the canonical transitions (hunter.phases.observe_tool).
         ctx = EngineContext(
-            http=http, emit=emit, config=dict(config or {}), ledger=ledger, run_id=run_id
+            http=http,
+            emit=emit,
+            config={**dict(config or {}), "phase_machine": machine},
+            ledger=ledger,
+            run_id=run_id,
         )
         result: EngineResult = engine.run(target, ctx)
     emit(EventKind.PHASE_ENDED, {"phase": "probe", "candidates": len(result.candidates)})
+    # Engine tallies (requests / blocked / errors / ...) are ledger facts too.
+    # The retro is computed from EVENTS only, so the engine's own counters must
+    # land in the hash chain BEFORE hunting closes — otherwise engines that do
+    # not mirror every request as its own event (deterministic recon/probes)
+    # would make `hunter retro` report requests: 0 while the run summary shows
+    # the real traffic (v0.3 QA red audit).
+    emit(EventKind.ENGINE_EVENT, {"tool": "engine_stats", **result.stats})
+
+    # Engines that emitted no sub-phase events (mock, a silent agent) leave
+    # recon open: the adapter closes it against the ledger (honest gate),
+    # records the classification, and opens hunting. An engine whose events
+    # already drove the machine (deterministic) leaves hunting open too —
+    # engine_run_done is a no-op there.
+    if machine.current is not None:
+        machine.engine_run_done(result)
 
     # -- collect: bind evidence, create findings through the claim gate -----------
     emit(EventKind.PHASE_STARTED, {"phase": "collect"})
@@ -281,7 +345,10 @@ def _execute_scan(
     )
 
     # -- verify (ladder): independent replay promotes candidate -> verified -------
-    emit(EventKind.PHASE_STARTED, {"phase": "verify"})
+    # Canonical phases: hunting closes FIRST (its gate reads the probe events
+    # already appended), then verify opens. The machine owns these events.
+    machine.close_current()
+    machine.start("verify")
     verified = 0
     replay_requests = 0
     for finding, candidate in created:
@@ -322,9 +389,9 @@ def _execute_scan(
                 EventKind.ERROR,
                 {"stage": "verify", "finding_id": finding.id, "gate_blocked": str(blocked)},
             )
-    emit(EventKind.PHASE_ENDED, {"phase": "verify", "verified": verified})
+    machine.close_current()  # verify: every finding verified|ruled_out or replay-failed on record
 
-    # -- finish ---------------------------------------------------------------------
+    # -- finish: report and retro are canonical phases too ---------------------------
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
     stats: dict[str, Any] = dict(result.stats)
     engine_elapsed = stats.pop("elapsed_ms", None)
@@ -336,7 +403,35 @@ def _execute_scan(
     stats.setdefault("requests", 0)
     stats.setdefault("blocked", 0)
     stats.setdefault("errors", 0)
+    run_events = ledger.events(run_id)
+    stats["gates_failed"] = sum(
+        1
+        for event in run_events
+        if event.kind_value() == "phase_ended"
+        and isinstance(event.payload.get("gate"), dict)
+        and event.payload["gate"].get("passed") is False
+    )
+    stats["coverage_rows"] = sum(
+        1
+        for event in run_events
+        if event.kind_value() == "engine_event" and event.payload.get("tool") == "coverage_record"
+    )
     ledger.finish_run(run_id, "completed")
+    machine.start("report")
+    report_text = ""
+    try:
+        report_text = render_markdown(ledger, run_id)
+        mark_report_rendered(
+            ledger, run_id, fmt="markdown", sha256=sha256_hex(report_text), chars=len(report_text)
+        )
+    except ReportBlocked:
+        # A blocked render is recorded honestly: no REPORT_RENDERED event is
+        # appended, so the report gate fails at close and the run continues.
+        pass
+    machine.close_current()
+    machine.start("retro")
+    record_retro(ledger, run_id)
+    machine.close_current()
     emit(
         EventKind.RUN_ENDED,
         {
@@ -344,11 +439,13 @@ def _execute_scan(
             "findings": len(created),
             "verified": verified,
             "gate_blocked": gate_blocked,
+            "gates_failed": stats["gates_failed"],
             "elapsed_ms": elapsed_ms,
         },
     )
 
     findings = ledger.findings(run_id)  # fresh statuses straight from the ledger
+    snapshots = phase_snapshots(ledger, run_id)
     return RunSummary(
         run_id=run_id,
         target=target_url,
@@ -358,6 +455,9 @@ def _execute_scan(
         verified=sum(1 for f in findings if f.status is FindingStatus.VERIFIED),
         candidates=sum(1 for f in findings if f.status is FindingStatus.CANDIDATE),
         stats=stats,
+        phases=snapshots,
+        phase_line=render_phase_progress(snapshots),
+        report_markdown=report_text,
     )
 
 

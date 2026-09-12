@@ -282,23 +282,13 @@ def test_resolve_key_missing_raises_auth_exit_4(tmp_path):
     assert ei.value.exit_code == EXIT_AUTH
     assert "OPENAI_API_KEY" in ei.value.hint
 
-    # No key_env declared either -> the hint names the provider.
-    cfg.providers["mystery"] = ProviderConfig(api_key="")
-    with pytest.raises(HunterError) as ei:
-        resolve_key("mystery", cfg, env={})
-    assert "mystery" in ei.value.hint
 
-
-def test_resolve_key_block_without_key_is_an_error(tmp_path):
+def test_resolve_key_keyless_block_returns_empty(tmp_path):
+    """A provider block with NEITHER key_env NOR api_key is KEYLESS — no auth
+    error, LiteLLM dials it without a key (local/corp endpoints)."""
     cfg = load_config(env={}, home=tmp_path)
-    # A provider block that declares neither key_env nor api_key cannot work.
-    cfg.providers["mystery"] = ProviderConfig(base_url="http://x/v1")
-    with pytest.raises(HunterError) as ei:
-        resolve_key("mystery", cfg, env={})
-    assert ei.value.layer == "auth"
-    assert ei.value.exit_code == EXIT_AUTH
-    assert "the api key for mystery" in ei.value.hint
-
+    cfg.providers["local"] = ProviderConfig(base_url="http://x/v1")
+    assert resolve_key("local", cfg, env={}) == ""
     # Providers with NO block at all delegate to litellm's own resolution.
     assert resolve_key("openai", cfg, env={}) == ""
 

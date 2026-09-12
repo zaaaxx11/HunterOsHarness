@@ -446,3 +446,39 @@ def test_stream_cb_passed_through_to_provider(env):
 def test_agent_loop_rejects_unknown_tier(env):
     with pytest.raises(ValueError, match="unknown tier"):
         AgentLoop(FakeProvider([]), build_registry("basic"), tier="elite")
+
+
+# -- phase machine via config (v0.3, additive) -----------------------------------------
+
+
+def test_phase_machine_mounted_via_config_drives_transitions(env):
+    """The pipeline mounts PhaseState in ctx.config["phase_machine"]; agent
+    tool calls fold into canonical transitions; finish_scan shows the line."""
+    from hunter.phases import PhaseState
+
+    ledger, run = env.ledger, env.ctx.run_id
+    ledger.create_run(run, env.ctx.target_url, "llm", "localhost-only")
+    ledger.append(
+        run,
+        "run_started",
+        {"target": env.ctx.target_url, "engine": "llm", "scope": env.ctx.scope.summary()},
+    )
+    machine = PhaseState(ledger, run)
+    machine.start("score")
+    machine.close_current()
+    machine.start("recon")
+    env.ctx.config = {**env.ctx.config, "phase_machine": machine}
+
+    script = [
+        turn(tool_call("coverage_record", surface="/", risk_area="headers", outcome="reported")),
+        turn(tool_call("finish_scan")),
+    ]
+    result, _loop = env.run(script)
+    assert result.finished is True
+    assert machine.current == "hunting"
+    events = ledger.events(run)
+    assert any(e.kind_value() == "classification_recorded" for e in events)
+    assert any(
+        e.kind_value() == "phase_started" and e.payload.get("phase") == "hunting" for e in events
+    )
+    assert "hunting" in result.summary  # finish_scan's phase line

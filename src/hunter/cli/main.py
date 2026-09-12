@@ -5,20 +5,29 @@ ledger rows; the claim gate cannot be bypassed from here (enforced below it).
 
 State directory: ``--state`` option, env ``HUNTER_STATE_DIR``, or ``.hunter``
 under the current directory (in that order of precedence per invocation).
+
+Error doctrine: per-command handlers cover the classified paths; everything
+that still escapes is rendered by :mod:`hunter.cli.handle` — one line plus a
+``where:`` location, never a surprise traceback.
 """
 
 from __future__ import annotations
 
-import platform
+import os
+import sqlite3
 from importlib import metadata
 from pathlib import Path
 from urllib.parse import urlparse
 
 import typer
+import yaml
 from rich.console import Console
 from rich.markdown import Markdown as RichMarkdown
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
+from hunter.cli.handle import handle_cli_error, is_verbose, set_verbose
 from hunter.kernel.findings import SEVERITY_ORDER
 from hunter.kernel.ledger import Ledger
 from hunter.tools.scope import (
@@ -31,7 +40,6 @@ from hunter.tools.scope import (
 
 app = typer.Typer(
     help="HunterOs Harness — evidence-first security-audit harness.",
-    no_args_is_help=True,
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
@@ -48,10 +56,38 @@ def _version() -> str:
         return __version__
 
 
+# ------------------------------------------------------------- root callback --
+
+@app.callback(invoke_without_command=True)
+def _root_callback(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Print full tracebacks for unexpected errors (or set HUNTEROS_VERBOSE=1).",
+    ),
+) -> None:
+    """Global options. Run `hunter` with no subcommand for the welcome panel."""
+    set_verbose(verbose)
+    if ctx.invoked_subcommand is None:
+        from hunter._data.branding import welcome_lines
+
+        body = Text("\n".join(welcome_lines(_version())))
+        console.print(
+            Panel(body, title="hunter", border_style="cyan", subtitle="Evidence or Nothing")
+        )
+
+
 def _open_ledger(state: Path | None) -> Ledger:
     # `state` is a state DIRECTORY (pipeline convention); the db lives inside it.
     db = None if state is None else Path(state) / "ledger.db"
     return Ledger(db) if db is not None else Ledger()
+
+
+def _ledger_guard(exc: Exception) -> typer.Exit:
+    """A corrupt/unreadable ledger is a diagnosis, not a traceback."""
+    err_console.print(f"[red]ledger error:[/red] {type(exc).__name__}: {exc}")
+    return typer.Exit(1)
 
 
 def _latest_run_id(ledger: Ledger) -> str:
@@ -96,7 +132,7 @@ def _sev_markup(severity) -> str:
     return f"[{_SEV_COLOR.get(value, 'white')}]{value}[/{_SEV_COLOR.get(value, 'white')}]"
 
 
-# ---------------------------------------------------------------- version ---
+# ------------------------------------------------------------------ version ---
 
 @app.command()
 def version() -> None:
@@ -104,128 +140,60 @@ def version() -> None:
     console.print(f"hunter {_version()}")
 
 
-# ----------------------------------------------------------------- doctor ---
+# ---------------------------------------------------------------------- init ---
+
+@app.command()
+def init(
+    path: Path | None = typer.Option(
+        None, "--path", help="Config file to write (default: $HUNTEROS_CONFIG or ~/.hunteros/config.yaml)."
+    ),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Non-interactive provider name (e.g. openrouter, ollama)."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Non-interactive: take defaults, never prompt."),
+) -> None:
+    """First-run wizard: pick a brain, capture a key, write the config."""
+    from hunter.cli.init_wizard import run_init
+
+    code = run_init(path=path, provider=provider, yes=yes, console=console, err_console=err_console)
+    if code:
+        raise typer.Exit(code)
+
+
+# -------------------------------------------------------------------- doctor ---
 
 @app.command()
 def doctor(
     state: Path | None = typer.Option(
         None, "--state", help="State directory (default: .hunter or $HUNTER_STATE_DIR)."
     ),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+    live: bool = typer.Option(
+        False, "--live", help="Probe configured provider endpoints (real network, bounded)."
+    ),
 ) -> None:
-    """Check the environment: python, deps, ledger, engines."""
-    ok = True
+    """Check the environment: python, deps, ledger, engines, providers, chat db."""
+    import json
+    from dataclasses import asdict
 
-    def check(label: str, good: bool, detail: str = "") -> None:
-        nonlocal ok
-        mark = "[green]OK[/green]" if good else "[red]FAIL[/red]"
-        if not good:
-            ok = False
-        console.print(f"  {mark}  [bold]{label}[/bold] {detail}")
+    from hunter.cli.doctor_core import collect_checks
 
-    console.print(f"[bold]HunterOs Harness doctor[/bold] — hunter {_version()}")
-    check("python", True, f"{platform.python_version()} on {platform.system()}")
-
-    for dep in ("typer", "rich", "textual", "httpx"):
-        try:
-            check(f"dep:{dep}", True, metadata.version(dep))
-        except metadata.PackageNotFoundError:
-            check(f"dep:{dep}", False, "missing — pip install -e .")
-
-    ledger = _open_ledger(state)
-    try:
-        db_path = ledger.path
-        runs = ledger.runs()
-        check("state-dir", True, f"{db_path} — {len(runs)} run(s)")
-        if runs:
-            report = ledger.verify_chain()
-            detail = (
-                f"{report.checked} events verified"
-                if report.ok
-                else f"BROKEN at seq {report.broken_at_seq}"
-            )
-            check("ledger-chain", report.ok, detail)
-        else:
-            check("ledger-chain", True, "empty ledger")
-    finally:
-        ledger.close()
-
-    from hunter.tools.registry import available_engines
-
-    engines = available_engines()
-    check("engines", "deterministic" in engines, ", ".join(engines))
-
-    try:
-        from hunter.workflow.bench import run_demo  # noqa: F401
-
-        check("workflow", True, "pipeline + demo ready")
-    except Exception as exc:  # pragma: no cover
-        check("workflow", False, str(exc))
-
-    # --- LLM brain (v0.2): config, tiers, keys, litellm ---------------------
-    # FAIL is reserved for things that break `hunter scan`/`hunter chat`;
-    # LLM readiness gaps that only matter once the user opts in are WARN-style
-    # OK notes (yellow) that never flip the exit code.
-    import os
-
-    from hunter.errors import HunterError
-    from hunter.llm.config import AGENT_TIERS, load_config, resolve_model
-
-    def note(label: str, detail: str) -> None:
-        console.print(f"  [yellow]OK[/yellow]  [bold]{label}[/bold] {detail}")
-
-    try:
-        cfg = load_config()
-    except HunterError as exc:
-        check("llm-config", False, str(exc).replace("\n", " — "))
+    checks = collect_checks(state, live=live, ledger_factory=lambda: _open_ledger(state))
+    ok = all(check.status != "fail" for check in checks)
+    if json_out:
+        console.print_json(json.dumps({"checks": [asdict(c) for c in checks], "ok": ok}))
     else:
-        check("llm-config", True, cfg.source_path or "defaults, no config file")
-
-        if cfg.agent.tier == "basic":
-            note(
-                "llm-tier",
-                "basic — pin a brain with agent.tier or $HUNTEROS_TIER "
-                f"({', '.join(AGENT_TIERS)})",
-            )
-        else:
-            check("llm-tier", True, cfg.agent.tier)
-
-        try:
-            planner_model = resolve_model("planner", cfg)
-        except HunterError:
-            note(
-                "llm-model",
-                "unset — set HUNTEROS_MODEL or model_tiers.planner.model in ~/.hunteros/config.yaml",
-            )
-        else:
-            check("llm-model", True, f"planner: {planner_model}")
-
-        key_notes = []
-        for provider_name, provider_cfg in sorted(cfg.providers.items()):
-            if provider_cfg.key_env:
-                state = "set" if os.environ.get(provider_cfg.key_env) else "not set"
-                key_notes.append(f"{provider_name}:{provider_cfg.key_env}={state}")
-            elif provider_cfg.api_key:
-                key_notes.append(f"{provider_name}:inline key")
-            else:
-                key_notes.append(f"{provider_name}:NO key declared")
-        note("llm-keys", ", ".join(key_notes) if key_notes else "no providers configured")
-
-    try:
-        litellm_version = metadata.version("litellm")
-    except metadata.PackageNotFoundError:
-        note(
-            "llm-litellm",
-            "LLM brain not installed (extra [llm]) — pip install 'hunteros-harness[llm]'",
-        )
-    else:
-        check("llm-litellm", True, litellm_version)
-
+        console.print(f"[bold]HunterOs Harness doctor[/bold] — hunter {_version()}")
+        marks = {"ok": "[green]OK[/green]", "fail": "[red]FAIL[/red]", "note": "[yellow]OK[/yellow]"}
+        for check in checks:
+            console.print(f"  {marks[check.status]}  [bold]{check.label}[/bold] {check.detail}")
+        if ok:
+            console.print("[green]All checks passed.[/green]")
     if not ok:
         raise typer.Exit(1)
-    console.print("[green]All checks passed.[/green]")
 
 
-# ------------------------------------------------------------------- demo ---
+# ---------------------------------------------------------------------- demo ---
 
 @app.command()
 def demo(
@@ -243,6 +211,7 @@ def demo(
         err_console.print(f"[red]demo failed:[/red] {exc}")
         raise typer.Exit(1) from exc
 
+    phase_line = getattr(result.summary, "phase_line", "")
     if json_out:
         import json
 
@@ -256,6 +225,8 @@ def demo(
             "summary": result.summary_line,
             "server_port": result.server_port,
         }
+        if phase_line:
+            payload["phase_line"] = phase_line
         console.print_json(json.dumps(payload))
     else:
         table = Table(title=f"Demo run {result.run_id} — target PracticeVault :{result.server_port}")
@@ -267,6 +238,8 @@ def demo(
             table.add_row(_sev_markup(f.severity), f.status.value, f.title, f"{f.method} {f.endpoint}")
         console.print(table)
         console.print(f"[bold]{result.summary_line}[/bold]")
+        if phase_line:
+            console.print(phase_line)
         chain_ledger = _open_ledger(state)
         try:
             chain = chain_ledger.verify_chain(result.run_id)
@@ -282,7 +255,7 @@ def demo(
     raise typer.Exit(0 if result.first_blood else 1)
 
 
-# ------------------------------------------------------------------- scan ---
+# ---------------------------------------------------------------------- scan ---
 
 @app.command()
 def scan(
@@ -295,6 +268,7 @@ def scan(
     json_out: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Scan an authorized target. localhost is always allowed; else --scope is mandatory."""
+    from hunter.errors import HunterError
     from hunter.workflow.pipeline import run_scan
 
     try:
@@ -308,29 +282,33 @@ def scan(
     except ValueError as exc:  # unknown engine — usage error, not a scan outcome
         err_console.print(f"[red]BLOCKED:[/red] {exc}")
         raise typer.Exit(2) from exc
+    except HunterError as exc:  # classified pipeline failure
+        raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
+    except (sqlite3.DatabaseError, OSError) as exc:
+        raise _ledger_guard(exc) from exc
 
+    phase_line = getattr(summary, "phase_line", "")
     if json_out:
         import json
 
-        console.print_json(
-            json.dumps(
+        payload = {
+            "run_id": summary.run_id,
+            "status": summary.status,
+            "verified": summary.verified,
+            "candidates": summary.candidates,
+            "findings": [
                 {
-                    "run_id": summary.run_id,
-                    "status": summary.status,
-                    "verified": summary.verified,
-                    "candidates": summary.candidates,
-                    "findings": [
-                        {
-                            "id": f.id, "title": f.title, "severity": f.severity.value,
-                            "status": f.status.value, "cwe": f.cwe, "endpoint": f.endpoint,
-                            "method": f.method, "param": f.param, "evidence": list(f.evidence_ids),
-                        }
-                        for f in summary.findings
-                    ],
-                    "stats": summary.stats,
+                    "id": f.id, "title": f.title, "severity": f.severity.value,
+                    "status": f.status.value, "cwe": f.cwe, "endpoint": f.endpoint,
+                    "method": f.method, "param": f.param, "evidence": list(f.evidence_ids),
                 }
-            )
-        )
+                for f in summary.findings
+            ],
+            "stats": summary.stats,
+        }
+        if phase_line:
+            payload["phase_line"] = phase_line
+        console.print_json(json.dumps(payload))
     else:
         if summary.status != "completed":
             err_console.print(
@@ -350,10 +328,12 @@ def scan(
             f"{summary.stats.get('requests', '?')} requests — "
             f"next: [bold]hunter report --run {summary.run_id}[/bold]"
         )
+        if phase_line:
+            console.print(phase_line)
     raise typer.Exit(0 if summary.status == "completed" else 1)
 
 
-# ----------------------------------------------------------------- report ---
+# -------------------------------------------------------------------- report ---
 
 @app.command()
 def report(
@@ -378,10 +358,15 @@ def report(
                 err_console.print(f"[red]unknown run:[/red] {rid}")
                 raise typer.Exit(1) from exc
             if out is not None:
-                out.write_text(text, encoding="utf-8")
+                try:
+                    out.write_text(text, encoding="utf-8")
+                except OSError as exc:
+                    err_console.print(f"[red]could not write {out}:[/red] {exc}")
+                    raise typer.Exit(1) from exc
                 console.print(f"[green]wrote[/green] {out}")
             else:
                 console.print(RichMarkdown(text))
+            _mark_report_rendered(ledger, rid, text=text, out=out)
         elif fmt == "sarif":
             import json
 
@@ -402,11 +387,37 @@ def report(
     except KeyError as exc:
         err_console.print(f"[red]unknown run:[/red] {run_id or '(latest)'}")
         raise typer.Exit(1) from exc
+    except sqlite3.DatabaseError as exc:
+        raise _ledger_guard(exc) from exc
+    except OSError as exc:
+        err_console.print(f"[red]state error:[/red] {type(exc).__name__}: {exc}")
+        raise typer.Exit(1) from exc
     finally:
         ledger.close()
 
 
-# ------------------------------------------------------------------- runs ---
+def _mark_report_rendered(ledger: Ledger, run_id: str, *, text: str, out: Path | None) -> None:
+    """B9 phase contract: digest-stamp the rendered markdown into the ledger's
+    REPORT phase. Best-effort — a phase-engine hiccup must never break a
+    report that already rendered from verified rows."""
+    try:
+        import hashlib
+
+        from hunter.phases import mark_report_rendered
+
+        mark_report_rendered(
+            ledger,
+            run_id,
+            fmt="markdown",
+            sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            chars=len(text),
+            out=str(out) if out is not None else "",
+        )
+    except Exception:  # noqa: BLE001 — phase bookkeeping is best-effort
+        pass
+
+
+# ----------------------------------------------------------------------- runs ---
 
 @app.command()
 def runs(state: Path | None = typer.Option(None, "--state", help="State directory.")) -> None:
@@ -423,11 +434,16 @@ def runs(state: Path | None = typer.Option(None, "--state", help="State director
                 str(r.get("status", "")), str(n), str(r.get("ended_ts", "")),
             )
         console.print(table)
+    except sqlite3.DatabaseError as exc:
+        raise _ledger_guard(exc) from exc
+    except OSError as exc:
+        err_console.print(f"[red]state error:[/red] {type(exc).__name__}: {exc}")
+        raise typer.Exit(1) from exc
     finally:
         ledger.close()
 
 
-# --------------------------------------------------------------- findings ---
+# ------------------------------------------------------------------ findings ---
 
 @app.command()
 def findings(
@@ -447,11 +463,67 @@ def findings(
                 f"{f.method} {f.endpoint}", str(len(f.evidence_ids)),
             )
         console.print(table)
+    except sqlite3.DatabaseError as exc:
+        raise _ledger_guard(exc) from exc
+    except OSError as exc:
+        err_console.print(f"[red]state error:[/red] {type(exc).__name__}: {exc}")
+        raise typer.Exit(1) from exc
     finally:
         ledger.close()
 
 
-# ----------------------------------------------------------------- skills ---
+# ---------------------------------------------------------------------- retro ---
+
+@app.command()
+def retro(
+    run_id: str | None = typer.Argument(None, help="Run id (default: --run or the latest run)."),
+    run: str | None = typer.Option(None, "--run", help="Run id."),
+    record: bool = typer.Option(False, "--record", help="Persist the retro (phase engine)."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Show (or with --record, persist) the phase retro for a run."""
+    ledger = _open_ledger(state)
+    try:
+        rid = run or run_id
+        if not rid:
+            rid = _latest_run_id(ledger)
+        elif not any(row["run_id"] == rid for row in ledger.runs()):
+            err_console.print(f"[red]unknown run:[/red] {rid}")
+            raise typer.Exit(1)
+        lines = _phase_retro_lines(ledger, rid, record=record)
+    except sqlite3.DatabaseError as exc:
+        raise _ledger_guard(exc) from exc
+    finally:
+        ledger.close()
+    if lines is None:
+        err_console.print("phase engine not available")
+        raise typer.Exit(1)
+    table = Table(title=f"Retro — {rid}")
+    table.add_column("phase timeline")
+    for line in lines:
+        table.add_row(line)
+    console.print(table)
+
+
+def _phase_retro_lines(ledger: Ledger, run_id: str, *, record: bool) -> list[str] | None:
+    """B9 phase contract, consumed lazily: None when the phase engine is not
+    importable (the command then answers "phase engine not available")."""
+    try:
+        from hunter.phases import compute_retro, record_retro
+    except ImportError:
+        return None
+    retro = record_retro(ledger, run_id) if record else compute_retro(ledger, run_id)
+    lines: list[str] = []
+    coverage = getattr(retro, "coverage_pct", None)
+    lines.append(f"coverage: {'n/a' if coverage is None else f'{coverage:.0f}%'}")
+    lines.extend(f"gap: {gap}" for gap in getattr(retro, "gaps", []) or [])
+    lines.extend(f"lesson: {lesson}" for lesson in getattr(retro, "lessons", []) or [])
+    stats = getattr(retro, "stats", {}) or {}
+    lines.extend(f"{key}: {value}" for key, value in sorted(stats.items()))
+    return lines or ["(no retro data)"]
+
+
+# --------------------------------------------------------------------- skills ---
 
 @app.command()
 def skills(
@@ -465,8 +537,8 @@ def skills(
         skill_file = root / view / "SKILL.md"
         try:
             console.print(RichMarkdown(skill_file.read_text(encoding="utf-8")))
-        except FileNotFoundError as exc:
-            err_console.print(f"[red]unknown skill:[/red] {view}")
+        except (FileNotFoundError, OSError, UnicodeDecodeError) as exc:
+            err_console.print(f"[red]unknown skill or unreadable file:[/red] {view} ({type(exc).__name__})")
             raise typer.Exit(1) from exc
         return
     table = Table(title="Skills (hunter/_data/skills)")
@@ -479,17 +551,20 @@ def skills(
             skill_md = root / entry / "SKILL.md"
             desc = ""
             if skill_md.is_file():
-                for line in skill_md.read_text(encoding="utf-8").splitlines():
-                    if line.lower().startswith("description:"):
-                        desc = line.split(":", 1)[1].strip()
-                        break
+                try:
+                    for line in skill_md.read_text(encoding="utf-8").splitlines():
+                        if line.lower().startswith("description:"):
+                            desc = line.split(":", 1)[1].strip()
+                            break
+                except (OSError, UnicodeDecodeError):
+                    desc = ""  # unreadable skill file — list the name, skip the blurb
             table.add_row(entry, desc)
     except FileNotFoundError:
         err_console.print("[yellow]skills corpus not installed[/yellow]")
     console.print(table)
 
 
-# -------------------------------------------------------------------- tui ---
+# ------------------------------------------------------------------------ tui ---
 
 @app.command()
 def tui(
@@ -498,8 +573,6 @@ def tui(
     ),
 ) -> None:
     """Launch the interactive TUI dashboard."""
-    import os
-
     if state is not None:
         os.environ["HUNTER_STATE_DIR"] = str(state)
     try:
@@ -514,7 +587,7 @@ def tui(
     run_tui()
 
 
-# ------------------------------------------------------------------- chat ---
+# ----------------------------------------------------------------------- chat ---
 
 @app.command()
 def chat(
@@ -524,16 +597,21 @@ def chat(
     ),
 ) -> None:
     """Interactive chat with the HunterOs brain (LLM optional, BYOK)."""
-    import os
-
     if state is not None:
         os.environ["HUNTER_STATE_DIR"] = str(state)
-    from hunter.chat.repl import run_repl
+    try:
+        from hunter.chat.repl import run_repl
+    except ImportError as exc:
+        err_console.print(
+            "[red]chat unavailable:[/red] the chat surface failed to import "
+            f"({type(exc).__name__}) — reinstall with: pip install -e ."
+        )
+        raise typer.Exit(1) from exc
 
     run_repl(session_id=session, state_dir=str(state) if state is not None else None)
 
 
-# ---------------------------------------------------------------- gateway ---
+# -------------------------------------------------------------------- gateway ---
 
 gateway_app = typer.Typer(help="Chat-platform gateway (Telegram, webhook).")
 app.add_typer(gateway_app, name="gateway")
@@ -549,15 +627,17 @@ def gateway_start(
     from hunter.llm.config import load_config
 
     # QA red-audit v0.2: config/transport errors (bad config file, token
-    # without an allowlist, INSECURE_NO_AUTH on a non-loopback bind) must die
-    # with the classified HunterError line and its mapped exit code — never a
-    # traceback with exit 1.
+    # without an allowlist, INSECURE_NO_AUTH on a non-loopback bind, a
+    # non-integer HUNTEROS_WEBHOOK_PORT) must die with the classified error
+    # line and its mapped exit code — never a traceback with exit 1.
     try:
         cfg = load_config()
         transports = transports_from_env()
-    except HunterError as exc:
-        err_console.print(exc.user_message())
-        raise typer.Exit(exc.exit_code) from exc
+    except (HunterError, ValueError) as exc:
+        if isinstance(exc, HunterError):
+            raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
+        err_console.print(f"[red]config error:[/red] {exc}")
+        raise typer.Exit(8) from exc
     if not transports:
         err_console.print(
             "[yellow]no transports configured.[/yellow]\n"
@@ -569,13 +649,12 @@ def gateway_start(
     try:
         gateway.run()
     except HunterError as exc:
-        err_console.print(exc.user_message())
-        raise typer.Exit(exc.exit_code) from exc
+        raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
     except KeyboardInterrupt:
         console.print("[dim]gateway stopped.[/dim]")
 
 
-# ----------------------------------------------------------------- config ---
+# --------------------------------------------------------------------- config ---
 
 config_app = typer.Typer(help="Inspect and manage harness configuration.")
 app.add_typer(config_app, name="config")
@@ -597,9 +676,13 @@ def config_example() -> None:
 @config_app.command("show")
 def config_show() -> None:
     """Print the effective configuration (key values never shown, env names only)."""
+    from hunter.errors import HunterError
     from hunter.llm.config import load_config
 
-    cfg = load_config()
+    try:
+        cfg = load_config()
+    except HunterError as exc:
+        raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
     table = Table(title="Effective HunterOs configuration")
     table.add_column("key")
     table.add_column("value")
@@ -620,7 +703,225 @@ def config_show() -> None:
     console.print(table)
 
 
-# ----------------------------------------------------------------- verify ---
+# --- config provider sub-commands (custom / third-party brains) ----------------
+
+provider_app = typer.Typer(help="Manage LLM providers in the config file.")
+config_app.add_typer(provider_app, name="provider")
+
+
+def _raw_config_or_exit(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+        err_console.print(f"[red]config error:[/red] {path} is not readable YAML: {exc}")
+        raise typer.Exit(8) from exc
+    return loaded if isinstance(loaded, dict) else {}
+
+
+@provider_app.command("add")
+def provider_add(
+    name: str = typer.Argument(..., help="Provider name (lowercase letters, digits, '-', '_')."),
+    base_url: str = typer.Option(
+        "", "--base-url", help="OpenAI-compatible endpoint (required for unknown names)."
+    ),
+    key_env: str = typer.Option("", "--key-env", help="Env var holding the API key (preferred)."),
+    api_key_stdin: bool = typer.Option(
+        False, "--api-key-stdin", help="Read ONE line (the key) from stdin — never argv."
+    ),
+    default_model: str = typer.Option("", "--default-model", help="Also pin model_tiers.planner.model."),
+    force: bool = typer.Option(False, "--force", help="Replace an existing provider block."),
+) -> None:
+    """Add (or with --force, replace) a provider in the config file."""
+    from hunter.llm.providers import PROVIDER_NAME_RE, known_provider, known_provider_names
+    from hunter.llm.writing import resolve_config_target, write_config
+
+    if not PROVIDER_NAME_RE.match(name):
+        err_console.print(
+            f"[red]invalid provider name:[/red] {name!r} — lowercase letters/digits/'-'/'_', "
+            "starting with a letter"
+        )
+        raise typer.Exit(2)
+    known = known_provider(name)
+    if not base_url and known is not None:
+        base_url = known.base_url
+    if not base_url and known is None:
+        err_console.print(
+            f"[red]missing --base-url:[/red] '{name}' is not a known provider — pass --base-url "
+            "(any OpenAI-compatible endpoint), or pick a known name: "
+            f"{', '.join(known_provider_names())}"
+        )
+        raise typer.Exit(2)
+
+    api_key = ""
+    if api_key_stdin:
+        import sys
+
+        sys.stdout.write(f"paste the API key for '{name}' (one line, input is not echoed to logs): ")
+        sys.stdout.flush()
+        api_key = sys.stdin.readline().rstrip("\r\n").strip()
+        err_console.print(
+            "[yellow]note:[/yellow] inline api_key written to the config file — --key-env is preferred"
+        )
+    if key_env and api_key:
+        err_console.print(
+            "[dim]note: --key-env and an inline key were both given — the env var wins at runtime[/dim]"
+        )
+
+    target = resolve_config_target()
+    raw = _raw_config_or_exit(target)
+    existing = (raw.get("providers") or {}).get(name)
+    if isinstance(existing, dict) and existing and not force:
+        err_console.print(
+            f"[red]provider '{name}' already exists in {target}[/red] — pass --force to replace it"
+        )
+        raise typer.Exit(2)
+
+    block: dict = {}
+    if key_env:
+        block["key_env"] = key_env
+    elif known is not None and known.key_env and not api_key:
+        block["key_env"] = known.key_env  # sane default for known keyed providers
+    if api_key:
+        block["api_key"] = api_key
+    if base_url:
+        block["base_url"] = base_url
+    if not block:  # pragma: no cover — base_url is required for unknown names
+        block["base_url"] = base_url
+    updates: dict = {"providers": {name: block}}
+    if default_model:
+        updates["model_tiers"] = {"planner": {"model": default_model}}
+    write_config(updates, target)
+    console.print(f"[green]added provider '{name}'[/green] → {target}")
+    console.print("next: [bold]hunter config provider test " + name + "[/bold] · provider list")
+
+
+@provider_app.command("list")
+def provider_list() -> None:
+    """Show providers: name / key source / base_url / default model."""
+    from hunter.errors import HunterError
+    from hunter.llm.config import load_config
+
+    try:
+        cfg = load_config()
+    except HunterError as exc:
+        raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
+    if not cfg.providers:
+        console.print(
+            "no providers configured — add one: "
+            "[bold]hunter config provider add <name> --base-url <url>[/bold]"
+        )
+        return
+    planner = cfg.model_tiers.get("planner")
+    table = Table(title="LLM providers")
+    for col in ("name", "key source", "base_url", "default model"):
+        table.add_column(col)
+    for name, prov in sorted(cfg.providers.items()):
+        if prov.key_env:
+            key_source = f"env:{prov.key_env}"
+            if not os.environ.get(prov.key_env):
+                key_source += " (not set)"
+        elif prov.api_key:
+            key_source = "inline"
+        else:
+            key_source = "keyless"
+        model = ""
+        if planner is not None and planner.provider == name and planner.model:
+            model = planner.model
+        table.add_row(name, key_source, prov.base_url or "-", model or "-")
+    console.print(table)
+
+
+@provider_app.command("remove")
+def provider_remove(
+    name: str = typer.Argument(..., help="Provider name to remove."),
+    force: bool = typer.Option(False, "--force", help="Remove even if tiers/fallbacks still reference it."),
+) -> None:
+    """Remove a provider from the config file (refuses while referenced)."""
+    from hunter.llm.writing import resolve_config_target, write_config
+
+    target = resolve_config_target()
+    raw = _raw_config_or_exit(target)
+    if name not in (raw.get("providers") or {}):
+        err_console.print(f"[red]unknown provider:[/red] '{name}' is not in {target}")
+        raise typer.Exit(1)
+    referenced: list[str] = []
+    for tier_name, block in sorted((raw.get("model_tiers") or {}).items()):
+        if isinstance(block, dict) and block.get("provider") == name:
+            referenced.append(f"model_tiers.{tier_name}.provider")
+    for index, entry in enumerate(raw.get("fallback_providers") or []):
+        if isinstance(entry, dict) and entry.get("provider") == name:
+            referenced.append(f"fallback_providers[{index}].provider")
+    if referenced and not force:
+        err_console.print(
+            f"[red]provider '{name}' is still referenced by:[/red] {', '.join(referenced)}\n"
+            "point those tiers/fallbacks elsewhere first, or pass --force"
+        )
+        raise typer.Exit(2)
+    write_config({"providers": {name: None}}, target)  # None deletes the block
+    dangling = " (references left dangling by --force)" if referenced else ""
+    console.print(f"[green]removed[/green] provider '{name}' from {target}{dangling}")
+
+
+@provider_app.command("test")
+def provider_test(
+    name: str = typer.Argument(..., help="Provider name to ping."),
+    model: str = typer.Option("", "--model", help="Model id (default: planner tier / table default)."),
+    timeout: int = typer.Option(15, "--timeout", help="Seconds to wait for the 1-token reply."),
+) -> None:
+    """Ping a provider live with a 1-token completion."""
+    from hunter.errors import EXIT_AUTH, HunterError
+    from hunter.llm.config import load_config, resolve_key
+    from hunter.llm.ping import ping_provider
+    from hunter.llm.providers import known_provider
+
+    try:
+        cfg = load_config()
+    except HunterError as exc:
+        raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
+
+    prov = cfg.providers.get(name)
+    known = known_provider(name)
+    base_url = (prov.base_url if prov is not None else "") or (known.base_url if known else "")
+    api_key = ""
+    if prov is not None:
+        try:
+            api_key = resolve_key(name, cfg)
+        except HunterError as exc:
+            err_console.print(f"[red]key missing[/red] ({prov.key_env or name}) — {exc.hint}")
+            raise typer.Exit(EXIT_AUTH) from exc
+    elif known is not None and known.key_env:
+        api_key = os.environ.get(known.key_env, "").strip()
+        if not api_key:
+            err_console.print(f"[red]key missing[/red] ({known.key_env}) — set it and re-run")
+            raise typer.Exit(EXIT_AUTH)
+
+    model_id = model
+    if not model_id and prov is not None and cfg.model_tiers.get("planner") is not None:
+        planner = cfg.model_tiers["planner"]
+        # The planner model is the top default: it applies when this provider
+        # owns the tier or when the tier left the provider on "auto".
+        if planner.provider in ("", "auto", name) and planner.model:
+            model_id = planner.model
+    if not model_id and known is not None:
+        model_id = known.default_model
+    if not model_id:
+        err_console.print(f"[red]no model to test:[/red] pass --model <model-id> for '{name}'")
+        raise typer.Exit(2)
+
+    try:
+        result = ping_provider(name, model_id, base_url, api_key, timeout)
+    except HunterError as exc:
+        raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
+    if result.ok:
+        console.print(f"{name}: [green]{result.message}[/green]")
+        raise typer.Exit(0)
+    err_console.print(result.message)
+    raise typer.Exit(result.exit_code or 1)
+
+
+# --------------------------------------------------------------------- verify ---
 
 @app.command()
 def verify(
@@ -639,6 +940,11 @@ def verify(
             err_console.print(f"[red]unknown run:[/red] {run_id}")
             raise typer.Exit(1)
         result = ledger.verify_chain(run_id)
+    except sqlite3.DatabaseError as exc:
+        raise _ledger_guard(exc) from exc
+    except OSError as exc:
+        err_console.print(f"[red]state error:[/red] {type(exc).__name__}: {exc}")
+        raise typer.Exit(1) from exc
     finally:
         ledger.close()
     if result.ok:
@@ -651,7 +957,13 @@ def verify(
 
 
 def main() -> None:
-    app()
+    from typer.main import get_command
+
+    from hunter.cli.handle import run_app
+
+    # Non-standalone: the backstop (handle.py) owns interrupts and escapes;
+    # argument errors keep typer's own rendering and exit codes.
+    run_app(get_command(app))
 
 
 if __name__ == "__main__":

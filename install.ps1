@@ -121,9 +121,11 @@ Write-Host "  1. Activate the venv (or use the full path):" -ForegroundColor Whi
 Write-Host "       $venvDir\Scripts\Activate.ps1" -ForegroundColor Yellow
 Write-Host "  2. Check the environment:" -ForegroundColor White
 Write-Host "       hunter doctor" -ForegroundColor Yellow
-Write-Host "  3. Run the one-command demo (local practice target, deterministic scan):" -ForegroundColor White
+Write-Host "  3. Configure a brain (LLM provider wizard, optional):" -ForegroundColor White
+Write-Host "       hunter init" -ForegroundColor Yellow
+Write-Host "  4. Run the one-command demo (local practice target, deterministic scan):" -ForegroundColor White
 Write-Host "       hunter demo" -ForegroundColor Yellow
-Write-Host "  4. Open the dashboard:" -ForegroundColor White
+Write-Host "  5. Open the dashboard:" -ForegroundColor White
 Write-Host "       hunter tui" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Scan only systems you own or are explicitly authorized to test." -ForegroundColor DarkGray

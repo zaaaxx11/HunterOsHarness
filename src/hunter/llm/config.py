@@ -16,6 +16,7 @@ Every failure is a :class:`hunter.errors.HunterError` in the ``config`` or
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,10 +61,11 @@ class TierConfig:
 
 @dataclass
 class ProviderConfig:
-    """Named provider credentials. Providers that need no key (e.g. ollama)
-    simply get NO block here — a block that declares neither ``key_env`` nor
-    ``api_key`` is a configuration error. An unlisted provider lets LiteLLM
-    use its standard env resolution (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...)."""
+    """Named provider credentials. A block that declares NEITHER ``key_env``
+    NOR ``api_key`` is KEYLESS (a local/OpenAI-compatible endpoint reached
+    without auth — ``resolve_key`` returns ``""`` and LiteLLM dials it with no
+    key). An unlisted provider lets LiteLLM use its standard env resolution
+    (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...)."""
 
     key_env: str = ""
     api_key: str = ""
@@ -171,14 +173,44 @@ def _as_number(value: Any, key: str, minimum: float) -> float:
     return number
 
 
-def _reject_unknown(raw: Mapping[str, Any], valid: tuple[str, ...], where: str) -> None:
+def _reject_unknown(
+    raw: Mapping[str, Any],
+    valid: tuple[str, ...],
+    where: str,
+    *,
+    source_text: str | None = None,
+) -> None:
     unknown = sorted(set(raw) - set(valid))
     if unknown:
+        hint = f"valid keys under {where}: {', '.join(valid)}"
+        line_no = _find_key_line(source_text, unknown[0]) if source_text else None
+        if line_no is not None:
+            hint += f" (line {line_no} of the config file)"
         raise _config_error(
             "config.unknown_key",
             f"unknown config key(s) under {where}: {', '.join(unknown)}",
-            f"valid keys under {where}: {', '.join(valid)}",
+            hint,
         )
+
+
+def _find_key_line(source_text: str | None, key: str) -> int | None:
+    """Cheap raw-text scan: the 1-based line where ``key:`` appears, so the
+    hint can point at the offending line even though we only parsed a tree."""
+    if not source_text:
+        return None
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*:")
+    for number, line in enumerate(source_text.splitlines(), start=1):
+        if pattern.match(line):
+            return number
+    return None
+
+
+def _yaml_location(exc: Exception) -> str:
+    """`` (line N, column M)`` from a YAML error's problem_mark, best-effort."""
+    mark = getattr(exc, "problem_mark", None)
+    if mark is not None and hasattr(mark, "line") and hasattr(mark, "column"):
+        return f" (line {mark.line + 1}, column {mark.column + 1})"
+    return ""
 
 
 def default_config() -> HunterConfig:
@@ -228,6 +260,7 @@ def load_config(
 
     raw: dict[str, Any] = {}
     source: Path | None = None
+    text = ""
     if resolved is not None and (path is not None or resolved.is_file()):
         source = resolved
         if not resolved.is_file():
@@ -237,11 +270,12 @@ def load_config(
                 "pass an existing YAML path, unset HUNTEROS_CONFIG, or run `hunter config example`",
             )
         try:
-            loaded = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+            text = resolved.read_text(encoding="utf-8")
+            loaded = yaml.safe_load(text)
         except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
             raise _config_error(
                 "config.parse",
-                f"config file {resolved} is not valid YAML: {type(exc).__name__}",
+                f"config file {resolved} is not valid YAML: {type(exc).__name__}{_yaml_location(exc)}",
                 "fix the YAML syntax — indent with spaces, quote strings with special chars",
             ) from exc
         if loaded is None:
@@ -255,7 +289,7 @@ def load_config(
                 "top level must look like:\nmodel_tiers:\n  planner:\n    model: ...",
             )
 
-    _reject_unknown(raw, VALID_TOP_KEYS, "the config top level")
+    _reject_unknown(raw, VALID_TOP_KEYS, "the config top level", source_text=text or None)
 
     cfg = default_config()
     cfg.source_path = str(source) if source is not None else None
@@ -283,7 +317,7 @@ def load_config(
                 f"model_tiers.{name} must be a mapping, got {type(block).__name__}",
                 f"valid keys under model_tiers.{name}: {', '.join(_TIER_KEYS)}",
             )
-        _reject_unknown(block, _TIER_KEYS, f"model_tiers.{name}")
+        _reject_unknown(block, _TIER_KEYS, f"model_tiers.{name}", source_text=text or None)
         cfg.model_tiers[name] = TierConfig(
             provider=_as_str(block.get("provider"), f"model_tiers.{name}.provider") or "auto",
             model=_as_str(block.get("model"), f"model_tiers.{name}.model"),
@@ -310,7 +344,7 @@ def load_config(
                 f"providers.{name} must be a mapping, got {type(block).__name__}",
                 f"valid keys under providers.{name}: {', '.join(_PROVIDER_KEYS)}",
             )
-        _reject_unknown(block, _PROVIDER_KEYS, f"providers.{name}")
+        _reject_unknown(block, _PROVIDER_KEYS, f"providers.{name}", source_text=text or None)
         cfg.providers[str(name)] = ProviderConfig(
             key_env=_as_str(block.get("key_env"), f"providers.{name}.key_env"),
             api_key=_as_str(block.get("api_key"), f"providers.{name}.api_key"),
@@ -332,7 +366,7 @@ def load_config(
                 f"fallback_providers[{i}] must be a mapping, got {type(entry).__name__}",
                 f"valid keys: {', '.join(_FALLBACK_KEYS)}",
             )
-        _reject_unknown(entry, _FALLBACK_KEYS, f"fallback_providers[{i}]")
+        _reject_unknown(entry, _FALLBACK_KEYS, f"fallback_providers[{i}]", source_text=text or None)
         provider = _as_str(entry.get("provider"), f"fallback_providers[{i}].provider")
         model = _as_str(entry.get("model"), f"fallback_providers[{i}].model")
         if not provider or not model:
@@ -359,7 +393,7 @@ def load_config(
             f"budget must be a mapping, got {type(budget_raw).__name__}",
             f"valid keys under budget: {', '.join(_BUDGET_KEYS)}",
         )
-    _reject_unknown(budget_raw, _BUDGET_KEYS, "budget")
+    _reject_unknown(budget_raw, _BUDGET_KEYS, "budget", source_text=text or None)
     cfg.budget = BudgetConfig(
         max_cost_usd=_as_number(budget_raw.get("max_cost_usd", 5.0), "budget.max_cost_usd", minimum=0.0),
         max_iterations=_as_int(budget_raw.get("max_iterations", 60), "budget.max_iterations", minimum=1),
@@ -374,7 +408,7 @@ def load_config(
             f"agent must be a mapping, got {type(agent_raw).__name__}",
             f"valid keys under agent: {', '.join(_AGENT_KEYS)}",
         )
-    _reject_unknown(agent_raw, _AGENT_KEYS, "agent")
+    _reject_unknown(agent_raw, _AGENT_KEYS, "agent", source_text=text or None)
     tier = _as_str(agent_raw.get("tier", "basic"), "agent.tier") or "basic"
     if tier not in AGENT_TIERS:
         raise _config_error(
@@ -488,9 +522,12 @@ def resolve_key(
     provider_name: str, cfg: HunterConfig, *, env: Mapping[str, str] | None = None
 ) -> str:
     """API key for a provider: ``key_env`` env lookup first, inline ``api_key``
-    fallback. Raises HunterError (auth layer, exit 4) when the block yields no
-    key. Returns "" for providers with NO block — LiteLLM then applies its own
-    standard env resolution (keyless providers like ollama work untouched)."""
+    fallback. A provider block that declares NEITHER ``key_env`` NOR
+    ``api_key`` is KEYLESS — this returns ``""`` and the caller dials without
+    auth (LiteLLM sends no key). Raises HunterError (auth layer, exit 4) only
+    when a key is DECLARED (``key_env``, or a ``key_env`` whose env var is
+    unset) but cannot be resolved. Returns "" for providers with NO block —
+    LiteLLM then applies its own standard env resolution."""
     env = os.environ if env is None else env
     provider = cfg.providers.get(provider_name)
     if provider is None:
@@ -499,17 +536,18 @@ def resolve_key(
         from_env = (env.get(provider.key_env) or "").strip()
         if from_env:
             return from_env
-    inline = (provider.api_key or "").strip()
-    if inline:
-        return inline
-    raise HunterError(
-        code="auth.missing_key",
-        layer="auth",
-        message=f"no API key for provider '{provider_name}'",
-        hint=f"set {provider.key_env or 'the api key for ' + provider_name} "
-        "in the environment or ~/.hunteros/config.yaml",
-        exit_code=EXIT_AUTH,
-    )
+        inline = (provider.api_key or "").strip()
+        if inline:
+            return inline
+        raise HunterError(
+            code="auth.missing_key",
+            layer="auth",
+            message=f"no API key for provider '{provider_name}'",
+            hint=f"set {provider.key_env} "
+            "in the environment or ~/.hunteros/config.yaml",
+            exit_code=EXIT_AUTH,
+        )
+    return (provider.api_key or "").strip()
 
 
 # ------------------------------------------------------------------- docs ----
@@ -549,9 +587,10 @@ providers:                     # credentials per provider name
     key_env: ANTHROPIC_API_KEY # env var is preferred over inline api_key
   openai:
     key_env: OPENAI_API_KEY
-# Keyless providers (e.g. ollama) get NO block here at all:
-#   local:
-#     base_url: http://127.0.0.1:11434   (set on the tier, not the provider)
+# A block with ONLY base_url (no key_env / api_key) is a KEYLESS endpoint —
+# no auth error, LiteLLM dials it without a key (local servers, corp proxies):
+#   mylocal:
+#     base_url: http://127.0.0.1:11434
 
 # Tried in order when the primary provider fails with auth/billing/404-class
 # errors (deduped against the primary by provider+model+base_url).
