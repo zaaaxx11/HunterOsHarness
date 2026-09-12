@@ -40,7 +40,13 @@ class ToolSpec:
 
 @dataclass
 class ToolContext:
-    """Everything a tool may touch — and nothing else."""
+    """Everything a tool may touch — and nothing else.
+
+    v0.3: ``config`` may carry a ``"phase_machine"`` (a
+    :class:`hunter.phases.PhaseState` mounted by the pipeline); tools fold
+    their surface actions into the canonical phase machine through it
+    (``hunter.agent.tools._observe_tool``). The field set above is unchanged.
+    """
 
     run_id: str
     ledger: Ledger

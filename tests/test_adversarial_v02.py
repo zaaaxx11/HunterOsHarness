@@ -741,14 +741,21 @@ def test_webhook_negative_content_length_refused():
     async def scenario():
         adapter, received = await _serve_webhook()
         loop = asyncio.get_running_loop()
-        status, _ = await loop.run_in_executor(
-            None,
-            functools.partial(_post, adapter.port, "x", ts="", sig="", headers={"Content-Length": "-1"}),
-        )
+        try:
+            status, _ = await loop.run_in_executor(
+                None,
+                functools.partial(_post, adapter.port, "x", ts="", sig="", headers={"Content-Length": "-1"}),
+            )
+            # A lying Content-Length never reaches the handler — it is refused at
+            # the auth layer here (no ts/sig) with the body unread.
+            assert status in (400, 403, 411)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # Windows race: the server's protocol-level abort (RST) can land
+            # before the client reads the 4xx response — the request was
+            # refused harder, which satisfies the same invariant.
+            pass
         await adapter.disconnect()
-        # A lying Content-Length never reaches the handler — it is refused at
-        # the auth layer here (no ts/sig) with the body unread.
-        assert status in (400, 403, 411) and received == []
+        assert received == []  # the lying body reached NOTHING
 
     asyncio.run(scenario())
 

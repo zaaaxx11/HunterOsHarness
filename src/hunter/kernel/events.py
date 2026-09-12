@@ -37,6 +37,11 @@ class EventKind(str, Enum):
     SCOPE_CHECK = "scope_check"
     ENGINE_EVENT = "engine_event"
     ERROR = "error"
+    # v0.3 phase-machine kinds (additive only; hashing is unaffected — the
+    # chain hashes the kind VALUE string, never the enum member list).
+    CLASSIFICATION_RECORDED = "classification_recorded"
+    REPORT_RENDERED = "report_rendered"
+    RETRO_RECORDED = "retro_recorded"
 
 
 def canonical_json(obj: Any) -> str:

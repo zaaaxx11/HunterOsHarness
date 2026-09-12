@@ -567,3 +567,55 @@ def test_tool_outcome_json_shape_documented():
     {"kind", "data"} dicts and blocked outcomes carry a stable code."""
     outcome = ToolOutcome(ok=False, blocked=True, code="x", result_for_model="m")
     assert json.dumps({"ok": outcome.ok, "code": outcome.code})
+
+
+# -- phase machine hook (v0.3, additive) ---------------------------------------------
+
+
+def test_phase_machine_follows_agent_tools(env):
+    """First surface tool while recon is open drives recon -> classify ->
+    hunting with source "agent"; finish_scan carries the phase line."""
+    from hunter.phases import PhaseState
+
+    ledger, run = env.ledger, env.ctx.run_id
+    ledger.create_run(run, env.ctx.target_url, "llm", "localhost-only")
+    ledger.append(
+        run,
+        "run_started",
+        {"target": env.ctx.target_url, "engine": "llm", "scope": env.ctx.scope.summary()},
+    )
+    machine = PhaseState(ledger, run)
+    env.ctx.config["phase_machine"] = machine
+    machine.start("score")
+    machine.close_current()
+    machine.start("recon")
+
+    env.add_exchange_evidence()  # a real surface fact: the recon gate can pass
+    outcome = env.call("run_probe", {"check_id": "missing-headers"})
+    assert outcome.ok
+    assert machine.current == "hunting"
+
+    events = ledger.events(run)
+    recon_close = [
+        e
+        for e in events
+        if e.kind_value() == "phase_ended"
+        and e.payload.get("phase") == "recon"
+        and isinstance(e.payload.get("gate"), dict)
+    ]
+    assert recon_close and recon_close[0].payload["gate"]["passed"] is True
+    classifications = [e for e in events if e.kind_value() == "classification_recorded"]
+    assert classifications and classifications[0].payload["source"] == "agent"
+    assert any(
+        e.kind_value() == "phase_started" and e.payload.get("phase") == "hunting" for e in events
+    )
+
+    finish = env.call("finish_scan", {})
+    assert finish.lifecycle_finish is True
+    assert "hunting" in finish.result_for_model  # the phase line is in the result
+    finish_events = [
+        payload
+        for kind, payload in env.events
+        if kind == "engine_event" and payload.get("tool") == "finish_scan"
+    ]
+    assert finish_events and finish_events[-1].get("phase") == "hunting"

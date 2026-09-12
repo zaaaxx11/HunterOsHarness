@@ -43,6 +43,7 @@ from hunter import __version__
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
 from hunter.kernel.ledger import Ledger
+from hunter.phases import current_phase
 
 TAIL_WINDOW = 100  # events shown in the live tail
 PAYLOAD_WIDTH = 64  # characters of payload preview in the tail
@@ -81,6 +82,10 @@ KIND_STYLES = {
     "scope_check": "grey50",
     "engine_event": "grey50",
     "error": "bold red",
+    # v0.3 phase-machine kinds
+    "classification_recorded": "bright_cyan",
+    "report_rendered": "bold blue",
+    "retro_recorded": "bold magenta",
 }
 
 CSS = """
@@ -250,7 +255,7 @@ class HunterTui(App[None]):
         with contextlib.suppress(Exception):  # theme names are cosmetic — never fatal
             self.theme = "tokyo-night"
         runs_table = self.query_one("#runs-table", DataTable)
-        runs_table.add_columns("run", "target", "engine", "status", "v/c", "ended")
+        runs_table.add_columns("run", "target", "engine", "status", "v/c", "ended", "phase")
         findings_table = self.query_one("#findings-table", DataTable)
         findings_table.add_columns("id", "severity", "status", "title", "endpoint")
         self.refresh_data()
@@ -348,7 +353,9 @@ class HunterTui(App[None]):
         runs = list(reversed(self._ledger.runs()))  # newest first
         findings = self._ledger.findings()
         events = self._ledger.events()[-TAIL_WINDOW:]
-        return {"runs": runs, "findings": findings, "events": events}
+        # v0.3: canonical phase per run, computed from events (off the UI thread).
+        phases = {run["run_id"]: current_phase(self._ledger, run["run_id"]) or "-" for run in runs}
+        return {"runs": runs, "findings": findings, "events": events, "phases": phases}
 
     def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._runs = snapshot["runs"]
@@ -368,6 +375,7 @@ class HunterTui(App[None]):
                 _run_status_cell(str(run["status"])),
                 f"{verified}v/{candidates}c",
                 _fmt_ts(run["ended_ts"] or run["started_ts"]),
+                str(snapshot["phases"].get(run_id, "-")),
                 key=run_id,
             )
         self.query_one("#dashboard-empty", Static).display = not self._runs

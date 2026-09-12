@@ -37,7 +37,27 @@ source ~/.hunteros/venv/bin/activate        # Windows: ~/.hunteros/venv\Scripts\
 pip install -e .                            # from a checkout
 ```
 
-## 2. `hunter doctor` (~5s)
+## 2. `hunter init` — configure a brain (~60s, optional)
+
+One wizard picks the provider, captures the key safely (the key itself is
+never echoed), runs a 1-token live test, and writes `~/.hunteros/config.yaml`:
+
+```bash
+hunter init                    # interactive wizard
+hunter init --provider openrouter --yes   # non-interactive, defaults from the table
+```
+
+Every step has a safe default and failures are printed as notes — a missing
+key never blocks the deterministic core. Custom/third-party providers
+(Ollama, LM Studio, vLLM, any OpenAI-compatible endpoint) work the same way:
+`hunter config provider add <name> --base-url <url>`. Full walkthrough with
+real transcripts: **[docs/FIRST-RUN.md](docs/FIRST-RUN.md)**; config reference
+and provider examples: **[docs/LLM.md](docs/LLM.md)**.
+
+Prefer env vars only? Skip init and set `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` +
+`HUNTEROS_MODEL` later — everything below works with zero keys.
+
+## 3. `hunter doctor` (~5s)
 
 ```bash
 hunter doctor
@@ -45,10 +65,13 @@ hunter doctor
 
 Checks Python version, package version, dependencies (textual, rich, httpx,
 typer), the state directory (`HUNTER_STATE_DIR` or `./.hunter`), the ledger
-hash chain, and available engines. Everything green → continue. (LLM items
-below it are opt-in notes — they never block the deterministic core.)
+hash chain, available engines, your LLM config (with YAML line numbers when a
+file is broken), per-provider key status, and the chat database. Everything
+green → continue. (LLM items are opt-in notes — they never block the
+deterministic core. `--json` for scripts, `--live` to probe provider
+endpoints.)
 
-## 3. `hunter demo` (~10s)
+## 4. `hunter demo` (~10s)
 
 ```bash
 hunter demo
@@ -66,7 +89,7 @@ What it does — all against a **local practice target** it boots itself:
    **verified** only by an independent replay (claim gate RULE-E2). Expect
    **≥ 7/9 first-blood** (first-pass detections) on the practice target.
 
-## 4. `hunter report` (~2s)
+## 5. `hunter report` (~2s)
 
 ```bash
 hunter report
@@ -75,7 +98,7 @@ hunter report
 Renders markdown + SARIF **from the ledger rows** — never from prose. Every
 claim in the report links back to evidence with a sha256 you can re-verify.
 
-## 5. `hunter tui` (interactive)
+## 6. `hunter tui` (interactive)
 
 ```bash
 hunter tui
@@ -98,9 +121,10 @@ prefixes, excerpt), **Events** (live tail of the last 100 ledger events),
 
 ---
 
-## 6. Add the brain (optional, ~60s)
+## 7. Add the brain manually (alternative to `hunter init`)
 
-The deterministic core above runs with zero keys. To add the LLM agent:
+If you skipped `hunter init`, the deterministic core above runs with zero
+keys. To add the LLM agent by hand:
 
 ```bash
 pip install 'hunteros-harness[llm]'
@@ -112,7 +136,7 @@ That is the whole setup — full config reference, provider examples
 (Anthropic, OpenRouter, local Ollama), budget governor, and the governance
 model: **[docs/LLM.md](docs/LLM.md)**.
 
-## 7. Talk to it (`hunter chat`)
+## 8. Talk to it (`hunter chat`)
 
 ```bash
 hunter chat
@@ -133,7 +157,7 @@ the same here and over the gateway. The agent's findings pass through the
 same machine validation (R1–R6) and debunk replay as every other run — the
 chat cannot promote a claim the ledger cannot prove.
 
-## 8. Connect Telegram (optional)
+## 9. Connect Telegram (optional)
 
 Expose the agent to your phone with a default-deny allowlist:
 

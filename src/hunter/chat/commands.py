@@ -111,6 +111,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("audit", "Interactive governed audit: arm a target, free text drives the agent",
                "Audit", args_hint="<target> [--scope PATH] | status | finish",
                busy_policy="reject"),
+    CommandDef("retro", "Phase retro for a run (phase engine, if installed)", "Audit",
+               args_hint="<run_id> [--record]"),
     # Configuration
     CommandDef("model", "Show or switch the model for a tier (session-scoped; --global persists)",
                "Config", args_hint="[tier] [model] [--global]"),
@@ -148,11 +150,13 @@ def resolve_command(text: str) -> tuple[CommandDef, str] | None:
 
 
 def safe_execute(name: str, ctx: CommandContext) -> CommandReply:
-    """Run the executor for ``name``, converting HunterError to reply text.
+    """Run the executor for ``name``, converting failures to reply text.
 
     ``[BLOCKED]`` replies (scope refusals) come straight from
     ``HunterError.user_message()`` — the rule is named, no widening fix is
-    suggested. Unknown names answer the canonical unknown-command line.
+    suggested. Unknown names answer the canonical unknown-command line, and
+    ANY other exception becomes an ``[ERROR engine]`` reply: one broken
+    executor must never crash a surface (REPL, Telegram, webhook).
     """
     fn = EXECUTORS.get(name)
     if fn is None:
@@ -163,6 +167,14 @@ def safe_execute(name: str, ctx: CommandContext) -> CommandReply:
         return CommandReply(
             exc.user_message(),
             data={"error": {"code": exc.code, "layer": exc.layer, "blocked": exc.blocked}},
+        )
+    except Exception as exc:  # noqa: BLE001 — the surface gets an answer, always
+        return CommandReply(
+            f"[ERROR engine] unexpected {type(exc).__name__}: {str(exc)[:200]}\n"
+            "Hint: re-run with /verbose, or check `hunter doctor` — if it persists, "
+            "file an issue: https://github.com/zaaaxx11/HunterOsHarness/issues",
+            data={"error": {"code": f"unexpected.{type(exc).__name__}", "layer": "engine",
+                            "blocked": False}},
         )
 
 
@@ -618,23 +630,15 @@ def _exec_model(ctx: CommandContext) -> CommandReply:
 
 
 def _persist_model(cfg: HunterConfig, tier: str, model: str) -> str | None:
-    """Write the tier model back into the loaded YAML file (if any)."""
-    import yaml
+    """Write the tier model back into the loaded YAML file (if any) through
+    hunter.llm.writing — the canonical commented template survives (the old
+    raw safe_dump destroyed every comment in the file)."""
+    from hunter.llm.writing import write_config
 
     source = cfg.source_path
     if not source:
         return None
-    path = Path(source)
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        raw.setdefault("model_tiers", {}).setdefault(tier, {})["model"] = model
-        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-    except (OSError, yaml.YAMLError) as exc:
-        raise HunterError(
-            code="config.write_failed", layer="config",
-            message=f"could not persist model to {source}: {exc}",
-            hint="fix the file permissions, or keep the change session-scoped",
-        ) from exc
+    write_config({"model_tiers": {tier: {"model": model}}}, source)
     return source
 
 
@@ -700,6 +704,45 @@ def _exec_skills(_ctx: CommandContext) -> CommandReply:
     return CommandReply("\n".join(lines), data={"skills": lines[1:]})
 
 
+# -- phase retro (/retro) ------------------------------------------------------
+
+
+def _retro_report_lines(retro: Any) -> list[str]:
+    """Render B9's RetroReport into chat-friendly lines (duck-typed so a
+    mid-flight phases module degrades to a plain line, never a TypeError)."""
+    lines: list[str] = []
+    coverage = getattr(retro, "coverage_pct", None)
+    lines.append(f"coverage: {'n/a' if coverage is None else f'{coverage:.0f}%'}")
+    lines.extend(f"gap: {gap}" for gap in getattr(retro, "gaps", []) or [])
+    lines.extend(f"lesson: {lesson}" for lesson in getattr(retro, "lessons", []) or [])
+    stats = getattr(retro, "stats", {}) or {}
+    lines.extend(f"{key}: {value}" for key, value in sorted(stats.items()))
+    return lines or ["(no retro data)"]
+
+
+def _exec_retro(ctx: CommandContext) -> CommandReply:
+    """Phase retro for a run — lazy import: surfaces without the phase engine
+    answer with a hint, never an ImportError."""
+    try:
+        from hunter.phases import compute_retro, record_retro
+    except ImportError:
+        return CommandReply(
+            "phase engine not available — /retro needs the phase engine (hunter.phases)"
+        )
+    positionals, opts = _split_options(_tokenize(ctx.args), value_options=set(), flags={"--record"})
+    run_id = _resolve_run(ctx, positionals[0] if positionals else "")
+    ledger = _open_ledger(ctx)
+    try:
+        retro = record_retro(ledger, run_id) if opts.get("record") else compute_retro(ledger, run_id)
+    finally:
+        ledger.close()
+    body = "\n".join(f"  {line}" for line in _retro_report_lines(retro))
+    return CommandReply(
+        f"retro for {run_id}:\n{body}" + ("  (recorded)" if opts.get("record") else ""),
+        data={"run_id": run_id},
+    )
+
+
 # -- stretch: interactive governed audit (/audit) -----------------------------
 
 
@@ -756,4 +799,5 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "verbose": _exec_verbose,
     "skills": _exec_skills,
     "audit": _exec_audit,
+    "retro": _exec_retro,
 }

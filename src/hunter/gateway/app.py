@@ -96,7 +96,11 @@ class GatewayApp:
         except Exception as exc:  # noqa: BLE001 — the platform gets an answer, always
             surface = build_error_surface(exc)
             logger.exception("gateway handler failed for %s", session_key)
-            return f"[ERROR {surface['layer']}] {surface['message']}"
+            message = f"[ERROR {surface['layer']}] {surface['message']}"
+            hint = surface.get("hint") or ""
+            if hint:
+                message += f"\nHint: {hint}"
+            return message
         finally:
             await lease.release()
 
@@ -189,7 +193,17 @@ def transports_from_env(env: dict[str, str] | None = None) -> list[ChatTransport
         if env.get("HUNTEROS_WEBHOOK_HOST"):
             kwargs["host"] = env["HUNTEROS_WEBHOOK_HOST"].strip()
         if env.get("HUNTEROS_WEBHOOK_PORT"):
-            kwargs["port"] = int(env["HUNTEROS_WEBHOOK_PORT"])
+            # A non-integer port is a config error (exit 8), not a traceback.
+            try:
+                kwargs["port"] = int(env["HUNTEROS_WEBHOOK_PORT"])
+            except ValueError as exc:
+                raise HunterError(
+                    code="gateway.port_invalid",
+                    layer="config",
+                    message="HUNTEROS_WEBHOOK_PORT must be an integer — "
+                    f"got {env['HUNTEROS_WEBHOOK_PORT']!r}",
+                    hint="e.g. export HUNTEROS_WEBHOOK_PORT=8807",
+                ) from exc
         if env.get("HUNTEROS_WEBHOOK_PATH"):
             kwargs["path"] = env["HUNTEROS_WEBHOOK_PATH"]
         transports.append(WebhookAdapter(secret, **kwargs))

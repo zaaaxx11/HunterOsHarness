@@ -72,10 +72,10 @@ planner's model (non-planner tiers inherit the top default).
 
 - A provider with **no block at all** → LiteLLM applies its standard env
   resolution (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …).
-- A block that declares neither `key_env` nor `api_key` yields no key →
-  `auth.missing_key` at use time (exit 4).
-- Keyless providers (e.g. Ollama) get **no block** — just set `base_url` on
-  the tier.
+- A block with **only** `base_url` (no `key_env` / `api_key`) is **keyless** —
+  no auth error, LiteLLM dials it without a key (local servers, corp proxies).
+- A block with `key_env` whose env var is unset (and no `api_key`) is a
+  declared-but-missing key → `auth.missing_key` at use time (exit 4).
 
 ### `fallback_providers` — the failover chain
 
@@ -191,6 +191,123 @@ agent:
 
 No `providers` block at all — keyless providers simply don't get one.
 Nothing leaves your machine except traffic to the authorized target.
+
+---
+
+## Custom & third-party providers
+
+Beyond the built-ins, ANY OpenAI-compatible endpoint is a first-class
+provider. Manage them without hand-editing YAML:
+
+```bash
+hunter config provider add groq                                   # known name → table defaults
+hunter config provider add corp-vllm \
+    --base-url http://llm.corp.example.com/v1 \
+    --default-model qwen2.5-32b-instruct                          # keyless corporate vLLM
+echo "$API_KEY" | hunter config provider add deepseek --api-key-stdin   # inline key (key_env preferred)
+hunter config provider list                                       # name / key source / base_url / model
+hunter config provider test corp-vllm                             # 1-token live ping → "OK (842 ms)"
+hunter config provider remove corp-vllm                           # refuses while referenced (--force overrides)
+```
+
+`hunter init` writes the same shapes, and every write goes through the
+canonical commented template (`hunter.llm.writing`), so your comments survive
+`/model --global` and later edits. The examples below match that output
+exactly.
+
+### OpenRouter — one key, 400+ models
+
+```yaml
+model_tiers:
+  planner:
+    provider: openrouter
+    model: anthropic/claude-sonnet-4.5
+  verify:
+    model: anthropic/claude-3.5-haiku   # cheap sibling for evidence checking
+
+providers:
+  openrouter:
+    key_env: OPENROUTER_API_KEY
+    base_url: https://openrouter.ai/api/v1
+```
+
+### DeepSeek
+
+```yaml
+model_tiers:
+  planner:
+    provider: deepseek
+    model: deepseek-chat
+
+providers:
+  deepseek:
+    key_env: DEEPSEEK_API_KEY
+```
+
+### Groq — fast open-model inference
+
+```yaml
+model_tiers:
+  planner:
+    provider: groq
+    model: llama-3.3-70b-versatile
+  verify:
+    model: llama-3.1-8b-instant
+
+providers:
+  groq:
+    key_env: GROQ_API_KEY
+```
+
+### Together
+
+```yaml
+model_tiers:
+  planner:
+    provider: together
+    model: meta-llama/Llama-3.3-70B-Instruct-Turbo
+
+providers:
+  together:
+    key_env: TOGETHER_API_KEY
+```
+
+### Ollama / LM Studio — local, keyless
+
+```yaml
+model_tiers:
+  planner:
+    provider: ollama             # lmstudio → openai/<model> on the wire
+    model: llama3
+
+providers:
+  ollama:
+    base_url: http://127.0.0.1:11434   # ONLY base_url = keyless (no auth error)
+```
+
+LM Studio is the same shape with `provider: lmstudio`,
+`base_url: http://127.0.0.1:1234/v1`.
+
+### vLLM / corporate OpenAI-compatible gateway + fallback chain
+
+```yaml
+model_tiers:
+  planner:
+    provider: corp-vllm          # unknown name + base_url → OpenAI-compatible wire
+    model: qwen2.5-32b-instruct
+
+providers:
+  corp-vllm:
+    base_url: http://llm.corp.example.com/v1   # keyless block — internal gateway
+
+fallback_providers:              # corp gateway down? dial the cloud, in order
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4.5
+    key_env: OPENROUTER_API_KEY
+```
+
+A keyless fallback link dials without a key; a link whose declared
+`key_env` is unset is skipped quietly — failover must not fail.
 
 ---
 

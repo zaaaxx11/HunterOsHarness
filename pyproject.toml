@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hunteros-harness"
-version = "0.2.0"
+version = "0.3.0"
 description = "HunterOs — evidence-first security-audit harness. Deterministic engine today, pluggable LLM brain tomorrow."
 readme = "README.md"
 requires-python = ">=3.10"
