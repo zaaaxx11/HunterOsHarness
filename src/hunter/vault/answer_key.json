@@ -1,0 +1,56 @@
+[
+  {
+    "key": "missing-headers|GET|/|-",
+    "title": "Missing security response headers (CSP, X-Frame-Options, X-Content-Type-Options)",
+    "severity": "info",
+    "cwe": "CWE-693"
+  },
+  {
+    "key": "dir-listing|GET|/static/|-",
+    "title": "Open directory listing at /static/",
+    "severity": "low",
+    "cwe": "CWE-548"
+  },
+  {
+    "key": "reflected-xss|GET|/search|q",
+    "title": "Reflected XSS in search parameter q",
+    "severity": "high",
+    "cwe": "CWE-79"
+  },
+  {
+    "key": "sql-error|POST|/login|username",
+    "title": "SQL error disclosure on login",
+    "severity": "medium",
+    "cwe": "CWE-653"
+  },
+  {
+    "key": "path-traversal|GET|/download|file",
+    "title": "Path traversal in file download",
+    "severity": "high",
+    "cwe": "CWE-22"
+  },
+  {
+    "key": "open-redirect|GET|/goto|url",
+    "title": "Open redirect via url parameter",
+    "severity": "medium",
+    "cwe": "CWE-601"
+  },
+  {
+    "key": "unauth-action|POST|/transfer|-",
+    "title": "Unauthenticated funds transfer",
+    "severity": "critical",
+    "cwe": "CWE-862"
+  },
+  {
+    "key": "auth-bypass|GET|/admin|cookie.role",
+    "title": "Admin auth bypass via forgeable plaintext role cookie",
+    "severity": "high",
+    "cwe": "CWE-807"
+  },
+  {
+    "key": "sensitive-file|GET|/backup/users.sql|-",
+    "title": "Sensitive backup file exposed (users.sql)",
+    "severity": "high",
+    "cwe": "CWE-538"
+  }
+]
