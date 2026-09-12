@@ -59,7 +59,7 @@ hunter tui                   # interactive dashboard
 Add a brain (optional — everything above works with zero keys):
 
 ```bash
-pip install 'hunteros-harness[llm]'
+pip install hunteros-harness        # the brain (LiteLLM) ships in the core install
 export OPENAI_API_KEY=sk-...      # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
 export HUNTEROS_MODEL=gpt-4o
 hunter chat

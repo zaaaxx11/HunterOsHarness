@@ -127,7 +127,7 @@ If you skipped `hunter init`, the deterministic core above runs with zero
 keys. To add the LLM agent by hand:
 
 ```bash
-pip install 'hunteros-harness[llm]'
+pip install hunteros-harness        # LiteLLM brain included
 export OPENAI_API_KEY=sk-...       # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
 export HUNTEROS_MODEL=gpt-4o
 ```
