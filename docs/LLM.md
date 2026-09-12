@@ -11,7 +11,7 @@ evidence — that is enforced by the claim gate below the agent, in code.
 ## The 60-second path
 
 ```bash
-pip install 'hunteros-harness[llm]'      # adds LiteLLM
+pip install hunteros-harness             # LiteLLM (the brain) is part of the core install
 export OPENAI_API_KEY=sk-...             # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
 export HUNTEROS_MODEL=gpt-4o             # no default model is baked in — you pick what you pay for
 hunter chat
@@ -406,7 +406,7 @@ gateway surfaces.
 | `provider.billing` | 4 | Top up the provider, or switch via `/model` in chat or `fallback_providers` in config. |
 | `provider.rate_limit` (all routes exhausted) | 5 | Slow down, switch model via `/model`, or add a second provider to `fallback_providers`. |
 | `config.model_unresolved` | 8 | Set `HUNTEROS_MODEL` or `model_tiers.planner.model`. No default model is baked in — that is deliberate. |
-| `config.llm_extra_missing` | 8 | `pip install 'hunteros-harness[llm]'` — LiteLLM is not installed. |
+| `config.llm_extra_missing` | 8 | `pip install 'hunteros-harness[llm]'` — LiteLLM missing (it ships in the core install; this means a broken environment). |
 | `provider.context_overflow` | 1 | Compact or shorten the conversation; pick a larger-window model for the planner tier. |
 | `config.unknown_key` / `config.type` | 8 | The hint names the exact bad key and expected type — fix the YAML (spaces, not tabs; quote strings with special chars). |
 

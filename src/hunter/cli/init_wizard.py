@@ -162,12 +162,17 @@ def run_init(
         note = "litellm is not installed — LLM features need: pip install 'hunteros-harness[llm]'"
         notes.append(note)
         console.print(f"  NOTE: {note}")
-        if not yes:
+        if provider is not None:
+            # The operator asked for THIS provider explicitly — configure it
+            # anyway (the live ping below degrades to a note, and installing
+            # the [llm] extra later completes the setup).
+            console.print("  continuing — provider setup was requested explicitly")
+        elif not yes:
             reply = ask("continue in basic-only mode (deterministic core, no LLM)", "y")
             if reply.lower() in ("n", "no"):
                 console.print("install the [llm] extra, then re-run `hunter init`")
                 return 0
-        basic_only = True
+        basic_only = provider is None
 
     # ---- step 2: tier --------------------------------------------------------
     if basic_only:
