@@ -8,14 +8,22 @@ in probe modules or optional dependencies.
 
 Registered names: ``deterministic`` | ``llm`` | ``mock``.
 
-Note: the ``llm`` entry returns the :class:`LLMEngine` stub. Its ``run``
-raises the v0.2 ``RuntimeError`` BY DESIGN — that is the shipped-dark brain,
-not a registry error, and the pipeline handles it like any engine failure.
+``llm`` resolution (v0.2): with an explicit ``provider`` argument the
+:class:`LLMEngine` is built with it; otherwise the registry tries the
+default provider seam (``hunter.llm.router.ProviderRouter``, owned by the
+LLM-wave builder — imported defensively because the module and its litellm
+dependency are optional). Any failure degrades to ``LLMEngine(None)``, which
+keeps the v0.1 ships-dark behavior: ``run``/``replay`` refuse with an
+actionable message and ``run_scan`` records a failed run. The registry
+deliberately does NOT raise for ``"llm"``: run_scan's contract requires
+engine resolution to raise ValueError ONLY for unknown names before any
+ledger write, and to fail configured-but-unready engines gracefully at run
+time.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from hunter.engine.base import EngineDriver
@@ -32,7 +40,26 @@ def available_engines() -> list[str]:
     return list(_ENGINES)
 
 
-def get_engine(name: str) -> EngineDriver:
+def _default_llm_provider() -> Any | None:
+    """Best-effort default provider for the ``llm`` engine (B5's seam).
+
+    Tries ``hunter.llm.router.ProviderRouter`` via ``from_env()`` when B5
+    ships that classmethod, else the no-arg constructor. ANY failure — module
+    not shipped yet, litellm missing, construction error — returns None so
+    the engine keeps its ships-dark stub behavior with an actionable message.
+    """
+    try:
+        from hunter.llm.router import ProviderRouter  # noqa: PLC0415 — optional, B5-owned
+    except Exception:  # noqa: BLE001 — ImportError or import-time failure
+        return None
+    factory = getattr(ProviderRouter, "from_env", None) or ProviderRouter
+    try:
+        return factory()
+    except Exception:  # noqa: BLE001 — broken config degrades to the stub
+        return None
+
+
+def get_engine(name: str, *, provider: Any | None = None) -> EngineDriver:
     """Instantiate the engine registered under ``name``.
 
     Raises:
@@ -50,6 +77,6 @@ def get_engine(name: str) -> EngineDriver:
     if name == "llm":
         from hunter.engine.llm import LLMEngine
 
-        return LLMEngine()
+        return LLMEngine(provider if provider is not None else _default_llm_provider())
     available = ", ".join(available_engines())
     raise ValueError(f"unknown engine {name!r}; available engines: {available}")

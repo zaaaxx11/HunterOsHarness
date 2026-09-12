@@ -227,7 +227,11 @@ def _execute_scan(
     # -- probe (the engine emits its own phase/probe events through emit) --------
     emit(EventKind.PHASE_STARTED, {"phase": "probe"})
     with ScopedHttpClient(scope) as http:
-        ctx = EngineContext(http=http, emit=emit, config=dict(config or {}))
+        # ledger/run_id are additive v0.2 bindings for ledger-backed engines
+        # (the LLM agent); deterministic/mock engines ignore them.
+        ctx = EngineContext(
+            http=http, emit=emit, config=dict(config or {}), ledger=ledger, run_id=run_id
+        )
         result: EngineResult = engine.run(target, ctx)
     emit(EventKind.PHASE_ENDED, {"phase": "probe", "candidates": len(result.candidates)})
 

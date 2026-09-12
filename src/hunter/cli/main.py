@@ -161,6 +161,65 @@ def doctor(
     except Exception as exc:  # pragma: no cover
         check("workflow", False, str(exc))
 
+    # --- LLM brain (v0.2): config, tiers, keys, litellm ---------------------
+    # FAIL is reserved for things that break `hunter scan`/`hunter chat`;
+    # LLM readiness gaps that only matter once the user opts in are WARN-style
+    # OK notes (yellow) that never flip the exit code.
+    import os
+
+    from hunter.errors import HunterError
+    from hunter.llm.config import AGENT_TIERS, load_config, resolve_model
+
+    def note(label: str, detail: str) -> None:
+        console.print(f"  [yellow]OK[/yellow]  [bold]{label}[/bold] {detail}")
+
+    try:
+        cfg = load_config()
+    except HunterError as exc:
+        check("llm-config", False, str(exc).replace("\n", " — "))
+    else:
+        check("llm-config", True, cfg.source_path or "defaults, no config file")
+
+        if cfg.agent.tier == "basic":
+            note(
+                "llm-tier",
+                "basic — pin a brain with agent.tier or $HUNTEROS_TIER "
+                f"({', '.join(AGENT_TIERS)})",
+            )
+        else:
+            check("llm-tier", True, cfg.agent.tier)
+
+        try:
+            planner_model = resolve_model("planner", cfg)
+        except HunterError:
+            note(
+                "llm-model",
+                "unset — set HUNTEROS_MODEL or model_tiers.planner.model in ~/.hunteros/config.yaml",
+            )
+        else:
+            check("llm-model", True, f"planner: {planner_model}")
+
+        key_notes = []
+        for provider_name, provider_cfg in sorted(cfg.providers.items()):
+            if provider_cfg.key_env:
+                state = "set" if os.environ.get(provider_cfg.key_env) else "not set"
+                key_notes.append(f"{provider_name}:{provider_cfg.key_env}={state}")
+            elif provider_cfg.api_key:
+                key_notes.append(f"{provider_name}:inline key")
+            else:
+                key_notes.append(f"{provider_name}:NO key declared")
+        note("llm-keys", ", ".join(key_notes) if key_notes else "no providers configured")
+
+    try:
+        litellm_version = metadata.version("litellm")
+    except metadata.PackageNotFoundError:
+        note(
+            "llm-litellm",
+            "LLM brain not installed (extra [llm]) — pip install 'hunteros-harness[llm]'",
+        )
+    else:
+        check("llm-litellm", True, litellm_version)
+
     if not ok:
         raise typer.Exit(1)
     console.print("[green]All checks passed.[/green]")
@@ -453,6 +512,142 @@ def tui(
         raise typer.Exit(1) from exc
 
     run_tui()
+
+
+# ------------------------------------------------------------------- chat ---
+
+@app.command()
+def chat(
+    session: str | None = typer.Option(None, "--session", help="Resume a chat session id."),
+    state: Path | None = typer.Option(
+        None, "--state", help="State directory (also sets $HUNTER_STATE_DIR)."
+    ),
+) -> None:
+    """Interactive chat with the HunterOs brain (LLM optional, BYOK)."""
+    import os
+
+    if state is not None:
+        os.environ["HUNTER_STATE_DIR"] = str(state)
+    from hunter.chat.repl import run_repl
+
+    run_repl(session_id=session, state_dir=str(state) if state is not None else None)
+
+
+# ---------------------------------------------------------------- gateway ---
+
+gateway_app = typer.Typer(help="Chat-platform gateway (Telegram, webhook).")
+app.add_typer(gateway_app, name="gateway")
+
+
+@gateway_app.command("start")
+def gateway_start(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Start the transports the environment configures (fail-closed by omission)."""
+    from hunter.errors import HunterError
+    from hunter.gateway.app import GatewayApp, transports_from_env
+    from hunter.llm.config import load_config
+
+    # QA red-audit v0.2: config/transport errors (bad config file, token
+    # without an allowlist, INSECURE_NO_AUTH on a non-loopback bind) must die
+    # with the classified HunterError line and its mapped exit code — never a
+    # traceback with exit 1.
+    try:
+        cfg = load_config()
+        transports = transports_from_env()
+    except HunterError as exc:
+        err_console.print(exc.user_message())
+        raise typer.Exit(exc.exit_code) from exc
+    if not transports:
+        err_console.print(
+            "[yellow]no transports configured.[/yellow]\n"
+            "Hint: set HUNTEROS_TELEGRAM_TOKEN + HUNTEROS_TELEGRAM_ALLOWED_USERS, or "
+            "HUNTEROS_WEBHOOK_SECRET — see docs/GATEWAY.md."
+        )
+        raise typer.Exit(8)
+    gateway = GatewayApp(cfg, transports, state_dir=str(state) if state is not None else None)
+    try:
+        gateway.run()
+    except HunterError as exc:
+        err_console.print(exc.user_message())
+        raise typer.Exit(exc.exit_code) from exc
+    except KeyboardInterrupt:
+        console.print("[dim]gateway stopped.[/dim]")
+
+
+# ----------------------------------------------------------------- config ---
+
+config_app = typer.Typer(help="Inspect and manage harness configuration.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("example")
+def config_example() -> None:
+    """Print a fully commented example ~/.hunteros/config.yaml."""
+    import typer as _typer
+
+    from hunter.llm.config import config_example_yaml
+
+    # Raw stdout on purpose: the example is meant to be piped into a file
+    # (`hunter config example > config.yaml`) and rich's soft-wrapping would
+    # corrupt the YAML on narrow terminals.
+    _typer.echo(config_example_yaml())
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Print the effective configuration (key values never shown, env names only)."""
+    from hunter.llm.config import load_config
+
+    cfg = load_config()
+    table = Table(title="Effective HunterOs configuration")
+    table.add_column("key")
+    table.add_column("value")
+    table.add_row("agent.tier", str(getattr(cfg.agent, "tier", "basic")))
+    table.add_row("agent.api_max_retries", str(getattr(cfg.agent, "api_max_retries", 3)))
+    for t in ("planner", "exploit", "verify", "utility"):
+        tc = (getattr(cfg, "model_tiers", {}) or {}).get(t)
+        table.add_row(f"model_tiers.{t}", str(getattr(tc, "model", "") or "(default)"))
+    for name, prov in (getattr(cfg, "providers", {}) or {}).items():
+        table.add_row(f"providers.{name}", f"key_env={getattr(prov, 'key_env', '') or '-'}")
+    fb = getattr(cfg, "fallback_providers", []) or []
+    table.add_row(
+        "fallback_providers",
+        ", ".join(f"{getattr(e, 'provider', '?')}/{getattr(e, 'model', '?')}" for e in fb) or "-",
+    )
+    b = cfg.budget
+    table.add_row("budget", f"${b.max_cost_usd} / {b.max_iterations} iters / {b.wall_seconds}s")
+    console.print(table)
+
+
+# ----------------------------------------------------------------- verify ---
+
+@app.command()
+def verify(
+    run_id: str | None = typer.Option(
+        None, "--run", help="Verify one run's subchain (default: whole ledger)."
+    ),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Recompute the ledger hash chain — the tamper check behind every report."""
+    ledger = _open_ledger(state)
+    try:
+        # A verification of a run that does not exist must FAIL, not report a
+        # vacuous "chain OK — 0 events verified" (a security tool never
+        # claims success over nothing).
+        if run_id is not None and not any(r["run_id"] == run_id for r in ledger.runs()):
+            err_console.print(f"[red]unknown run:[/red] {run_id}")
+            raise typer.Exit(1)
+        result = ledger.verify_chain(run_id)
+    finally:
+        ledger.close()
+    if result.ok:
+        console.print(f"[green]chain OK[/green] — {result.checked} events verified.")
+        raise typer.Exit(0)
+    console.print(f"[red]CHAIN BROKEN[/red] at seq {result.broken_at_seq}")
+    for line in result.details[:5]:
+        console.print(f"  - {line}")
+    raise typer.Exit(7)
 
 
 def main() -> None:
