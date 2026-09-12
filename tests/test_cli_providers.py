@@ -66,6 +66,13 @@ class FakeLiteLLM:
 
 @pytest.fixture(autouse=True)
 def _hermetic(monkeypatch, tmp_path):
+    # CI on Linux puts pytest's tmp_path under /tmp — OUTSIDE the real home, so
+    # the $HUNTEROS_CONFIG containment guard (writing.resolve_config_target)
+    # would refuse every CLI write. Make the sandbox itself the home directory
+    # (HOME on POSIX, USERPROFILE on Windows) so the env target is in-home on
+    # every OS. The guard itself stays live and is tested separately.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HUNTEROS_CONFIG", str(tmp_path / "config.yaml"))
     for var in ("OPENROUTER_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY", "HUNTEROS_VERBOSE"):
         monkeypatch.delenv(var, raising=False)
