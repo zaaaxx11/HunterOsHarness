@@ -132,7 +132,7 @@ def test_add_duplicate_refuses_then_force_replaces():
     assert raw["providers"]["demo"]["base_url"] == "http://two/v1"
 
 
-def test_add_default_model_pins_planner():
+def test_add_default_model_pins_orchestrator():
     result = _add("demo", "--base-url", "http://x/v1", "--default-model", "my-model")
     assert result.exit_code == 0
     import os
@@ -140,7 +140,7 @@ def test_add_default_model_pins_planner():
     from hunter.llm.config import load_config
 
     cfg = load_config(os.environ["HUNTEROS_CONFIG"], env={})
-    assert cfg.model_tiers["planner"].model == "my-model"
+    assert cfg.model_tiers["orchestrator"].model == "my-model"
 
 
 # ------------------------------------------------------------------- remove --
@@ -157,14 +157,14 @@ def test_remove_referenced_provider_refuses_and_force_works(monkeypatch, tmp_pat
         monkeypatch,
         tmp_path,
         {
-            "model_tiers": {"planner": {"provider": "corp", "model": "m1"}},
+            "model_tiers": {"orchestrator": {"provider": "corp", "model": "m1"}},
             "providers": {"corp": {"base_url": "http://corp/v1"}},
             "fallback_providers": [{"provider": "corp", "model": "m2"}],
         },
     )
     refused = runner.invoke(app, ["config", "provider", "remove", "corp"])
     assert refused.exit_code == 2, (refused.output, refused.exception)
-    assert "model_tiers.planner.provider" in refused.output
+    assert "model_tiers.orchestrator.provider" in refused.output
     assert "fallback_providers[0].provider" in refused.output
 
     forced = runner.invoke(app, ["config", "provider", "remove", "corp", "--force"])
@@ -174,7 +174,7 @@ def test_remove_referenced_provider_refuses_and_force_works(monkeypatch, tmp_pat
 
     raw = yaml.safe_load(Path(os.environ["HUNTEROS_CONFIG"]).read_text(encoding="utf-8"))
     assert "corp" not in (raw.get("providers") or {})
-    assert raw["model_tiers"]["planner"]["provider"] == "corp"  # left dangling by --force
+    assert raw["model_tiers"]["orchestrator"]["provider"] == "corp"  # left dangling by --force
 
 
 def test_remove_unknown_provider_exits_1(monkeypatch, tmp_path):
@@ -230,7 +230,7 @@ def test_provider_test_missing_key_exits_4_without_dialing(monkeypatch):
 def _config(**overrides: Any) -> HunterConfig:
     return HunterConfig(
         model_tiers=overrides.get(
-            "model_tiers", {"planner": TierConfig(provider="corp", model="m1", base_url="http://x/v1")}
+            "model_tiers", {"orchestrator": TierConfig(provider="corp", model="m1", base_url="http://x/v1")}
         ),
         providers=overrides.get("providers", {"corp": ProviderConfig(base_url="http://x/v1")}),
         fallback_providers=overrides.get("fallback_providers", []),
@@ -244,7 +244,7 @@ def test_keyless_block_routes_api_key_none():
     from hunter.llm.router import ProviderRouter
 
     router = ProviderRouter(_config(), litellm_module=fake)
-    turn = router.complete("planner", [{"role": "user", "content": "hi"}])
+    turn = router.complete("orchestrator", [{"role": "user", "content": "hi"}])
     assert isinstance(turn, TurnResult)
     (call,) = fake.calls
     assert call["api_key"] is None  # a keyless block dials with NO key, no auth error
@@ -254,7 +254,7 @@ def test_keyless_block_routes_api_key_none():
 def test_fallback_with_keyless_custom_link_is_dialed(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-primary")
     cfg = _config(
-        model_tiers={"planner": TierConfig(provider="openai", model="m1")},
+        model_tiers={"orchestrator": TierConfig(provider="openai", model="m1")},
         providers={
             "openai": ProviderConfig(key_env="OPENAI_API_KEY"),
             "corp": ProviderConfig(base_url="http://corp/v1"),  # keyless block
@@ -265,7 +265,7 @@ def test_fallback_with_keyless_custom_link_is_dialed(monkeypatch):
     from hunter.llm.router import ProviderRouter
 
     router = ProviderRouter(cfg, litellm_module=fake)
-    router.complete("planner", [{"role": "user", "content": "hi"}])
+    router.complete("orchestrator", [{"role": "user", "content": "hi"}])
     assert len(fake.calls) == 2
     assert fake.calls[0]["api_key"] == "sk-primary"
     assert fake.calls[1]["model"] == "openai/m2"  # unknown name + base_url → openai/ prefix

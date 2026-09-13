@@ -12,7 +12,7 @@ ONE code path for both surfaces (the gateway is a thin client of it):
   a second press within the same prompt exits).
 
 Conversational turns create NO ledger runs — only /scan and /audit do. The
-chat brain is the planner tier; history is rebuilt from the hash-chained
+chat brain is the orchestrator tier; history is rebuilt from the hash-chained
 ChatStore every turn, so what the model sees is exactly what was persisted.
 """
 
@@ -218,7 +218,7 @@ class ChatEngine:
         self._stream_buffer = []
         wrapped_cb = self._wrap_stream(stream_cb)
         try:
-            turn = self.provider.complete("planner", history, stream_cb=wrapped_cb)
+            turn = self.provider.complete("orchestrator", history, stream_cb=wrapped_cb)
         except HunterError as exc:
             return TurnOutput(exc.user_message(), kind="error")
         except KeyboardInterrupt:
@@ -440,7 +440,7 @@ class ChatEngine:
         return RunBudget()
 
     def _agent_tier(self) -> str:
-        """Map config agent.tier (basic|planner|...) onto loop tiers
+        """Map config agent.tier (basic|orchestrator|...) onto loop tiers
         (basic|advanced): anything pinned above basic is an active audit."""
         tier = self.config.agent.tier if self.config is not None else "basic"
         return "basic" if tier == "basic" else "advanced"

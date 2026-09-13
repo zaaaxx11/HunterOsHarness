@@ -703,6 +703,7 @@ def config_example() -> None:
 def config_show() -> None:
     """Print the effective configuration (key values never shown, env names only)."""
     from hunter.errors import HunterError
+    from hunter.llm.base import TIERS
     from hunter.llm.config import load_config
 
     try:
@@ -714,7 +715,12 @@ def config_show() -> None:
     table.add_column("value")
     table.add_row("agent.tier", str(getattr(cfg.agent, "tier", "basic")))
     table.add_row("agent.api_max_retries", str(getattr(cfg.agent, "api_max_retries", 3)))
-    for t in ("planner", "exploit", "verify", "utility"):
+    # Legacy rename notes ride on the loaded config — printed at most once
+    # per command, right here (never inside resolve/complete).
+    legacy_notes = tuple(getattr(cfg, "legacy_notes", ()) or ())
+    if legacy_notes:
+        table.add_row("legacy names", "; ".join(legacy_notes))
+    for t in TIERS:
         tc = (getattr(cfg, "model_tiers", {}) or {}).get(t)
         table.add_row(f"model_tiers.{t}", str(getattr(tc, "model", "") or "(default)"))
     for name, prov in (getattr(cfg, "providers", {}) or {}).items():
@@ -733,6 +739,9 @@ def config_show() -> None:
 
 provider_app = typer.Typer(help="Manage LLM providers in the config file.")
 config_app.add_typer(provider_app, name="provider")
+# Top-level shortcut: `hunter provider ...` === `hunter config provider ...`
+# (the SAME Typer instance under a second parent — help text identical).
+app.add_typer(provider_app, name="provider")
 
 
 def _raw_config_or_exit(path: Path) -> dict:
@@ -748,7 +757,9 @@ def _raw_config_or_exit(path: Path) -> dict:
 
 @provider_app.command("add")
 def provider_add(
-    name: str = typer.Argument(..., help="Provider name (lowercase letters, digits, '-', '_')."),
+    name: str = typer.Argument(
+        "", help="Provider name (omit it for the interactive wizard)."
+    ),
     base_url: str = typer.Option(
         "", "--base-url", help="OpenAI-compatible endpoint (required for unknown names)."
     ),
@@ -756,12 +767,28 @@ def provider_add(
     api_key_stdin: bool = typer.Option(
         False, "--api-key-stdin", help="Read ONE line (the key) from stdin — never argv."
     ),
-    default_model: str = typer.Option("", "--default-model", help="Also pin model_tiers.planner.model."),
+    default_model: str = typer.Option(
+        "", "--default-model", help="Also pin model_tiers.orchestrator.model."
+    ),
     force: bool = typer.Option(False, "--force", help="Replace an existing provider block."),
 ) -> None:
-    """Add (or with --force, replace) a provider in the config file."""
+    """Add (or with --force, replace) a provider in the config file.
+
+    Omitting NAME opens the interactive wizard (provider pick, key capture,
+    endpoint auto-detect, model auto-add, role assignment); every flagged
+    invocation keeps its exact scripted semantics.
+    """
     from hunter.llm.providers import PROVIDER_NAME_RE, known_provider, known_provider_names
     from hunter.llm.writing import resolve_config_target, write_config
+
+    if not name:
+        # Wizard trigger is NAME-OMISSION only — flagged paths never reach it.
+        from hunter.cli.provider_add import run_provider_add_wizard
+
+        code = run_provider_add_wizard(console=console, err_console=err_console)
+        if code:
+            raise typer.Exit(code)
+        return
 
     if not PROVIDER_NAME_RE.match(name):
         err_console.print(
@@ -817,7 +844,7 @@ def provider_add(
         block["base_url"] = base_url
     updates: dict = {"providers": {name: block}}
     if default_model:
-        updates["model_tiers"] = {"planner": {"model": default_model}}
+        updates["model_tiers"] = {"orchestrator": {"model": default_model}}
     write_config(updates, target)
     console.print(f"[green]added provider '{name}'[/green] → {target}")
     console.print("next: [bold]hunter config provider test " + name + "[/bold] · provider list")
@@ -839,7 +866,7 @@ def provider_list() -> None:
             "[bold]hunter config provider add <name> --base-url <url>[/bold]"
         )
         return
-    planner = cfg.model_tiers.get("planner")
+    orchestrator = cfg.model_tiers.get("orchestrator")
     table = Table(title="LLM providers")
     for col in ("name", "key source", "base_url", "default model"):
         table.add_column(col)
@@ -853,8 +880,8 @@ def provider_list() -> None:
         else:
             key_source = "keyless"
         model = ""
-        if planner is not None and planner.provider == name and planner.model:
-            model = planner.model
+        if orchestrator is not None and orchestrator.provider == name and orchestrator.model:
+            model = orchestrator.model
         table.add_row(name, key_source, prov.base_url or "-", model or "-")
     console.print(table)
 
@@ -893,7 +920,7 @@ def provider_remove(
 @provider_app.command("test")
 def provider_test(
     name: str = typer.Argument(..., help="Provider name to ping."),
-    model: str = typer.Option("", "--model", help="Model id (default: planner tier / table default)."),
+    model: str = typer.Option("", "--model", help="Model id (default: orchestrator tier / table default)."),
     timeout: int = typer.Option(15, "--timeout", help="Seconds to wait for the 1-token reply."),
 ) -> None:
     """Ping a provider live with a 1-token completion."""
@@ -924,12 +951,12 @@ def provider_test(
             raise typer.Exit(EXIT_AUTH)
 
     model_id = model
-    if not model_id and prov is not None and cfg.model_tiers.get("planner") is not None:
-        planner = cfg.model_tiers["planner"]
-        # The planner model is the top default: it applies when this provider
-        # owns the tier or when the tier left the provider on "auto".
-        if planner.provider in ("", "auto", name) and planner.model:
-            model_id = planner.model
+    if not model_id and prov is not None and cfg.model_tiers.get("orchestrator") is not None:
+        orchestrator = cfg.model_tiers["orchestrator"]
+        # The orchestrator model is the top default: it applies when this
+        # provider owns the tier or when the tier left the provider on "auto".
+        if orchestrator.provider in ("", "auto", name) and orchestrator.model:
+            model_id = orchestrator.model
     if not model_id and known is not None:
         model_id = known.default_model
     if not model_id:
@@ -937,7 +964,10 @@ def provider_test(
         raise typer.Exit(2)
 
     try:
-        result = ping_provider(name, model_id, base_url, api_key, timeout)
+        result = ping_provider(
+            name, model_id, base_url, api_key, timeout,
+            endpoint=(prov.endpoint if prov is not None else ""),
+        )
     except HunterError as exc:
         raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
     if result.ok:

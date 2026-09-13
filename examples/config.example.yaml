@@ -4,7 +4,7 @@
 #   HUNTEROS_MODEL, HUNTEROS_TIER, HUNTEROS_BUDGET_USD, HUNTEROS_MAX_ITERATIONS
 
 model_tiers:
-  planner:                     # task decomposition — the "top default" model
+  orchestrator:                # task decomposition — the "top default" model
     provider: anthropic        # auto | openai | anthropic | openrouter | groq | gemini | ollama | ...
     model: claude-sonnet-4-5   # empty or "auto" inherits $HUNTEROS_MODEL
     # base_url: https://internal-gateway.example.com/v1
@@ -12,11 +12,11 @@ model_tiers:
     timeout: 120               # seconds per completion
     # reasoning_effort: medium # low | medium | high (models that support it)
 
-  exploit:                     # payload/craft tier — inherits planner unless set
+  hunter:                      # payload/craft tier — inherits orchestrator unless set
     provider: auto
     model: ""
 
-  verify:                      # evidence checking — a cheap, careful model
+  verifier:                    # evidence checking — a cheap, careful model
     provider: auto
     model: ""
 
@@ -32,6 +32,10 @@ providers:                     # credentials per provider name
 # Keyless providers (e.g. ollama) get NO block here at all:
 #   local:
 #     base_url: http://127.0.0.1:11434   (set on the tier, not the provider)
+# `endpoint` records the API shape (chat is the default):
+#   mygateway:
+#     base_url: https://llm.corp.example.com/v1
+#     endpoint: responses
 
 # Tried in order when the primary provider fails with auth/billing/404-class
 # errors (deduped against the primary by provider+model+base_url).
@@ -46,5 +50,5 @@ budget:                        # per-run governor (RunBudget)
   wall_seconds: 1800           # 30 minute wall clock
 
 agent:
-  tier: basic                  # basic | advanced | planner | exploit | verify | utility
+  tier: basic                  # basic | advanced | orchestrator | hunter | verifier | utility
   api_max_retries: 3           # attempts per provider before failing over

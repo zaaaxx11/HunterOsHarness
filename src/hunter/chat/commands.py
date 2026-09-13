@@ -576,7 +576,7 @@ def _exec_report(ctx: CommandContext) -> CommandReply:
 
 
 def _exec_model(ctx: CommandContext) -> CommandReply:
-    from hunter.llm.base import TIERS
+    from hunter.llm.base import TIERS, normalize_tier
     from hunter.llm.config import resolve_model
 
     cfg = ctx.config
@@ -599,7 +599,9 @@ def _exec_model(ctx: CommandContext) -> CommandReply:
         lines.append(f"agent.tier: {cfg.agent.tier}")
         return CommandReply("\n".join(lines), data={"models": resolved})
 
-    tier = positionals[0].lower()
+    # v0.4 rename: legacy aliases normalize BEFORE the membership check and
+    # before any mutation/persist — the config file never regains an old key.
+    tier = normalize_tier(positionals[0].lower())
     if tier not in TIERS:
         raise HunterError(
             code="config.tier_unknown", layer="config",
@@ -610,7 +612,7 @@ def _exec_model(ctx: CommandContext) -> CommandReply:
         raise HunterError(
             code="chat.model_usage", layer="engine",
             message="usage: /model <tier> <model> [--global]",
-            hint="e.g. /model planner gpt-4o-mini — bare /model shows the current map",
+            hint="e.g. /model orchestrator gpt-4o-mini — bare /model shows the current map",
         )
     model = positionals[1]
     cfg.model_tiers[tier].model = model  # router resolves at complete() → live in-session

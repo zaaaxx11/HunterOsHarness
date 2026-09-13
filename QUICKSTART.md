@@ -148,7 +148,7 @@ hunter chat
 
 ```
 HunterOs chat — Evidence or Nothing.
-model: gpt-4o (planner) · tier: advanced · budget: $5.00 max / 60 iters
+model: gpt-4o (orchestrator) · tier: advanced · budget: $5.00 max / 60 iters
 type a request, or /help for commands
 
 you> scan the practice target and tell me what is verified

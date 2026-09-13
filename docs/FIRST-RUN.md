@@ -95,8 +95,8 @@ HunterOs Harness doctor — hunter 0.3.0
   OK  workflow pipeline + demo ready
   OK  llm-config defaults, no config file
   OK  llm-tier basic — pin a brain with agent.tier or $HUNTEROS_TIER (basic,
-advanced, planner, exploit, verify, utility)
-  OK  llm-model unset — set HUNTEROS_MODEL or model_tiers.planner.model in
+advanced, orchestrator, hunter, verifier, utility)
+  OK  llm-model unset — set HUNTEROS_MODEL or model_tiers.orchestrator.model in
 ~/.hunteros/config.yaml
   OK  llm-keys no providers configured
   OK  llm-litellm 1.100.1
@@ -122,7 +122,7 @@ About 60 seconds. Writes C:\Users\you\.hunteros\config.yaml (+ keys.env only if 
 Your key is sent nowhere except the provider you pick.
 How should models be assigned?
   1. Auto — one model for every role (fastest setup)
-  2. Advanced — pick a model per role (planner / exploit / verify / utility)
+  2. Advanced — pick a model per role (orchestrator / hunter / verifier / utility)
 mode [1]: 1
 step 1/7 mode: auto
 providers:
@@ -143,7 +143,7 @@ key source for groq:
   2. Set the env var GROQ_API_KEY yourself (recommended for shared machines)
 key [1]: 1
 paste the GROQ_API_KEY key (input hidden): ********
-step 4/7 model: planner=llama-3.3-70b-versatile
+step 4/7 model: orchestrator=llama-3.3-70b-versatile
 Enable web automation (browser-driven hunting)? [y/N]:
 step 5/7 browser: off
 step 6/7 tools:
@@ -169,7 +169,7 @@ Scan only systems you own or are explicitly authorized to test.
 
 What happened: the pasted key went to `~/.hunteros/keys.env` (0600 POSIX,
 loaded at CLI startup — real env vars win), and the config carries only the
-env-var NAME. Auto mode gives all four roles (planner / exploit / verify /
+env-var NAME. Auto mode gives all four roles (orchestrator / hunter / verifier /
 utility) the same model; answer `2` at the mode prompt to pick one per role.
 Picking `custom` probes your base URL for its API shape (chat vs responses)
 and offers the model ids it advertises at `GET {base}/models`. Every failure
@@ -245,7 +245,10 @@ session saved — evidence or nothing.
 
 ## 7. Custom & third-party providers
 
-Any OpenAI-compatible endpoint is a first-class provider:
+Any OpenAI-compatible endpoint is a first-class provider. Run
+`hunter provider add` (no name) for the interactive wizard — provider pick,
+key capture, endpoint auto-detect, model auto-add, role assignment — or script
+it with flags:
 
 ```
 $ hunter config provider add groq

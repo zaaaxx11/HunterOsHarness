@@ -15,8 +15,25 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-Tier = Literal["planner", "exploit", "verify", "utility"]
-TIERS: tuple[str, ...] = ("planner", "exploit", "verify", "utility")
+Tier = Literal["orchestrator", "hunter", "verifier", "utility"]
+TIERS: tuple[str, ...] = ("orchestrator", "hunter", "verifier", "utility")
+
+# Old names load fine but never render again (v0.4 rename). Order matters
+# only for hint text; keep the rename history order. These are the ONLY
+# places the old-name string literals may live in src/hunter (static scan).
+LEGACY_TIERS: tuple[str, ...] = ("planner", "exploit", "verify")
+LEGACY_TIER_ALIASES: dict[str, str] = {
+    "planner": "orchestrator",
+    "exploit": "hunter",
+    "verify": "verifier",
+}
+
+
+def normalize_tier(name: str) -> str:
+    """Canonical tier for ``name``; unknown names pass through unchanged so
+    the validator's unknown-tier error still fires with the input echoed."""
+    return LEGACY_TIER_ALIASES.get(name, name)
+
 
 StreamCb = Callable[[str], None]
 

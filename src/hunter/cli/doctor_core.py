@@ -143,7 +143,12 @@ def _llm_checks() -> list[Check]:
         # config errors carry file + line numbers — surface them verbatim.
         return [Check("llm-config", "fail", str(exc).replace("\n", " — "))]
 
-    checks.append(Check("llm-config", "ok", cfg.source_path or "defaults, no config file"))
+    # The source line carries the legacy-rename notes at most once per
+    # command (resolution paths never warn).
+    source_detail = cfg.source_path or "defaults, no config file"
+    if cfg.legacy_notes:
+        source_detail = f"{source_detail} — {'; '.join(cfg.legacy_notes)}"
+    checks.append(Check("llm-config", "ok", source_detail))
     if cfg.agent.tier == "basic":
         checks.append(
             Check(
@@ -157,18 +162,18 @@ def _llm_checks() -> list[Check]:
         checks.append(Check("llm-tier", "ok", cfg.agent.tier))
 
     try:
-        planner_model = resolve_model("planner", cfg)
+        orchestrator_model = resolve_model("orchestrator", cfg)
     except HunterError:
         checks.append(
             Check(
                 "llm-model",
                 "note",
-                "unset — set HUNTEROS_MODEL or model_tiers.planner.model "
+                "unset — set HUNTEROS_MODEL or model_tiers.orchestrator.model "
                 "in ~/.hunteros/config.yaml",
             )
         )
     else:
-        checks.append(Check("llm-model", "ok", f"planner: {planner_model}"))
+        checks.append(Check("llm-model", "ok", f"orchestrator: {orchestrator_model}"))
 
     key_notes = []
     for provider_name, provider_cfg in sorted(cfg.providers.items()):
@@ -220,11 +225,11 @@ def _provider_checks(*, live: bool) -> list[Check]:
         cfg = load_config()
     except HunterError:
         return []  # the llm-config row already carries the diagnosis
-    planner_model = ""
+    orchestrator_model = ""
     try:
-        planner_model = resolve_model("planner", cfg)
+        orchestrator_model = resolve_model("orchestrator", cfg)
     except HunterError:
-        planner_model = ""  # no model resolved — the llm-model row already notes it
+        orchestrator_model = ""  # no model resolved — the llm-model row already notes it
     checks: list[Check] = []
     for name, provider in sorted(cfg.providers.items()):
         parts: list[str] = []
@@ -244,9 +249,9 @@ def _provider_checks(*, live: bool) -> list[Check]:
             parts.append(provider.base_url)
             if live:
                 parts.append(_probe_base_url(provider.base_url))
-        planner_tier = cfg.model_tiers.get("planner")
-        if planner_model and planner_tier is not None and planner_tier.provider == name:
-            parts.append(f"model {planner_model}")
+        orchestrator_tier = cfg.model_tiers.get("orchestrator")
+        if orchestrator_model and orchestrator_tier is not None and orchestrator_tier.provider == name:
+            parts.append(f"model {orchestrator_model}")
         checks.append(Check(f"provider:{name}", status, " — ".join(parts)))
     return checks
 

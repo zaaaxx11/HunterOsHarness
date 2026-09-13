@@ -9,12 +9,15 @@ Public surface (import from here, not from submodules):
 
 from hunter.engine.base import EmitFn  # re-export convenience  # noqa: F401
 from hunter.llm.base import (  # noqa: F401
+    LEGACY_TIER_ALIASES,
+    LEGACY_TIERS,
     TIERS,
     ChatProvider,
     ClassifiedError,
     Tier,
     ToolCall,
     TurnResult,
+    normalize_tier,
 )
 from hunter.llm.budget import RunBudget  # noqa: F401
 from hunter.llm.config import (  # noqa: F401
@@ -43,6 +46,8 @@ __all__ = [
     "EmitFn",
     "FallbackEntry",
     "HunterConfig",
+    "LEGACY_TIERS",
+    "LEGACY_TIER_ALIASES",
     "ProviderConfig",
     "ProviderRouter",
     "RunBudget",
@@ -54,6 +59,7 @@ __all__ = [
     "default_model",
     "hunter_error_from_classified",
     "load_config",
+    "normalize_tier",
     "resolve_key",
     "resolve_model",
 ]

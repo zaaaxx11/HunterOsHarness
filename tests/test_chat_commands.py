@@ -236,14 +236,14 @@ def test_report_rejects_unknown_format(ctx, scanned_run):
 def test_model_show_when_unset(ctx):
     ctx.args = ""
     reply = safe_execute("model", ctx)
-    assert "planner" in reply.text and "(unset)" in reply.text
+    assert "orchestrator" in reply.text and "(unset)" in reply.text
 
 
 def test_model_in_session_mutation(ctx):
-    ctx.args = "planner gpt-x"
+    ctx.args = "orchestrator gpt-x"
     reply = safe_execute("model", ctx)
     assert reply.data["global"] is False
-    assert ctx.config.model_tiers["planner"].model == "gpt-x"
+    assert ctx.config.model_tiers["orchestrator"].model == "gpt-x"
     ctx.args = ""
     assert "gpt-x" in safe_execute("model", ctx).text
 
@@ -256,18 +256,18 @@ def test_model_unknown_tier_blocked(ctx):
 
 def test_model_global_persists_yaml(ctx, tmp_path):
     cfg_file = tmp_path / "config.yaml"
-    cfg_file.write_text("model_tiers:\n  planner:\n    model: old\n", encoding="utf-8")
+    cfg_file.write_text("model_tiers:\n  orchestrator:\n    model: old\n", encoding="utf-8")
     ctx.config.source_path = str(cfg_file)
-    ctx.args = "planner new-model --global"
+    ctx.args = "orchestrator new-model --global"
     reply = safe_execute("model", ctx)
     assert reply.data["global"] is True
     data = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
-    assert data["model_tiers"]["planner"]["model"] == "new-model"
+    assert data["model_tiers"]["orchestrator"]["model"] == "new-model"
 
 
 def test_model_global_without_file_hints_env(ctx):
     ctx.config.source_path = None
-    ctx.args = "planner new-model --global"
+    ctx.args = "orchestrator new-model --global"
     reply = safe_execute("model", ctx)
     assert "HUNTEROS_MODEL" in reply.text
 

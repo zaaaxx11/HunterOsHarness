@@ -427,9 +427,9 @@ def test_config_tier_vocabulary_maps_to_capability_tier(tmp_path):
     for config_tier, expected in (
         ("basic", "basic"),
         ("advanced", "advanced"),
-        ("planner", "advanced"),
-        ("exploit", "advanced"),
-        ("verify", "advanced"),
+        ("orchestrator", "advanced"),
+        ("hunter", "advanced"),
+        ("verifier", "advanced"),
         ("utility", "advanced"),
     ):
         config = default_config()

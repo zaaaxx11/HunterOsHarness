@@ -110,7 +110,7 @@ def make_config(
 ) -> HunterConfig:
     return HunterConfig(
         model_tiers={
-            "planner": TierConfig(provider=provider, model=model, base_url=base_url, timeout=timeout)
+            "orchestrator": TierConfig(provider=provider, model=model, base_url=base_url, timeout=timeout)
         },
         providers=providers or {},
         fallback_providers=fallback_providers or [],
@@ -126,7 +126,7 @@ def test_success_path_normalizes_turn_result():
     fake = FakeLiteLLM([make_response(text="hello there")])
     router = ProviderRouter(make_config(), litellm_module=fake)
 
-    result = router.complete("planner", [USER_MSG])
+    result = router.complete("orchestrator", [USER_MSG])
 
     assert result.text == "hello there"
     assert result.finish_reason == "stop"
@@ -152,7 +152,7 @@ def test_api_key_resolved_from_provider_block(monkeypatch):
     monkeypatch.setenv("FAKE_OPENAI_KEY", "sk-fake-123456")
     fake = FakeLiteLLM([make_response()])
 
-    ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG])
+    ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert fake.calls[0]["api_key"] == "sk-fake-123456"
 
@@ -162,7 +162,7 @@ def test_base_url_and_tools_forwarded():
     fake = FakeLiteLLM([make_response()])
     tools = [{"type": "function", "function": {"name": "http_request"}}]
 
-    ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG], tools=tools)
+    ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG], tools=tools)
 
     call = fake.calls[0]
     assert call["base_url"] == "https://gw.example.com/v1"
@@ -171,13 +171,13 @@ def test_base_url_and_tools_forwarded():
 
 def test_reasoning_effort_forwarded_only_when_set():
     cfg = make_config()
-    cfg.model_tiers["planner"].reasoning_effort = "low"
+    cfg.model_tiers["orchestrator"].reasoning_effort = "low"
     fake = FakeLiteLLM([make_response()])
-    ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG])
+    ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG])
     assert fake.calls[0]["reasoning_effort"] == "low"
 
     plain = FakeLiteLLM([make_response()])
-    ProviderRouter(make_config(), litellm_module=plain).complete("planner", [USER_MSG])
+    ProviderRouter(make_config(), litellm_module=plain).complete("orchestrator", [USER_MSG])
     assert "reasoning_effort" not in plain.calls[0]
 
 
@@ -185,7 +185,7 @@ def test_tool_calls_parsed_into_turn_result():
     good = make_tool_call("call_1", "http_request", '{"url": "http://x/", "n": 2}')
     fake = FakeLiteLLM([make_response(text="", tool_calls=(good,), finish_reason="tool_calls")])
 
-    result = ProviderRouter(make_config(), litellm_module=fake).complete("planner", [USER_MSG])
+    result = ProviderRouter(make_config(), litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert result.finish_reason == "tool_calls"
     (call,) = result.tool_calls
@@ -198,7 +198,7 @@ def test_malformed_tool_json_tolerated():
     bad = make_tool_call("call_2", "bad_tool", "{not json")
     fake = FakeLiteLLM([make_response(text="", tool_calls=(bad,), finish_reason="tool_calls")])
 
-    result = ProviderRouter(make_config(), litellm_module=fake).complete("planner", [USER_MSG])
+    result = ProviderRouter(make_config(), litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     # The turn keeps finish_reason "tool_calls" and an empty-arguments call:
     # the tool layer owns malformed-argument handling.
@@ -211,7 +211,7 @@ def test_malformed_tool_json_tolerated():
 def test_empty_response_is_retried():
     fake = FakeLiteLLM([SimpleNamespace(choices=[]), make_response(text="got it")])
 
-    result = ProviderRouter(make_config(), litellm_module=fake).complete("planner", [USER_MSG])
+    result = ProviderRouter(make_config(), litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert result.text == "got it"
     assert len(fake.calls) == 2
@@ -228,7 +228,7 @@ def test_retry_on_429_then_success(monkeypatch):
     )
     cfg = make_config(api_max_retries=3)
 
-    result = ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG])
+    result = ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert result.text == "second try"
     assert len(fake.calls) == 2
@@ -242,7 +242,7 @@ def test_backoff_sequence_is_exponential_and_capped(monkeypatch):
     fake = FakeLiteLLM([err, err, err, err, make_response(text="finally")])
     cfg = make_config(api_max_retries=5)
 
-    result = ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG])
+    result = ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert result.text == "finally"
     assert sleeps == [1.0, 2.0, 4.0, 8.0]
@@ -262,7 +262,7 @@ def test_fallback_to_second_provider_on_auth_error(monkeypatch):
         ]
     )
 
-    result = ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG])
+    result = ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert result.text == "fallback ok"
     assert result.provider == "openrouter"
@@ -276,7 +276,7 @@ def test_non_retryable_auth_raises_hunter_error_exit_4():
     fake = FakeLiteLLM([FakeProviderError("401 invalid api key", 401)])
 
     with pytest.raises(HunterError) as ei:
-        ProviderRouter(make_config(), litellm_module=fake).complete("planner", [USER_MSG])
+        ProviderRouter(make_config(), litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert ei.value.layer == "auth"
     assert ei.value.exit_code == 4
@@ -291,7 +291,7 @@ def test_all_attempts_exhausted_terminal_rate_limit(monkeypatch):
 
     with pytest.raises(HunterError) as ei:
         ProviderRouter(make_config(api_max_retries=3), litellm_module=fake).complete(
-            "planner", [USER_MSG]
+            "orchestrator", [USER_MSG]
         )
 
     # "rate_limit" is not an errors.py layer — exit code 5 carries the signal.
@@ -311,7 +311,7 @@ def test_all_routes_exhausted_on_server_error_is_provider_error(monkeypatch):
     )
 
     with pytest.raises(HunterError) as ei:
-        ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG])
+        ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert ei.value.layer == "provider"
     assert ei.value.exit_code == 1
@@ -333,7 +333,7 @@ def test_fallback_dedup_identical_route(monkeypatch):
     )
 
     with pytest.raises(HunterError):
-        ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG])
+        ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     models = [call["model"] for call in fake.calls]
     assert models == ["openai/gpt-fake", "openai/gpt-fresh"]
@@ -345,7 +345,7 @@ def test_context_overflow_raises_immediately_with_compact_hint():
 
     with pytest.raises(HunterError) as ei:
         ProviderRouter(make_config(api_max_retries=3), litellm_module=fake).complete(
-            "planner", [USER_MSG]
+            "orchestrator", [USER_MSG]
         )
 
     assert ei.value.layer == "provider"
@@ -366,7 +366,7 @@ def test_unkeyed_fallback_link_is_skipped(monkeypatch):
     )
 
     with pytest.raises(HunterError) as ei:
-        ProviderRouter(cfg, litellm_module=fake).complete("planner", [USER_MSG])
+        ProviderRouter(cfg, litellm_module=fake).complete("orchestrator", [USER_MSG])
 
     assert ei.value.exit_code == 4
     assert len(fake.calls) == 1  # primary only
@@ -408,7 +408,7 @@ def test_streaming_assembles_text_and_calls_cb():
     seen: list[str] = []
 
     result = ProviderRouter(make_config(), litellm_module=fake).complete(
-        "planner", [USER_MSG], stream_cb=seen.append
+        "orchestrator", [USER_MSG], stream_cb=seen.append
     )
 
     assert seen == ["Hel", "lo"]
@@ -450,7 +450,7 @@ def test_streaming_accumulates_tool_call_fragments():
     seen: list[str] = []
 
     result = ProviderRouter(make_config(), litellm_module=fake).complete(
-        "planner", [USER_MSG], stream_cb=seen.append
+        "orchestrator", [USER_MSG], stream_cb=seen.append
     )
 
     assert seen == []  # no text deltas
@@ -469,7 +469,7 @@ def test_budget_cost_added_and_exhaustion_raises_usage_error():
     fake = FakeLiteLLM([make_response()])
 
     with pytest.raises(HunterError) as ei:
-        ProviderRouter(make_config(), litellm_module=fake).complete("planner", [USER_MSG], budget=budget)
+        ProviderRouter(make_config(), litellm_module=fake).complete("orchestrator", [USER_MSG], budget=budget)
 
     assert ei.value.layer == "usage"
     assert ei.value.code == "budget.exhausted"
@@ -483,7 +483,7 @@ def test_budget_exhausted_before_any_call():
     fake = FakeLiteLLM(())
 
     with pytest.raises(HunterError) as ei:
-        ProviderRouter(make_config(), litellm_module=fake).complete("planner", [USER_MSG], budget=budget)
+        ProviderRouter(make_config(), litellm_module=fake).complete("orchestrator", [USER_MSG], budget=budget)
 
     assert ei.value.code == "budget.exhausted"
     assert len(fake.calls) == 0
@@ -494,7 +494,7 @@ def test_budget_within_limits_passes_through():
     fake = FakeLiteLLM([make_response()])
 
     result = ProviderRouter(make_config(), litellm_module=fake).complete(
-        "planner", [USER_MSG], budget=budget
+        "orchestrator", [USER_MSG], budget=budget
     )
 
     assert result.text == "ok"

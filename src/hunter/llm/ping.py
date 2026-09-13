@@ -53,13 +53,17 @@ def ping_provider(
     api_key: str = "",
     timeout: float = 15,
     *,
+    endpoint: str = "",
     litellm_module: Any | None = None,
 ) -> PingResult:
     """One 1-token completion against ``provider_name``/``model``.
 
-    Returns ``PingResult(ok=True, latency_ms=...)`` or a classified failure —
-    never raises for provider problems (config problems still raise
-    HunterError: unknown model shape, missing litellm extra).
+    ``endpoint`` ("" | "chat" | "responses") selects the wire shape exactly
+    like the router does — a stored ``endpoint: responses`` dials the
+    ``responses/`` bridge model. Returns ``PingResult(ok=True,
+    latency_ms=...)`` or a classified failure — never raises for provider
+    problems (config problems still raise HunterError: unknown model shape,
+    missing litellm extra).
     """
     from hunter.llm.config import default_config
     from hunter.llm.router import ProviderRouter, _wire_model, hunter_error_from_classified
@@ -67,7 +71,7 @@ def ping_provider(
     module = litellm_module if litellm_module is not None else load_litellm()
     with contextlib.suppress(Exception):
         module.suppress_debug_info = True  # keep litellm's issue-URL banner out of the UX
-    wire_model = _wire_model(provider_name, model, base_url)
+    wire_model = _wire_model(provider_name, model, base_url, endpoint=endpoint)
     if not wire_model:
         raise HunterError(
             code="config.value",

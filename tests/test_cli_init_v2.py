@@ -141,7 +141,7 @@ def test_onboarding_auto_mode_writes_all_four_tiers(tmp_path):
     assert "step 6/7 tools:" in text
     cfg = load_config(target, env={}, home=tmp_path)
     table = known_provider("groq")
-    for tier in ("planner", "exploit", "verify", "utility"):
+    for tier in TIERS:
         assert cfg.model_tiers[tier].provider == "groq"
         assert cfg.model_tiers[tier].model == table.default_model
     assert cfg.agent.tier == "basic"
@@ -175,7 +175,7 @@ def test_onboarding_pasted_key_goes_to_keys_env_not_config(tmp_path):
 
 
 def test_onboarding_advanced_mode_per_role_models(tmp_path):
-    """A3: advanced mode assigns models per role; blanks inherit planner/cheap."""
+    """A3: advanced mode assigns models per role; blanks inherit orchestrator/cheap."""
     from hunter.cli.init_wizard import run_onboarding
 
     console, err_console, out = _string_console()
@@ -186,9 +186,9 @@ def test_onboarding_advanced_mode_per_role_models(tmp_path):
         err_console=err_console,
         ask=_scripted_ask(
             [
-                ("planner model", "m-planner"),
-                ("exploit model", ""),  # blank -> the planner answer
-                ("verify model", ""),  # blank -> the cheap model
+                ("orchestrator model", "m-orch"),
+                ("hunter model", ""),  # blank -> the orchestrator answer
+                ("verifier model", ""),  # blank -> the cheap model
                 ("utility model", ""),  # blank -> the cheap model
                 ("provider", "groq"),
                 ("mode", "advanced"),
@@ -202,9 +202,9 @@ def test_onboarding_advanced_mode_per_role_models(tmp_path):
     assert code == 0
     cfg = load_config(target, env={}, home=tmp_path)
     cheap = known_provider("groq").cheap_model
-    assert cfg.model_tiers["planner"].model == "m-planner"
-    assert cfg.model_tiers["exploit"].model == "m-planner"
-    assert cfg.model_tiers["verify"].model == cheap
+    assert cfg.model_tiers["orchestrator"].model == "m-orch"
+    assert cfg.model_tiers["hunter"].model == "m-orch"
+    assert cfg.model_tiers["verifier"].model == cheap
     assert cfg.model_tiers["utility"].model == cheap
 
 
@@ -310,12 +310,12 @@ def test_onboarding_model_autolist_menu_used_for_custom(tmp_path):
     assert "1. corp-alpha" in text
     assert "2. corp-beta" in text
     cfg = load_config(target, env={}, home=tmp_path)
-    for tier in ("planner", "exploit", "verify", "utility"):
+    for tier in TIERS:
         assert cfg.model_tiers[tier].model == "corp-beta"
 
 
 def test_onboarding_model_autolist_failure_falls_back_to_manual(tmp_path):
-    """A7: an empty model list is a note; the manual id lands in planner."""
+    """A7: an empty model list is a note; the manual id lands in orchestrator."""
     from hunter.cli.init_wizard import run_onboarding
 
     console, err_console, out = _string_console()
@@ -341,7 +341,7 @@ def test_onboarding_model_autolist_failure_falls_back_to_manual(tmp_path):
     assert code == 0
     assert "model list failed" in _wizard_text(out, err_console)
     cfg = load_config(target, env={}, home=tmp_path)
-    assert cfg.model_tiers["planner"].model == "manual-corp-model"
+    assert cfg.model_tiers["orchestrator"].model == "manual-corp-model"
 
 
 def test_onboarding_browser_true_writes_flag_and_note(tmp_path):
