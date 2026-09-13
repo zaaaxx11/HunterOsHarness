@@ -78,8 +78,8 @@ def test_init_provider_openrouter_yes_writes_loadable_config(monkeypatch, tmp_pa
     assert path.is_file()
     cfg = load_config(path, env={}, home=tmp_path)
     table = known_provider("openrouter")
-    assert cfg.model_tiers["planner"].model == table.default_model
-    assert cfg.model_tiers["planner"].provider == "openrouter"
+    assert cfg.model_tiers["orchestrator"].model == table.default_model
+    assert cfg.model_tiers["orchestrator"].provider == "openrouter"
     assert cfg.providers["openrouter"].key_env == "OPENROUTER_API_KEY"
     assert cfg.agent.tier == "basic"
     assert "next: hunter doctor" in result.output
@@ -113,8 +113,8 @@ def test_build_config_yaml_output_passes_loader(tmp_path):
     path.write_text(build_config_yaml(keyed), encoding="utf-8")
     cfg = load_config(path, env={}, home=tmp_path)
     assert cfg.agent.tier == "advanced"
-    assert cfg.model_tiers["planner"].model == "llama-3.3-70b-versatile"
-    assert cfg.model_tiers["verify"].model == "llama-3.1-8b-instant"
+    assert cfg.model_tiers["orchestrator"].model == "llama-3.3-70b-versatile"
+    assert cfg.model_tiers["verifier"].model == "llama-3.1-8b-instant"
     assert cfg.providers["groq"].key_env == "GROQ_API_KEY"
 
     # Keyless answers produce a base_url-only block that loads WITHOUT keys.

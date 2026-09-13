@@ -29,7 +29,7 @@ state, knowledge — mapped onto modules as follows:
    L3.5 |  INTERFACES | agent loop · chat REPL + sessions · gateway |   agent/ chat/ gateway/
         |             | (Telegram + HMAC webhook) — VIEWS + drivers |
         +----------------------------------------------------------+
-   L3   |  LLM BRAIN  | tier router (planner/exploit/verify/utility)|   llm/
+   L3   |  LLM BRAIN  | tier router (orchestrator/hunter/verifier/utility)|   llm/
         |             | LiteLLM provider router · budget governor   |
         +----------------------------------------------------------+
    L2   |  TOOLS      | ScopedHttpClient (scope gate HERE)          |   tools/
@@ -64,7 +64,7 @@ Rules between layers:
 `HunterConfig` into a working brain for any provider:
 
 1. **Resolve** — per-tier model resolution (tier.model → `$HUNTEROS_MODEL`
-   → planner.model) and key resolution (`key_env` env lookup > inline
+   → orchestrator.model) and key resolution (`key_env` env lookup > inline
    `api_key` > LiteLLM standard env vars when no provider block exists).
 2. **Dial** — `agent.api_max_retries` attempts (default 3) per route with
    bounded exponential backoff (1s → 8s cap).
@@ -82,11 +82,11 @@ Rules between layers:
 
 ### Tier routing
 
-Four model tiers — `planner` (task decomposition), `exploit` (payload
-craft), `verify` (cheap, careful evidence checking), `utility`
+Four model tiers — `orchestrator` (task decomposition), `hunter`
+(payload craft), `verifier` (cheap, careful evidence checking), `utility`
 (summarizing) — let expensive reasoning happen only where it pays. Tier
 resolution: the tier's own model, else `$HUNTEROS_MODEL`, else the
-planner's model. The agent-level `tier` (`basic` | one of the model tiers)
+orchestrator's model. The agent-level `tier` (`basic` | one of the model tiers)
 additionally gates *capability*:
 
 - **basic** — passive-only: `http_request` accepts GET/HEAD/OPTIONS;

@@ -29,7 +29,7 @@ from typing import Any
 import yaml
 
 from hunter.errors import HunterError
-from hunter.llm.base import TIERS
+from hunter.llm.base import LEGACY_TIER_ALIASES, TIERS, normalize_tier
 
 __all__ = ["render_config", "write_config"]
 
@@ -45,9 +45,9 @@ _HEADER = """\
 """
 
 _TIER_COMMENTS = {
-    "planner": 'task decomposition — the "top default" model',
-    "exploit": "payload/craft tier — inherits planner unless set",
-    "verify": "evidence checking — a cheap, careful model",
+    "orchestrator": 'task decomposition — the "top default" model',
+    "hunter": "payload/craft tier — inherits orchestrator unless set",
+    "verifier": "evidence checking — a cheap, careful model",
     "utility": "summarizing/formatting — cheapest model",
 }
 
@@ -59,6 +59,33 @@ _FALLBACK_EXAMPLE = """\
 
 def _config_write_error(message: str, hint: str) -> HunterError:
     return HunterError(code="config.write_failed", layer="config", message=message, hint=hint)
+
+
+def _migrate_legacy_tiers(data: dict[str, Any]) -> dict[str, Any]:
+    """model_tiers legacy keys → canonical (move when the twin is absent,
+    ``config.write_failed`` when both exist); agent.tier legacy value →
+    canonical (word-boundary safe: the VALUE is replaced, never a substring
+    rewrite). Mutates + returns ``data``. Every write path applies this so
+    rendered files NEVER regain an old-name key — first write heals the file
+    (read-only sessions still work because the loader maps on read).
+    ``providers``/``fallback_providers`` keys are PROVIDER names — never
+    migrated."""
+    tiers = data.get("model_tiers")
+    if isinstance(tiers, dict):
+        for old, new in LEGACY_TIER_ALIASES.items():
+            if old not in tiers:
+                continue
+            if new in tiers:
+                raise _config_write_error(
+                    f"model_tiers has both '{old}' (legacy) and '{new}' — remove the legacy key",
+                    f"keep one of model_tiers.{old} / model_tiers.{new} — "
+                    "the legacy name is the pre-v0.4 vocabulary",
+                )
+            tiers[new] = tiers.pop(old)
+    agent = data.get("agent")
+    if isinstance(agent, dict) and isinstance(agent.get("tier"), str):
+        agent["tier"] = normalize_tier(agent["tier"])
+    return data
 
 
 def _is_within(path: Path, directory: Path) -> bool:
@@ -153,7 +180,8 @@ def _yaml_key(name: Any, where: str) -> str:
 
 def render_config(data: Mapping[str, Any] | None) -> str:
     """The canonical commented config file for ``data`` (loadable as-is)."""
-    data = data or {}
+    data = dict(data or {})
+    _migrate_legacy_tiers(data)  # old names never render (first write heals)
     tiers: Mapping[str, Any] = data.get("model_tiers") or {}
     providers: Mapping[str, Any] = data.get("providers") or {}
     fallback: Any = data.get("fallback_providers") or []
@@ -249,7 +277,7 @@ def render_config(data: Mapping[str, Any] | None) -> str:
     # --- agent --------------------------------------------------------------
     lines.append("agent:")
     lines.append(f"  tier: {_scalar(agent.get('tier', 'basic'))}"
-                 "                  # basic | advanced | planner | exploit | verify | utility")
+                 "                  # basic | advanced | orchestrator | hunter | verifier | utility")
     lines.append(f"  api_max_retries: {_scalar(agent.get('api_max_retries', 3))}"
                  "           # attempts per provider before failing over")
     lines.append(f"  browser: {_scalar(bool(agent.get('browser', False)))}")
@@ -353,10 +381,11 @@ def write_config(
         else:
             raise _config_write_error(
                 f"existing config {target} must be a YAML mapping, got {type(loaded).__name__}",
-                "top level must look like:\nmodel_tiers:\n  planner:\n    model: ...",
+                "top level must look like:\nmodel_tiers:\n  orchestrator:\n    model: ...",
             )
 
     merged = _deep_merge(existing, dict(updates))
+    _migrate_legacy_tiers(merged)  # old names never render (first write heals)
     text = render_config(merged)
 
     target.parent.mkdir(parents=True, exist_ok=True)

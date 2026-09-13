@@ -18,12 +18,12 @@ from hunter.llm.config import (
 
 FULL_YAML = """\
 model_tiers:
-  planner:
+  orchestrator:
     provider: anthropic
     model: claude-sonnet-4-5
     timeout: 90
     reasoning_effort: medium
-  exploit:
+  hunter:
     provider: openai
     model: gpt-fake
     base_url: https://gateway.example.com/v1
@@ -48,7 +48,7 @@ budget:
   wall_seconds: 3600
 
 agent:
-  tier: verify
+  tier: verifier
   api_max_retries: 5
 """
 
@@ -90,12 +90,12 @@ def test_full_yaml_parse(tmp_path):
     cfg = load_config(path, env={}, home=tmp_path)
 
     assert cfg.source_path == str(path)
-    planner = cfg.model_tiers["planner"]
-    assert (planner.provider, planner.model, planner.timeout, planner.reasoning_effort) == (
-        "anthropic", "claude-sonnet-4-5", 90, "medium",
-    )
-    exploit = cfg.model_tiers["exploit"]
-    assert (exploit.provider, exploit.model, exploit.base_url) == (
+    orchestrator = cfg.model_tiers["orchestrator"]
+    assert (
+        orchestrator.provider, orchestrator.model, orchestrator.timeout, orchestrator.reasoning_effort
+    ) == ("anthropic", "claude-sonnet-4-5", 90, "medium")
+    hunter = cfg.model_tiers["hunter"]
+    assert (hunter.provider, hunter.model, hunter.base_url) == (
         "openai", "gpt-fake", "https://gateway.example.com/v1",
     )
     # Untouched tiers keep defaults.
@@ -106,7 +106,7 @@ def test_full_yaml_parse(tmp_path):
     (fb,) = cfg.fallback_providers
     assert (fb.provider, fb.model, fb.key_env) == ("openrouter", "anthropic/claude-3", "OPENROUTER_API_KEY")
     assert (cfg.budget.max_cost_usd, cfg.budget.max_iterations, cfg.budget.wall_seconds) == (12.5, 90, 3600.0)
-    assert (cfg.agent.tier, cfg.agent.api_max_retries) == ("verify", 5)
+    assert (cfg.agent.tier, cfg.agent.api_max_retries) == ("verifier", 5)
 
 
 def test_find_config_path_search_order(tmp_path, monkeypatch):
@@ -197,16 +197,16 @@ def test_type_violation_hint_names_key_and_type(tmp_path):
 def test_env_overrides_win_over_yaml(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
-        "budget:\n  max_cost_usd: 12.5\n  max_iterations: 90\nagent:\n  tier: verify\n",
+        "budget:\n  max_cost_usd: 12.5\n  max_iterations: 90\nagent:\n  tier: verifier\n",
         encoding="utf-8",
     )
     env = {
-        "HUNTEROS_TIER": "exploit",
+        "HUNTEROS_TIER": "hunter",
         "HUNTEROS_BUDGET_USD": "2.5",
         "HUNTEROS_MAX_ITERATIONS": "7",
     }
     cfg = load_config(path, env=env, home=tmp_path)
-    assert cfg.agent.tier == "exploit"
+    assert cfg.agent.tier == "hunter"
     assert cfg.budget.max_cost_usd == 2.5
     assert cfg.budget.max_iterations == 7
     # Untouched by env: wall_seconds stays from YAML/defaults.
@@ -242,24 +242,24 @@ def test_model_resolution_chain(tmp_path):
     cfg = load_config(env={}, home=tmp_path)  # nothing configured anywhere
 
     # tier.model wins over everything.
-    cfg.model_tiers["exploit"].model = "exploit-model"
+    cfg.model_tiers["hunter"].model = "hunter-model"
     env = {"HUNTEROS_MODEL": "env-model"}
-    assert resolve_model("exploit", cfg, env=env) == "exploit-model"
+    assert resolve_model("hunter", cfg, env=env) == "hunter-model"
 
     # Empty/"auto" tiers take $HUNTEROS_MODEL.
-    assert resolve_model("verify", cfg, env=env) == "env-model"
+    assert resolve_model("verifier", cfg, env=env) == "env-model"
 
-    # ... then the planner (top default) model for other tiers.
-    cfg.model_tiers["planner"].model = "planner-model"
-    assert resolve_model("utility", cfg, env={}) == "planner-model"
-    assert resolve_model("verify", cfg, env={}) == "planner-model"
-    # ... but env still beats the planner default.
+    # ... then the orchestrator (top default) model for other tiers.
+    cfg.model_tiers["orchestrator"].model = "orchestrator-model"
+    assert resolve_model("utility", cfg, env={}) == "orchestrator-model"
+    assert resolve_model("verifier", cfg, env={}) == "orchestrator-model"
+    # ... but env still beats the orchestrator default.
     assert resolve_model("utility", cfg, env=env) == "env-model"
 
     # Nothing anywhere -> error at use time.
     empty = load_config(env={}, home=tmp_path)
     with pytest.raises(HunterError) as ei:
-        resolve_model("planner", empty, env={})
+        resolve_model("orchestrator", empty, env={})
     assert ei.value.code == "config.model_unresolved"
     assert "HUNTEROS_MODEL" in ei.value.hint
 
@@ -298,7 +298,7 @@ def test_example_yaml_parses(tmp_path):
     path.write_text(config_example_yaml(), encoding="utf-8")
     cfg = load_config(path, env={}, home=tmp_path)
     assert set(cfg.model_tiers) == set(TIERS)
-    assert cfg.model_tiers["planner"].model == "claude-sonnet-4-5"
+    assert cfg.model_tiers["orchestrator"].model == "claude-sonnet-4-5"
     assert cfg.providers["anthropic"].key_env == "ANTHROPIC_API_KEY"
     assert cfg.agent.tier == "basic"
     assert cfg.budget.max_cost_usd == 5.0

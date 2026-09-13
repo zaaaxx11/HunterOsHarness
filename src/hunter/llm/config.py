@@ -6,11 +6,17 @@ over YAML values: ``HUNTEROS_MODEL`` (default model), ``HUNTEROS_TIER``
 (``agent.tier``), ``HUNTEROS_BUDGET_USD``, ``HUNTEROS_MAX_ITERATIONS``.
 
 Model resolution for any tier (``hunter.llm.config.resolve_model``):
-    tier.model  →  $HUNTEROS_MODEL  →  planner.model (other tiers inherit the
-    top default)  →  HunterError at use time.
+    tier.model  →  $HUNTEROS_MODEL  →  orchestrator.model (other tiers inherit
+    the top default)  →  HunterError at use time.
 
 Every failure is a :class:`hunter.errors.HunterError` in the ``config`` or
 ``auth`` layer — never a bare exception (errors.py doctrine).
+
+v0.4 tier rename: legacy model_tiers keys / agent.tier / $HUNTEROS_TIER values
+(the pre-v0.4 vocabulary, see ``hunter.llm.base.LEGACY_TIER_ALIASES``) load
+mapped onto the canonical tier names and record one
+:attr:`HunterConfig.legacy_notes` entry per rename — surfaces print the notes
+at most once per command; the resolution paths never warn.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from typing import Any
 import yaml
 
 from hunter.errors import EXIT_AUTH, HunterError
-from hunter.llm.base import TIERS
+from hunter.llm.base import LEGACY_TIERS, TIERS, normalize_tier
 
 # agent.tier vocabulary: the four model tiers, plus "basic" — the shipped
 # default meaning "no LLM pinned; deterministic/utility behavior".
@@ -49,11 +55,15 @@ _ENDPOINTS: tuple[str, ...] = ("", "chat", "responses")
 _CONFIG_DIRNAME = ".hunteros"
 _CONFIG_FILENAME = "config.yaml"
 
+# Suffix of every legacy-rename note (model_tiers keys, agent.tier, $HUNTEROS_TIER).
+_LEGACY_NOTE_SUFFIX = "(old names are accepted; update your config)"
+
 
 @dataclass
 class TierConfig:
-    """One model tier (planner/exploit/verify/utility). Empty or ``"auto"``
-    model means "inherit the top default model" (see ``resolve_model``)."""
+    """One model tier (orchestrator/hunter/verifier/utility). Empty or
+    ``"auto"`` model means "inherit the top default model" (see
+    ``resolve_model``)."""
 
     provider: str = "auto"
     model: str = ""
@@ -120,6 +130,10 @@ class HunterConfig:
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     source_path: str | None = None
+    # One entry per legacy tier name mapped at load time (model_tiers keys,
+    # then agent.tier, then $HUNTEROS_TIER). Nothing in resolve/complete ever
+    # warns — surfaces print these at most once per command.
+    legacy_notes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # All four tiers always exist; fill any the loader/constructor omitted.
@@ -308,13 +322,14 @@ def load_config(
             raise _config_error(
                 "config.parse",
                 f"config file {resolved} must be a YAML mapping, got {type(loaded).__name__}",
-                "top level must look like:\nmodel_tiers:\n  planner:\n    model: ...",
+                "top level must look like:\nmodel_tiers:\n  orchestrator:\n    model: ...",
             )
 
     _reject_unknown(raw, VALID_TOP_KEYS, "the config top level", source_text=text or None)
 
     cfg = default_config()
     cfg.source_path = str(source) if source is not None else None
+    notes: list[str] = []
 
     # --- model_tiers -------------------------------------------------------
     tiers_raw = raw.get("model_tiers") or {}
@@ -324,13 +339,32 @@ def load_config(
             f"model_tiers must be a mapping of tier names, got {type(tiers_raw).__name__}",
             f"valid tier names: {', '.join(TIERS)}",
         )
-    for name, block in tiers_raw.items():
+    # v0.4 rename: legacy keys normalize BEFORE validation; a legacy key and
+    # its canonical twin in one file fail closed (no silent merge precedence).
+    seen_tiers: dict[str, str] = {}  # canonical name -> the name as written
+    for raw_name, block in tiers_raw.items():
+        written = str(raw_name)
+        name = normalize_tier(written)
         if name not in TIERS:
             raise _config_error(
                 "config.unknown_key",
-                f"unknown tier '{name}' under model_tiers",
-                f"valid tier names: {', '.join(TIERS)}",
+                f"unknown tier '{raw_name}' under model_tiers",
+                f"valid tier names: {', '.join(TIERS)} "
+                f"(legacy names {', '.join(LEGACY_TIERS)} are accepted)",
             )
+        first = seen_tiers.setdefault(name, written)
+        if first != written:
+            legacy = written if first == name else first
+            raise _config_error(
+                "config.value",
+                f"model_tiers has both '{legacy}' (legacy) and '{name}' — remove the legacy key",
+                f"keep one of model_tiers.{legacy} / model_tiers.{name} — "
+                "the legacy name is the pre-v0.4 vocabulary",
+            )
+        if name != written:
+            note = f"model_tiers.{written} renamed to model_tiers.{name} {_LEGACY_NOTE_SUFFIX}"
+            if note not in notes:
+                notes.append(note)
         if block is None:
             block = {}
         if not isinstance(block, dict):
@@ -441,11 +475,18 @@ def load_config(
         )
     _reject_unknown(agent_raw, _AGENT_KEYS, "agent", source_text=text or None)
     tier = _as_str(agent_raw.get("tier", "basic"), "agent.tier") or "basic"
+    canonical_tier = normalize_tier(tier)
+    if canonical_tier != tier:
+        note = f"agent.tier '{tier}' renamed to '{canonical_tier}' {_LEGACY_NOTE_SUFFIX}"
+        if note not in notes:
+            notes.append(note)
+    tier = canonical_tier
     if tier not in AGENT_TIERS:
         raise _config_error(
             "config.value",
             f"agent.tier must be one of: {', '.join(AGENT_TIERS)} — got '{tier}'",
-            f"set agent.tier to basic, advanced, or one of {', '.join(TIERS)}",
+            f"set agent.tier to basic, advanced, or one of {', '.join(TIERS)} "
+            f"(legacy names {', '.join(LEGACY_TIERS)} are accepted)",
         )
     cfg.agent = AgentConfig(
         tier=tier,
@@ -454,17 +495,28 @@ def load_config(
     )
 
     # --- env overrides (WIN over YAML) -------------------------------------
-    return _apply_env_overrides(cfg, env)
+    _apply_env_overrides(cfg, env, notes)
+    cfg.legacy_notes = tuple(notes)
+    return cfg
 
 
-def _apply_env_overrides(cfg: HunterConfig, env: Mapping[str, str]) -> HunterConfig:
+def _apply_env_overrides(
+    cfg: HunterConfig, env: Mapping[str, str], notes: list[str]
+) -> HunterConfig:
     tier_env = (env.get("HUNTEROS_TIER") or "").strip()
     if tier_env:
+        canonical_env = normalize_tier(tier_env)
+        if canonical_env != tier_env:
+            note = f"$HUNTEROS_TIER '{tier_env}' renamed to '{canonical_env}' {_LEGACY_NOTE_SUFFIX}"
+            if note not in notes:
+                notes.append(note)
+        tier_env = canonical_env
         if tier_env not in AGENT_TIERS:
             raise _config_error(
                 "config.value",
                 f"$HUNTEROS_TIER must be one of: {', '.join(AGENT_TIERS)} — got '{tier_env}'",
-                f"set HUNTEROS_TIER to basic or one of {', '.join(TIERS)}",
+                f"set HUNTEROS_TIER to basic or one of {', '.join(TIERS)} "
+                f"(legacy names {', '.join(LEGACY_TIERS)} are accepted)",
             )
         cfg.agent.tier = tier_env
 
@@ -515,9 +567,11 @@ def _apply_env_overrides(cfg: HunterConfig, env: Mapping[str, str]) -> HunterCon
 def resolve_model(
     tier: str, cfg: HunterConfig, *, env: Mapping[str, str] | None = None
 ) -> str:
-    """Model string for a tier: tier.model → $HUNTEROS_MODEL → planner.model
-    (non-planner tiers inherit the top default) → HunterError at use time."""
+    """Model string for a tier: tier.model → $HUNTEROS_MODEL → orchestrator.model
+    (other tiers inherit the top default) → HunterError at use time. Legacy
+    tier names normalize first (defensive — the loader already mapped)."""
     env = os.environ if env is None else env
+    tier = normalize_tier(tier)
     tier_cfg = cfg.model_tiers.get(tier)
     if tier_cfg is None:
         raise _config_error(
@@ -531,10 +585,10 @@ def resolve_model(
     override = (env.get("HUNTEROS_MODEL") or "").strip()
     if override:
         return override
-    if tier != "planner":
-        planner = (cfg.model_tiers.get("planner", TierConfig()).model or "").strip()
-        if planner and planner != "auto":
-            return planner
+    if tier != "orchestrator":
+        top = (cfg.model_tiers.get("orchestrator", TierConfig()).model or "").strip()
+        if top and top != "auto":
+            return top
     raise _config_error(
         "config.model_unresolved",
         f"no model resolved for tier '{tier}'",
@@ -543,9 +597,9 @@ def resolve_model(
 
 
 def default_model(cfg: HunterConfig, *, env: Mapping[str, str] | None = None) -> str:
-    """The top default (planner) model, or "" when nothing is configured."""
+    """The top default (orchestrator) model, or "" when nothing is configured."""
     try:
-        return resolve_model("planner", cfg, env=env)
+        return resolve_model("orchestrator", cfg, env=env)
     except HunterError:
         return ""
 
@@ -594,7 +648,7 @@ def config_example_yaml() -> str:
 #   HUNTEROS_MODEL, HUNTEROS_TIER, HUNTEROS_BUDGET_USD, HUNTEROS_MAX_ITERATIONS
 
 model_tiers:
-  planner:                     # task decomposition — the "top default" model
+  orchestrator:                # task decomposition — the "top default" model
     provider: anthropic        # auto | openai | anthropic | openrouter | groq | gemini | ollama | ...
     model: claude-sonnet-4-5   # empty or "auto" inherits $HUNTEROS_MODEL
     # base_url: https://internal-gateway.example.com/v1
@@ -602,11 +656,11 @@ model_tiers:
     timeout: 120               # seconds per completion
     # reasoning_effort: medium # low | medium | high (models that support it)
 
-  exploit:                     # payload/craft tier — inherits planner unless set
+  hunter:                      # payload/craft tier — inherits orchestrator unless set
     provider: auto
     model: ""
 
-  verify:                      # evidence checking — a cheap, careful model
+  verifier:                    # evidence checking — a cheap, careful model
     provider: auto
     model: ""
 
@@ -637,6 +691,6 @@ budget:                        # per-run governor (RunBudget)
   wall_seconds: 1800           # 30 minute wall clock
 
 agent:
-  tier: basic                  # basic | advanced | planner | exploit | verify | utility
+  tier: basic                  # basic | advanced | orchestrator | hunter | verifier | utility
   api_max_retries: 3           # attempts per provider before failing over
 """

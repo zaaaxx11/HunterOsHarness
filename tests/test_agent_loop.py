@@ -172,7 +172,7 @@ def test_system_prompt_and_goal_shape_first_provider_call(env):
         return turn(tool_call("respond_to_user", message="briefing acknowledged"))
 
     result, loop = env.run([inspect])
-    assert loop.provider.calls[0]["tier"] == "planner"  # provider model-tier, NOT the agent tier
+    assert loop.provider.calls[0]["tier"] == "orchestrator"  # provider model-tier, NOT the agent tier
     assert loop.provider.calls[0]["tools"]  # schemas were offered
     assert result.stats["turns"] == 1
     assert result.yield_message == "briefing acknowledged"

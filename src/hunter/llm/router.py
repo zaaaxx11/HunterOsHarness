@@ -81,8 +81,16 @@ _KNOWN_LITELLM_PREFIXES = frozenset(
 )
 
 
-def _wire_model(provider: str, model: str, base_url: str) -> str:
-    """Config (provider, model) → the ``provider/model`` string LiteLLM dials."""
+def _wire_model(provider: str, model: str, base_url: str, *, endpoint: str = "") -> str:
+    """Config (provider, model) → the ``provider/model`` string LiteLLM dials.
+
+    ``endpoint="responses"`` inserts a ``responses/`` segment right after the
+    provider prefix (``openai/responses/m1``) — LiteLLM's chat⇄responses
+    bridge owns the wire from there and returns chat-shaped responses, so the
+    router keeps ONE call/normalization/streaming path. The model keeps its
+    own prefix path (the segment inserts once, after the head); a prefixless
+    result (no LiteLLM prefix and no base_url) is a TERMINAL config error —
+    raised here, before any dial, so retries/failover never burn on it."""
     model = (model or "").strip()
     if not model:
         return model
@@ -94,6 +102,18 @@ def _wire_model(provider: str, model: str, base_url: str) -> str:
     elif prefix == "" and base_url:
         # "auto" pointed at a custom endpoint — assume OpenAI-compatible.
         prefix = "openai"
+    if endpoint == "responses":
+        if not prefix:
+            raise HunterError(
+                code="config.value",
+                layer="config",
+                message=f"endpoint 'responses' needs a provider with a LiteLLM prefix "
+                        f"or a base_url (got provider '{provider}')",
+                hint="set providers.<name>.endpoint to 'chat', use a known provider "
+                     "name, or add providers.<name>.base_url",
+            )
+        head, sep, rest = f"{prefix}/{model}".partition("/")
+        return f"{head}/responses/{rest}"
     if not prefix or model.startswith(f"{prefix}/"):
         return model
     return f"{prefix}/{model}"
@@ -305,7 +325,9 @@ def hunter_error_from_classified(ce: ClassifiedError) -> HunterError:
 
 @dataclass(frozen=True)
 class _Candidate:
-    """One dialable route: provider name + resolved credentials + wire model."""
+    """One dialable route: provider name + resolved credentials + wire model
+    (the wire model already carries the ``responses/`` segment when the
+    provider block stores ``endpoint: responses``)."""
 
     provider: str
     model: str
@@ -314,6 +336,7 @@ class _Candidate:
     api_key: str
     timeout: int
     reasoning_effort: str = ""
+    endpoint: str = ""
 
 
 class ProviderRouter:
@@ -434,6 +457,13 @@ class ProviderRouter:
         block = self.config.providers.get(provider)
         return block.base_url if block is not None else ""
 
+    def _provider_endpoint(self, provider: str) -> str:
+        """The stored API shape for a provider block ("" = chat default).
+        Provider blocks are the single source of the stored shape — fallback
+        entries have no endpoint key of their own and inherit THEIR provider's."""
+        block = self.config.providers.get(provider)
+        return block.endpoint if block is not None else ""
+
     def _fallback_key(self, entry: FallbackEntry) -> str | None:
         """API key for a fallback entry; None when a declared credential is
         unresolvable (the link is skipped). "" means keyless/undeclared."""
@@ -454,11 +484,14 @@ class ProviderRouter:
             _Candidate(
                 provider=provider,
                 model=model,
-                wire_model=_wire_model(provider, model, base_url),
+                wire_model=_wire_model(
+                    provider, model, base_url, endpoint=self._provider_endpoint(provider)
+                ),
                 base_url=base_url,
                 api_key=resolve_key(provider, self.config),
                 timeout=tier_cfg.timeout,
                 reasoning_effort=tier_cfg.reasoning_effort,
+                endpoint=self._provider_endpoint(provider),
             )
         ]
         seen = {(candidates[0].provider, candidates[0].model, candidates[0].base_url)}
@@ -475,10 +508,14 @@ class ProviderRouter:
                 _Candidate(
                     provider=entry.provider,
                     model=entry.model,
-                    wire_model=_wire_model(entry.provider, entry.model, base_url),
+                    wire_model=_wire_model(
+                        entry.provider, entry.model, base_url,
+                        endpoint=self._provider_endpoint(entry.provider),
+                    ),
                     base_url=base_url,
                     api_key=key or "",
                     timeout=tier_cfg.timeout,
+                    endpoint=self._provider_endpoint(entry.provider),
                 )
             )
         return candidates

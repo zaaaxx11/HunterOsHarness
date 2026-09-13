@@ -139,10 +139,12 @@ def test_render_config_browser_line_and_roundtrip(tmp_path):
     assert cfg_on.agent.browser is True
 
 
-def test_v03_config_without_new_keys_loads(tmp_path):
-    """A31: a full v0.3-style config loads unchanged with empty defaults."""
+def test_v03_config_legacy_tiers_load_mapped(tmp_path):
+    """A31: a full v0.3-style config (legacy tier names) still loads — the
+    loader maps the old keys onto the canonical vocabulary."""
     cfg = load_config(_write(tmp_path, V03_YAML), env={}, home=tmp_path)
-    assert cfg.agent.tier == "verify"
+    assert cfg.agent.tier == "verifier"
+    assert cfg.model_tiers["orchestrator"].model == "claude-sonnet-4-5"
     assert cfg.agent.api_max_retries == 5
     assert cfg.providers["anthropic"].key_env == "ANTHROPIC_API_KEY"
     assert cfg.providers["anthropic"].endpoint == ""

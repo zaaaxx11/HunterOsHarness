@@ -30,7 +30,7 @@ the chat.
   dependency; you bring only the API key). BYOK against OpenAI, Anthropic,
   OpenRouter, DeepSeek, Groq, Together, Ollama, LM Studio, vLLM, or any
   OpenAI-compatible endpoint, with model-tier routing
-  (planner/exploit/verify/utility), a budget governor with staged spend
+  (orchestrator/hunter/verifier/utility), a budget governor with staged spend
   warnings, and a cross-provider fallback chain. [docs/LLM.md](docs/LLM.md).
 - **15 tools, nothing else** — `create_finding_request` is machine-validated
   (R1–R6: prose, evidence resolution + hash integrity, http_exchange

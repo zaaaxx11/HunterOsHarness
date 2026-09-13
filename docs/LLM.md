@@ -47,11 +47,13 @@ which is read at call time so you can change it between load and use).
 
 ### `model_tiers` — the tier router
 
-One model per tier. The agent loop picks the tier per job: `planner`
-(task decomposition), `exploit` (payload/craft work), `verify` (evidence
+One model per tier. The agent loop picks the tier per job: `orchestrator`
+(task decomposition), `hunter` (payload/craft work), `verifier` (evidence
 checking — use a cheap, careful model), `utility` (summarizing, formatting).
 Empty or `"auto"` model = inherit: tier's own model → `$HUNTEROS_MODEL` →
-planner's model (non-planner tiers inherit the top default).
+orchestrator's model (non-orchestrator tiers inherit the top default).
+Legacy tier names `planner/exploit/verify` still load but are auto-renamed
+to the canonical vocabulary on the next config write.
 
 | Key | Type / default | Meaning |
 | --- | -------------- | ------- |
@@ -97,7 +99,7 @@ resolved is skipped silently — failover must not fail.
 
 | Key | Default | Meaning |
 | --- | ------- | ------- |
-| `tier` | `basic` | Config vocabulary: `basic` \| `advanced` \| `planner` \| `exploit` \| `verify` \| `utility`. `basic` = no model pinned: deterministic/utility behavior, passive-only capability. Any other value (`advanced` or a model tier) resolves to capability tier **advanced** — active methods and probes authorized within scope. |
+| `tier` | `basic` | Config vocabulary: `basic` \| `advanced` \| `orchestrator` \| `hunter` \| `verifier` \| `utility`. `basic` = no model pinned: deterministic/utility behavior, passive-only capability. Any other value (`advanced` or a model tier) resolves to capability tier **advanced** — active methods and probes authorized within scope. |
 | `api_max_retries` | `3` | Attempts per provider (bounded exponential backoff: 1s→8s) before failing over to the next link in the chain. |
 
 ### Environment variables
@@ -123,13 +125,13 @@ silently mean nothing.
 ```yaml
 # ~/.hunteros/config.yaml
 model_tiers:
-  planner: { provider: openai, model: gpt-4o }
-  verify:  { provider: openai, model: gpt-4o-mini }   # cheap, careful
+  orchestrator: { provider: openai, model: gpt-4o }
+  verifier: { provider: openai, model: gpt-4o-mini }  # cheap, careful
 providers:
   openai:
     key_env: OPENAI_API_KEY
 agent:
-  tier: planner                # basic | planner | exploit | verify | utility
+  tier: orchestrator           # basic | orchestrator | hunter | verifier | utility
 budget:
   max_cost_usd: 10.0
 ```
@@ -143,21 +145,21 @@ hunter chat
 
 ```yaml
 model_tiers:
-  planner: { provider: anthropic, model: claude-sonnet-4-5 }
-  exploit: { provider: anthropic, model: claude-sonnet-4-5 }
-  verify:  { provider: anthropic, model: claude-haiku-4-5 }
+  orchestrator: { provider: anthropic, model: claude-sonnet-4-5 }
+  hunter: { provider: anthropic, model: claude-sonnet-4-5 }
+  verifier: { provider: anthropic, model: claude-haiku-4-5 }
 providers:
   anthropic:
     key_env: ANTHROPIC_API_KEY
 agent:
-  tier: exploit
+  tier: hunter
 ```
 
 ### OpenRouter (explicit `base_url`) + fallback chain
 
 ```yaml
 model_tiers:
-  planner:
+  orchestrator:
     provider: openrouter
     model: anthropic/claude-sonnet-4.5
     base_url: https://openrouter.ai/api/v1
@@ -170,7 +172,7 @@ fallback_providers:
     model: gpt-4o
     key_env: OPENAI_API_KEY
 agent:
-  tier: planner
+  tier: orchestrator
 ```
 
 Primary dies (rate limit, billing, 404) → the harness retries with backoff,
@@ -181,12 +183,12 @@ way (`groq`, `gemini`, `mistral`, `deepseek`, `xai`, …).
 
 ```yaml
 model_tiers:
-  planner:
+  orchestrator:
     provider: ollama            # → ollama_chat/<model> on the wire
     model: llama3
     base_url: http://127.0.0.1:11434
 agent:
-  tier: planner
+  tier: orchestrator
 ```
 
 No `providers` block at all — keyless providers simply don't get one.
@@ -219,10 +221,10 @@ exactly.
 
 ```yaml
 model_tiers:
-  planner:
+  orchestrator:
     provider: openrouter
     model: anthropic/claude-sonnet-4.5
-  verify:
+  verifier:
     model: anthropic/claude-3.5-haiku   # cheap sibling for evidence checking
 
 providers:
@@ -235,7 +237,7 @@ providers:
 
 ```yaml
 model_tiers:
-  planner:
+  orchestrator:
     provider: deepseek
     model: deepseek-chat
 
@@ -248,10 +250,10 @@ providers:
 
 ```yaml
 model_tiers:
-  planner:
+  orchestrator:
     provider: groq
     model: llama-3.3-70b-versatile
-  verify:
+  verifier:
     model: llama-3.1-8b-instant
 
 providers:
@@ -263,7 +265,7 @@ providers:
 
 ```yaml
 model_tiers:
-  planner:
+  orchestrator:
     provider: together
     model: meta-llama/Llama-3.3-70B-Instruct-Turbo
 
@@ -276,7 +278,7 @@ providers:
 
 ```yaml
 model_tiers:
-  planner:
+  orchestrator:
     provider: ollama             # lmstudio → openai/<model> on the wire
     model: llama3
 
@@ -292,7 +294,7 @@ LM Studio is the same shape with `provider: lmstudio`,
 
 ```yaml
 model_tiers:
-  planner:
+  orchestrator:
     provider: corp-vllm          # unknown name + base_url → OpenAI-compatible wire
     model: qwen2.5-32b-instruct
 
@@ -405,12 +407,12 @@ gateway surfaces.
 | `provider.auth` / `auth.missing_key` | 4 | Set the key env var named in the hint; `hunter doctor` reports which providers have keys. Inline `api_key` works but `key_env` is preferred. |
 | `provider.billing` | 4 | Top up the provider, or switch via `/model` in chat or `fallback_providers` in config. |
 | `provider.rate_limit` (all routes exhausted) | 5 | Slow down, switch model via `/model`, or add a second provider to `fallback_providers`. |
-| `config.model_unresolved` | 8 | Set `HUNTEROS_MODEL` or `model_tiers.planner.model`. No default model is baked in — that is deliberate. |
+| `config.model_unresolved` | 8 | Set `HUNTEROS_MODEL` or `model_tiers.orchestrator.model`. No default model is baked in — that is deliberate. |
 | `config.llm_extra_missing` | 8 | `pip install 'hunteros-harness[llm]'` — LiteLLM missing (it ships in the core install; this means a broken environment). |
-| `provider.context_overflow` | 1 | Compact or shorten the conversation; pick a larger-window model for the planner tier. |
+| `provider.context_overflow` | 1 | Compact or shorten the conversation; pick a larger-window model for the orchestrator tier. |
 | `config.unknown_key` / `config.type` | 8 | The hint names the exact bad key and expected type — fix the YAML (spaces, not tabs; quote strings with special chars). |
 
 Sanity check any config: `hunter doctor` shows the loaded config path, tier,
-resolved planner model, per-provider key status, and the installed LiteLLM
+resolved orchestrator model, per-provider key status, and the installed LiteLLM
 version — yellow notes are opt-in gaps, red FAILs are things that break
 `hunter scan`/`hunter chat`.

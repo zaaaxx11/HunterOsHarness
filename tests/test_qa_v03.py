@@ -502,7 +502,7 @@ def test_write_config_rewrite_is_a_fixpoint_and_round_trips(tmp_path):
     path = tmp_path / "config.yaml"
     updates = {
         "providers": {"weird": {"api_key": "sk-abc:def#ghi", "base_url": "http://w/v1"}},
-        "model_tiers": {"planner": {"model": "a: b", "timeout": 42}},
+        "model_tiers": {"orchestrator": {"model": "a: b", "timeout": 42}},
         "budget": {"max_iterations": 7},
         "fallback_providers": [{"provider": "weird", "model": "m-1", "key_env": "W_KEY"}],
     }
@@ -510,7 +510,7 @@ def test_write_config_rewrite_is_a_fixpoint_and_round_trips(tmp_path):
     text1 = path.read_text(encoding="utf-8")
     data1 = yaml.safe_load(text1)
     assert data1["providers"]["weird"]["api_key"] == "sk-abc:def#ghi"
-    assert data1["model_tiers"]["planner"]["model"] == "a: b"
+    assert data1["model_tiers"]["orchestrator"]["model"] == "a: b"
     assert data1["fallback_providers"][0] == {"provider": "weird", "model": "m-1", "key_env": "W_KEY"}
 
     write_config({}, path)  # a no-op rewrite must be a fixpoint
@@ -571,8 +571,8 @@ def test_deep_merge_type_conflict_raises_clear_error_and_keeps_file(tmp_path):
 
     # scalar tier block over a mapping is the same conflict class
     with pytest.raises(HunterError) as ei:
-        write_config({"model_tiers": {"planner": "auto"}}, path)
-    assert "model_tiers.planner" in ei.value.message
+        write_config({"model_tiers": {"orchestrator": "auto"}}, path)
+    assert "model_tiers.orchestrator" in ei.value.message
     assert path.read_text(encoding="utf-8") == good_text
 
 

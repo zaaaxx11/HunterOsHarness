@@ -1,7 +1,7 @@
 """AgentLoop — the governed conversation driver for the LLM brain.
 
 Contract with the provider (hunter.llm.base.ChatProvider): the loop calls
-``provider.complete(tier="planner", messages, tools=..., stream_cb=...,
+``provider.complete(tier="orchestrator", messages, tools=..., stream_cb=...,
 budget=...)`` and consumes :class:`TurnResult`. Message format is the
 OpenAI-style dict contract documented in ``hunter/llm/base.py``; assistant
 tool_calls are appended as ``{"id", "name", "arguments"}`` (arguments kept as
@@ -136,7 +136,7 @@ class AgentLoop:
 
             try:
                 turn = self.provider.complete(
-                    "planner",
+                    "orchestrator",
                     messages,
                     tools=self.registry.schemas_for_tier(self.tier),
                     stream_cb=stream_cb,

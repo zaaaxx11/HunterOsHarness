@@ -64,13 +64,13 @@ def config_updates(answers: InitAnswers) -> dict[str, Any]:
     """The config-file fragment this init writes (merged, never clobbered)."""
     updates: dict[str, Any] = {"agent": {"tier": answers.tier}}
     if answers.model:
-        planner: dict[str, Any] = {
+        orchestrator: dict[str, Any] = {
             "provider": answers.provider or "auto",
             "model": answers.model,
         }
-        updates["model_tiers"] = {"planner": planner}
+        updates["model_tiers"] = {"orchestrator": orchestrator}
         if answers.verify_model:
-            updates["model_tiers"]["verify"] = {"model": answers.verify_model}
+            updates["model_tiers"]["verifier"] = {"model": answers.verify_model}
     if answers.provider:
         block: dict[str, Any] = {}
         if answers.key_env:
@@ -292,10 +292,11 @@ def run_init(
         answers.model = known.default_model
         answers.verify_model = known.cheap_model
         if not yes:
-            answers.model = ask("planner model", known.default_model)
-            answers.verify_model = ask("verify model (cheap sibling)", known.cheap_model)
+            answers.model = ask("orchestrator model", known.default_model)
+            answers.verify_model = ask("verifier model (cheap sibling)", known.cheap_model)
         console.print(
-            f"step 5/6 model: planner={answers.model} verify={answers.verify_model or '(inherits)'}",
+            f"step 5/6 model: orchestrator={answers.model} "
+            f"verifier={answers.verify_model or '(inherits)'}",
             markup=False,
             highlight=False,
         )
@@ -466,7 +467,7 @@ def run_onboarding(
     # ---- step 1/7: role mode ---------------------------------------------------
     console.print("How should models be assigned?")
     console.print("  1. Auto — one model for every role (fastest setup)")
-    console.print("  2. Advanced — pick a model per role (planner / exploit / verify / utility)")
+    console.print("  2. Advanced — pick a model per role (orchestrator / hunter / verifier / utility)")
     reply = ask("mode", "1")
     if reply.strip().lower() in ("2", "advanced"):
         answers.mode = "advanced"
@@ -591,7 +592,7 @@ def run_onboarding(
                 "(the router will use the OpenAI chat API)"
             )
 
-    planner_model = ""
+    orchestrator_model = ""
     if not name:
         console.print("step 4/7 model: (skipped — no provider configured)",
                       markup=False, highlight=False)
@@ -610,31 +611,32 @@ def run_onboarding(
             console.print("  m. type a model id manually", markup=False, highlight=False)
             reply = ask("model", "1")
             if reply.strip().isdigit() and 1 <= int(reply) <= len(models):
-                planner_model = models[int(reply) - 1]
+                orchestrator_model = models[int(reply) - 1]
             else:
-                planner_model = ask("model id", models[0]).strip() or models[0]
+                orchestrator_model = ask("model id", models[0]).strip() or models[0]
         else:
             notes.append("model list failed — enter it manually")
-            planner_model = ask("model id", "").strip()
+            orchestrator_model = ask("model id", "").strip()
     elif known is not None:
         # name comes from the pick-list (custom handled above), so `known`
         # is always the table row here.
-        planner_model = ask("planner model", known.default_model).strip() or known.default_model
-    if planner_model:
+        orchestrator_model = ask("orchestrator model", known.default_model).strip() or known.default_model
+    if orchestrator_model:
         if answers.mode == "advanced":
-            exploit = ask("exploit model", planner_model).strip() or planner_model
-            cheap = (known.cheap_model if known is not None else "") or planner_model
-            verify = ask("verify model", cheap).strip() or cheap
-            utility = ask("utility model", cheap).strip() or cheap
+            hunter_model = ask("hunter model", orchestrator_model).strip() or orchestrator_model
+            cheap = (known.cheap_model if known is not None else "") or orchestrator_model
+            verifier_model = ask("verifier model", cheap).strip() or cheap
+            utility_model = ask("utility model", cheap).strip() or cheap
         else:
-            exploit = verify = utility = planner_model
+            hunter_model = verifier_model = utility_model = orchestrator_model
         answers.role_models = {
-            "planner": planner_model,
-            "exploit": exploit,
-            "verify": verify,
-            "utility": utility,
+            "orchestrator": orchestrator_model,
+            "hunter": hunter_model,
+            "verifier": verifier_model,
+            "utility": utility_model,
         }
-        console.print(f"step 4/7 model: planner={planner_model}", markup=False, highlight=False)
+        console.print(f"step 4/7 model: orchestrator={orchestrator_model}",
+                      markup=False, highlight=False)
 
     # ---- step 5/7: web automation (inert in M1 — the [browser] extra lands in M6) -----
     reply = ask("Enable web automation (browser-driven hunting)? [y/N]", "")
@@ -674,7 +676,7 @@ def run_onboarding(
     console.print("[green]wrote[/green]", written)
 
     # ---- step 7/7: smoke test ------------------------------------------------------------
-    model = answers.role_models.get("planner", "")
+    model = answers.role_models.get("orchestrator", "")
     if not model:
         notes.append("smoke test skipped — no model configured")
     elif key_env and not key_value:

@@ -1,10 +1,11 @@
 """Known LLM providers — the wizard's pick-list and sane defaults.
 
 A *known* provider carries its default endpoint (when it has one), the env
-var that holds its key (``""`` = keyless), a suggested planner model, and a
-cheap sibling for the verify tier. Anything NOT in this table is still fully
-supported — ``hunter config provider add <name> --base-url ...`` accepts any
-OpenAI-compatible endpoint, and LiteLLM dials hundreds more by model prefix.
+var that holds its key (``""`` = keyless), a suggested orchestrator model, and
+a cheap sibling for the verifier tier. Anything NOT in this table is still
+fully supported — ``hunter config provider add <name> --base-url ...`` accepts
+any OpenAI-compatible endpoint, and LiteLLM dials hundreds more by model
+prefix.
 """
 
 from __future__ import annotations
