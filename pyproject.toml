@@ -34,6 +34,7 @@ dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
 
 [project.scripts]
 hunter = "hunter.cli.main:main"
+hunt = "hunter.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

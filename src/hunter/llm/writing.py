@@ -205,6 +205,8 @@ def render_config(data: Mapping[str, Any] | None) -> str:
                 )
             if block.get("base_url"):
                 lines.append(f"    base_url: {_scalar(block['base_url'])}")
+            if block.get("endpoint"):
+                lines.append(f"    endpoint: {_scalar(block['endpoint'])}")
     else:
         lines.append("providers: {}                   # add one: hunter config provider add <name>")
     lines.append("")
@@ -250,6 +252,7 @@ def render_config(data: Mapping[str, Any] | None) -> str:
                  "                  # basic | advanced | planner | exploit | verify | utility")
     lines.append(f"  api_max_retries: {_scalar(agent.get('api_max_retries', 3))}"
                  "           # attempts per provider before failing over")
+    lines.append(f"  browser: {_scalar(bool(agent.get('browser', False)))}")
     return "\n".join(lines) + "\n"
 
 

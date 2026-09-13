@@ -69,6 +69,12 @@ def _root_callback(
 ) -> None:
     """Global options. Run `hunter` with no subcommand for the welcome panel."""
     set_verbose(verbose)
+    # keys.env (written by `hunter init` v2 when a key is pasted) is loaded
+    # into the environment with setdefault semantics at every startup — real
+    # env vars win. load_keys_env cannot raise (best-effort by contract).
+    from hunter.llm.keys import load_keys_env
+
+    load_keys_env()
     if ctx.invoked_subcommand is None:
         from hunter._data.branding import welcome_lines
 
@@ -76,6 +82,12 @@ def _root_callback(
         console.print(
             Panel(body, title="hunter", border_style="cyan", subtitle="Evidence or Nothing")
         )
+        # First-run offer: fires only when no config exists anywhere; a
+        # decline sets $HUNTEROS_ONBOARD_DECLINED so it never re-prompts
+        # within this process. --help never reaches the callback.
+        from hunter.cli.init_wizard import offer_onboarding
+
+        offer_onboarding(console=console)
 
 
 def _open_ledger(state: Path | None) -> Ledger:
@@ -153,9 +165,17 @@ def init(
     yes: bool = typer.Option(False, "--yes", help="Non-interactive: take defaults, never prompt."),
 ) -> None:
     """First-run wizard: pick a brain, capture a key, write the config."""
-    from hunter.cli.init_wizard import run_init
+    if provider is None and not yes:
+        # Interactive default: the v2 onboarding wizard (auto/advanced roles,
+        # keys.env capture, endpoint probe). --provider/--yes keep the v1
+        # contract for scripts and dotfiles.
+        from hunter.cli.init_wizard import run_onboarding
 
-    code = run_init(path=path, provider=provider, yes=yes, console=console, err_console=err_console)
+        code = run_onboarding(path=path, console=console, err_console=err_console)
+    else:
+        from hunter.cli.init_wizard import run_init
+
+        code = run_init(path=path, provider=provider, yes=yes, console=console, err_console=err_console)
     if code:
         raise typer.Exit(code)
 
@@ -599,6 +619,12 @@ def chat(
     """Interactive chat with the HunterOs brain (LLM optional, BYOK)."""
     if state is not None:
         os.environ["HUNTER_STATE_DIR"] = str(state)
+    # First-run offer before the REPL opens: a decline does NOT abort — the
+    # REPL opens with its existing model: (unset) banner.
+    from hunter.cli.init_wizard import offer_onboarding
+
+    offer_onboarding(console=console)
+
     try:
         from hunter.chat.repl import run_repl
     except ImportError as exc:
