@@ -75,6 +75,17 @@ def _root_callback(
     from hunter.llm.keys import load_keys_env
 
     load_keys_env()
+    # M4: polite background version check — one daemon thread per process,
+    # never for `hunter update` (it checks forcefully itself) and never for
+    # the long-lived surfaces; the notice prints AFTER command output via a
+    # context-close hook (click closes the root context last, even when a
+    # subcommand raises Exit).
+    from hunter.cli import update_core
+
+    sub = ctx.invoked_subcommand
+    if sub != "update":  # the update command performs its own forced check
+        update_core.start_background_check(suppress_notice=sub in update_core.QUIET_COMMANDS)
+    ctx.call_on_close(update_core.emit_notice)  # pop is empty when nothing spawned
     if ctx.invoked_subcommand is None:
         from hunter._data.branding import welcome_lines
 
@@ -150,6 +161,22 @@ def _sev_markup(severity) -> str:
 def version() -> None:
     """Print the harness version."""
     console.print(f"hunter {_version()}")
+
+
+# --------------------------------------------------------------------- update ---
+
+@app.command()
+def update(
+    yes: bool = typer.Option(
+        False, "--yes", help="Skip the confirmation prompt (for scripts and automation)."
+    ),
+) -> None:
+    """Update the harness (or print the exact manual command)."""
+    from hunter.cli.update_core import run_update
+
+    code = run_update(console=console, err_console=err_console, yes=yes)
+    if code:
+        raise typer.Exit(code)
 
 
 # ---------------------------------------------------------------------- init ---

@@ -111,6 +111,26 @@ hunter scan https://target.example.com --scope scope.manifest.json
 Details, scope manifests, and troubleshooting: [QUICKSTART.md](QUICKSTART.md).
 First-run transcripts: [docs/FIRST-RUN.md](docs/FIRST-RUN.md).
 
+## Updating
+
+```bash
+hunter update
+```
+
+`hunter update` detects how the harness was installed (installer venv,
+`pipx`, or plain `pip`) and runs the matching upgrade; a git checkout gets
+`git pull && pip install -e .` advice instead. Once a day a background check
+looks for a newer release and prints a one-line notice on stderr after the
+command output (never into `--json` stdout, never mid-session in
+`chat`/`tui`/`gateway`). Disable it with `HUNTEROS_NO_UPDATE_CHECK=1`; CI
+environments are skipped automatically. Manual install, any time:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.sh | bash
+# Windows (PowerShell):
+irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 | iex
+```
+
 ## Architecture in four lines
 
 1. **Kernel (L0)** — the append-only, hash-chained event ledger with the
