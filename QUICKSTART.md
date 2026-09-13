@@ -202,6 +202,17 @@ State lives in `HUNTER_STATE_DIR` (or `./.hunter` by default). The ledger is
 append-only and hash-chained; `hunter doctor` recomputes and reports chain
 health at any time.
 
+## Updating
+
+```bash
+hunter update
+```
+
+Detects the install method and runs the matching upgrade (a git checkout
+gets `git pull` advice instead). The daily background version check prints a
+one-line stderr notice after command output; disable it with
+`HUNTEROS_NO_UPDATE_CHECK=1` (CI is skipped automatically).
+
 ## Troubleshooting
 
 **`hunter: command not found`** — the venv is not active. Activate it

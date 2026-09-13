@@ -331,4 +331,10 @@ RuntimeError: simulated crash for the docs
 | Shims | `~/.hunteros/bin/hunter` + `hunt` (Windows: `%USERPROFILE%\.hunteros\bin\*.cmd`) |
 | State / ledger | `./.hunter/ledger.db` (or `$HUNTER_STATE_DIR`) |
 | Chat sessions | `~/.hunteros/chat.db` (or `$HUNTEROS_CHAT_DB`) — hash-chained, undo-safe |
+| Update check | `~/.hunteros/update-check.json` (24h cache; `HUNTEROS_NO_UPDATE_CHECK=1` disables) |
 | Report | `hunter report` — markdown from ledger rows only |
+
+Once a day the CLI checks GitHub (falling back to PyPI) for a newer release
+and, when one exists, prints a one-line notice on stderr after your command's
+output — `hunter update` applies it; the check never prints into `--json`
+stdout and never interrupts `chat`/`tui`/`gateway` sessions.
