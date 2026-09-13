@@ -67,9 +67,18 @@ the chat.
 ## Quick start
 
 ```bash
-./install.sh                 # Windows: powershell -ExecutionPolicy Bypass -File install.ps1
+curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.sh | bash
+# Windows (PowerShell):
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 | iex"
+```
+
+The installer registers `hunter` and `hunt` shims in `~/.hunteros/bin` and
+starts the onboarding wizard on first run. From a checkout, run
+`./install.sh` (Windows: `powershell -ExecutionPolicy Bypass -File install.ps1`)
+instead, then:
+
+```bash
 hunter                       # welcome panel + next steps
-hunter init                  # onboarding wizard: tier, provider, key, live ping
 hunter demo                  # first blood in ~10s — no API key needed
 hunter report                # markdown + SARIF rendered from the ledger only
 hunter retro --run <id>      # deterministic retrospective: stats, gaps, lessons
@@ -121,11 +130,11 @@ Full layer diagram, governance flow, invariants, and the L1–L5 framing:
 
 **v0.3.1** — the phase pipeline is enforced, the brain is core, `hunter
 init` onboards in one command, custom providers are first-class, and every
-error tells you where it lives. 601 tests (including 144 adversarial), ruff
-clean, CI green on ubuntu/windows × py3.11/3.13. Next: challenger-LLM
-falsification pass, sub-agent graph, context compaction for long audits
-([docs/ROADMAP-v0.3.md](docs/ROADMAP-v0.3.md)); commercial roadmap in
-[docs/BUSINESS.md](docs/BUSINESS.md).
+error tells you where it lives. 636 tests (including 144 adversarial), ruff
+clean, CI green on ubuntu/windows × py3.11/3.13. Next: installer & onboarding
+polish, challenger-LLM falsification pass, sub-agent graph, context
+compaction for long audits ([docs/ROADMAP-v0.3.md](docs/ROADMAP-v0.3.md));
+commercial roadmap in [docs/BUSINESS.md](docs/BUSINESS.md).
 
 ## Doctrine
 

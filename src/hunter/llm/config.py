@@ -37,10 +37,14 @@ VALID_TOP_KEYS: tuple[str, ...] = (
 _TIER_KEYS: tuple[str, ...] = (
     "provider", "model", "base_url", "key_env", "timeout", "reasoning_effort",
 )
-_PROVIDER_KEYS: tuple[str, ...] = ("key_env", "api_key", "base_url")
+_PROVIDER_KEYS: tuple[str, ...] = ("key_env", "api_key", "base_url", "endpoint")
 _BUDGET_KEYS: tuple[str, ...] = ("max_cost_usd", "max_iterations", "wall_seconds")
-_AGENT_KEYS: tuple[str, ...] = ("tier", "api_max_retries")
+_AGENT_KEYS: tuple[str, ...] = ("tier", "api_max_retries", "browser")
 _FALLBACK_KEYS: tuple[str, ...] = ("provider", "model", "base_url", "key_env")
+
+# M1: the endpoint SHAPE is stored ("" = unset) so M2 can branch to the
+# responses API without another migration. Nothing reads it in M1.
+_ENDPOINTS: tuple[str, ...] = ("", "chat", "responses")
 
 _CONFIG_DIRNAME = ".hunteros"
 _CONFIG_FILENAME = "config.yaml"
@@ -65,11 +69,13 @@ class ProviderConfig:
     NOR ``api_key`` is KEYLESS (a local/OpenAI-compatible endpoint reached
     without auth — ``resolve_key`` returns ``""`` and LiteLLM dials it with no
     key). An unlisted provider lets LiteLLM use its standard env resolution
-    (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...)."""
+    (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...). ``endpoint`` records the API
+    shape for M2 ("" unset | "chat" | "responses") — nothing reads it in M1."""
 
     key_env: str = ""
     api_key: str = ""
     base_url: str = ""
+    endpoint: str = ""
 
 
 @dataclass
@@ -95,10 +101,12 @@ class BudgetConfig:
 class AgentConfig:
     """Agent-loop settings. ``tier`` selects the chat/scan model tier
     (AGENT_TIERS); ``api_max_retries`` is attempts per provider before
-    failing over to the fallback chain."""
+    failing over to the fallback chain. ``browser`` opts into web automation
+    (the [browser] extra, M6) — stored now, inert until then."""
 
     tier: str = "basic"
     api_max_retries: int = 3
+    browser: bool = False
 
 
 @dataclass
@@ -154,6 +162,20 @@ def _as_int(value: Any, key: str, minimum: int) -> int:
             f"set {key} to a whole number >= {minimum}",
         )
     return as_int
+
+
+def _as_bool(value: Any, key: str) -> bool:
+    """Accept a YAML bool or the strings "true"/"false" (any case); anything
+    else (1, "yes", ...) is a type error — silent coercion hides typos."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    raise _config_error(
+        "config.type",
+        f"{key} must be a boolean, got {type(value).__name__}",
+        f"set {key} to true or false (a quoted \"true\"/\"false\" string is accepted)",
+    )
 
 
 def _as_number(value: Any, key: str, minimum: float) -> float:
@@ -345,10 +367,19 @@ def load_config(
                 f"valid keys under providers.{name}: {', '.join(_PROVIDER_KEYS)}",
             )
         _reject_unknown(block, _PROVIDER_KEYS, f"providers.{name}", source_text=text or None)
+        endpoint = _as_str(block.get("endpoint"), f"providers.{name}.endpoint")
+        if endpoint not in _ENDPOINTS:
+            raise _config_error(
+                "config.value",
+                f"providers.{name}.endpoint must be 'chat' or 'responses' — got '{endpoint}'",
+                f"set providers.{name}.endpoint to chat (OpenAI chat completions) "
+                f"or responses, or remove the key ({', '.join(v for v in _ENDPOINTS if v)})",
+            )
         cfg.providers[str(name)] = ProviderConfig(
             key_env=_as_str(block.get("key_env"), f"providers.{name}.key_env"),
             api_key=_as_str(block.get("api_key"), f"providers.{name}.api_key"),
             base_url=_as_str(block.get("base_url"), f"providers.{name}.base_url"),
+            endpoint=endpoint,
         )
 
     # --- fallback_providers ------------------------------------------------
@@ -419,6 +450,7 @@ def load_config(
     cfg.agent = AgentConfig(
         tier=tier,
         api_max_retries=_as_int(agent_raw.get("api_max_retries", 3), "agent.api_max_retries", minimum=1),
+        browser=_as_bool(agent_raw.get("browser", False), "agent.browser"),
     )
 
     # --- env overrides (WIN over YAML) -------------------------------------

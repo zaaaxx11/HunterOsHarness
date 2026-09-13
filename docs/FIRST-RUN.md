@@ -1,43 +1,59 @@
 # FIRST-RUN — the exact operator preview
 
-Everything below is **actual rendered output** (captured from a real run in a
-throwaway state directory; the one fake is the API key, which is never shown).
-Paths are trimmed for readability. Follow it top to bottom for the full
-first-run experience.
+Everything below is **actual rendered output** (captured from real runs in
+throwaway state directories; the one fake is the API key, which is never
+shown). Paths are trimmed for readability. Follow it top to bottom for the
+full first-run experience.
 
 ---
 
-## 1. Install (PowerShell)
+## 1. Install (one-liner)
 
-```powershell
-PS C:\Users\you\Downloads> powershell -ExecutionPolicy Bypass -File install.ps1
+```bash
+curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.sh | bash
+# Windows (PowerShell):
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 | iex"
+```
 
-HunterOs Harness installer
-evidence or nothing
+The installer prints its ASCII banner, registers `hunter` + `hunt` shims in
+`~/.hunteros/bin`, appends a tagged PATH block to your shell rc (idempotent —
+re-running never duplicates it), and on an interactive terminal launches the
+onboarding wizard. Real transcript (macOS/Linux, trimmed):
+
+```
+ _   _   _   _   _   _   _____   _____   ____
+| | | | | | | | | \ | | |_   _| | ____| |  _ \   / _ \  / ____|
+| |_| | | | | | |  \| |   | |   |  _|   | |_) | | | | | \___ \
+|_| |_|  \___/  |_| \_|   |_|   |_____| |_| \_\  \___/  |____/
+  HunterOs Harness - evidence or nothing
 
 ==> Found Python: Python 3.13.7
-==> Reusing existing venv: C:\Users\you\.hunteros\venv
+==> Reusing existing venv: /home/you/.hunteros/venv
 ==> Upgrading pip (quiet)
-==> Local checkout detected — installing editable from C:\Users\you\Downloads\HunterOsHarness
-hunteros-harness 0.3.0 installed
+==> Installing hunteros-harness from PyPI
+hunteros-harness 0.4.0 installed
+    shims written to /home/you/.hunteros/bin (hunter, hunt)
+    PATH registered in /home/you/.bashrc — open a NEW shell or: source /home/you/.bashrc
+==> Launching the onboarding wizard
+    ... (the `hunter init` wizard from section 4 runs here)
 
 Installed. Next steps:
 
-  1. Activate the venv (or use the full path):
-       C:\Users\you\.hunteros\venv\Scripts\Activate.ps1
-  2. Check the environment:
-       hunter doctor
-  3. Configure a brain (LLM provider wizard, optional):
-       hunter init
-  4. Run the one-command demo (local practice target, deterministic scan):
-       hunter demo
-  5. Open the dashboard:
-       hunter tui
+  1. Open a NEW shell (PATH updated), then run:
+       hunter
+     The onboarding wizard configures your brain in about a minute -
+     then `hunter chat` talks to it. (`hunt` works anywhere `hunter` does.)
+  2. Coming in a later release:
+       hunter hunt <url> - one-command hunt on an authorized target.
 
 Scan only systems you own or are explicitly authorized to test.
 ```
 
-(`install.sh` prints the same steps for macOS/Linux.)
+Flags: `--skip-setup` (or `-SkipSetup`) skips the wizard; `--dry-run`
+(`-DryRun`) writes only the shims + PATH block — no python/pip/network.
+Re-running the installer is an **update**: venv reused, packages refreshed,
+shims rewritten, PATH deduped, and the wizard is skipped when a config
+already exists.
 
 ## 2. Bare `hunter` — the welcome panel
 
@@ -92,18 +108,23 @@ Red `FAIL` rows block (exit 1); yellow rows are opt-in gaps that never do.
 `hunter doctor --json` emits `{"checks": [...], "ok": true}` for scripts;
 `--live` probes each configured provider's endpoint.
 
-## 4. `hunter init` — configure a brain in one wizard
+## 4. `hunter init` — the onboarding wizard (v2)
 
 Interactive (every prompt has a safe default; failures become notes, never
-crashes):
+crashes; an empty reply always takes the default). Real transcript, trimmed
+(the pasted key is never echoed — the one fake in this doc):
 
 ```
 $ hunter init
-hunter init — first-run wizard
+hunter init — onboarding wizard
 config target: C:\Users\you\.hunteros\config.yaml
-step 1/6 environment: Python 3.13.7
-  litellm installed — the LLM brain is available
-step 2/6 tier: advanced
+About 60 seconds. Writes C:\Users\you\.hunteros\config.yaml (+ keys.env only if you paste a key).
+Your key is sent nowhere except the provider you pick.
+How should models be assigned?
+  1. Auto — one model for every role (fastest setup)
+  2. Advanced — pick a model per role (planner / exploit / verify / utility)
+mode [1]: 1
+step 1/7 mode: auto
 providers:
   1. openai       — OpenAI official API
   2. anthropic    — Claude models
@@ -115,37 +136,55 @@ providers:
   8. lmstudio     — local OpenAI-compatible server, keyless
   9. vllm         — self-hosted OpenAI-compatible server, keyless
   10. custom       — any OpenAI-compatible base URL
-provider [1]: 3
-step 3/6 provider: openrouter (https://openrouter.ai/api/v1)
-step 4/6 key: OPENROUTER_API_KEY
-  set OPENROUTER_API_KEY in a NEW shell (the key itself is never printed here):
-  PowerShell: [Environment]::SetEnvironmentVariable('OPENROUTER_API_KEY','<key>','User')
-  bash:       echo 'export OPENROUTER_API_KEY=<key>' >> ~/.bashrc
-step 5/6 model: planner=anthropic/claude-sonnet-4.5 verify=anthropic/claude-3.5-haiku
-step 6/6 live test: skipped — no key yet
+provider [1]: 5
+step 2/7 provider: groq
+key source for groq:
+  1. Paste the key now — stored in C:\Users\you\.hunteros\keys.env, never echoed, never in the config
+  2. Set the env var GROQ_API_KEY yourself (recommended for shared machines)
+key [1]: 1
+paste the GROQ_API_KEY key (input hidden): ********
+step 4/7 model: planner=llama-3.3-70b-versatile
+Enable web automation (browser-driven hunting)? [y/N]:
+step 5/7 browser: off
+step 6/7 tools:
+  OK  python 3.13.7 on Windows
+  OK  state-dir C:\Users\you\project\.hunter\ledger.db — 0 run(s)
+wrote C:\Users\you\.hunteros\keys.env
 wrote C:\Users\you\.hunteros\config.yaml
-notes:
-  - live test skipped — OPENROUTER_API_KEY is not set
-next: hunter doctor · hunter demo · hunter chat
+step 7/7 smoke test: dialing groq/llama-3.3-70b-versatile with a 1-token ping...
+  smoke test: OK (742 ms)
+╭────────────────────────────────────────── done ──────────────────────────────────────────╮
+│ config:  C:\Users\you\.hunteros\config.yaml                                              │
+│ keys:    C:\Users\you\.hunteros\keys.env (GROQ_API_KEY)                                  │
+│ brain:   groq / llama-3.3-70b-versatile                                                  │
+│ tier:    basic                                                                           │
+│ browser: off                                                                             │
+│ next:                                                                                    │
+│   hunter chat        — talk to your brain                                                │
+│   hunter demo        — first blood, no keys needed                                       │
+│   hunter doctor      — verify the environment                                            │
+╰────────────────────────────────── Evidence or Nothing ───────────────────────────────────╯
+Scan only systems you own or are explicitly authorized to test.
 ```
 
-After setting the key in a NEW shell, the live test dials once (1 token):
+What happened: the pasted key went to `~/.hunteros/keys.env` (0600 POSIX,
+loaded at CLI startup — real env vars win), and the config carries only the
+env-var NAME. Auto mode gives all four roles (planner / exploit / verify /
+utility) the same model; answer `2` at the mode prompt to pick one per role.
+Picking `custom` probes your base URL for its API shape (chat vs responses)
+and offers the model ids it advertises at `GET {base}/models`. Every failure
+(a dead endpoint, a refused key) becomes a note under the panel — the run
+still exits 0 and still writes a valid config.
 
-```
-step 6/6 live test: dialing with a 1-token ping...
-  live test: OK (842 ms)
-```
-
-Non-interactive, for scripts and dotfiles:
+Non-interactive, for scripts and dotfiles — the classic v1 flow:
 
 ```
 $ hunter init --provider openrouter --yes
 ```
 
-`--yes` refuses to overwrite an existing config (exit 2, name the path) —
-pass `--path` to write elsewhere. The key itself is NEVER echoed: the wizard
-prints the export lines with a `<key>` placeholder, and an optional paste-now
-goes into the config file inline (with a "prefer the env var" warning).
+`--provider`/`--yes` keep the original behavior: defaults from the provider
+table, no prompts, exit 2 (with the path named) if `--yes` would overwrite an
+existing config — pass `--path` to write elsewhere.
 
 ## 5. `hunter demo` — first blood, no keys
 
@@ -285,6 +324,8 @@ RuntimeError: simulated crash for the docs
 | What | Where |
 | ---- | ----- |
 | Config | `~/.hunteros/config.yaml` (or `$HUNTEROS_CONFIG`) — `hunter config example` |
+| Keys | `~/.hunteros/keys.env` (0600; env vars win) — written by the wizard when a key is pasted |
+| Shims | `~/.hunteros/bin/hunter` + `hunt` (Windows: `%USERPROFILE%\.hunteros\bin\*.cmd`) |
 | State / ledger | `./.hunter/ledger.db` (or `$HUNTER_STATE_DIR`) |
 | Chat sessions | `~/.hunteros/chat.db` (or `$HUNTEROS_CHAT_DB`) — hash-chained, undo-safe |
 | Report | `hunter report` — markdown from ledger rows only |

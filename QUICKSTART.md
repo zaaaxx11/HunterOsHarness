@@ -13,21 +13,24 @@ refuses to store.
 
 ## 1. Install (~30s)
 
-**Windows (PowerShell):**
-
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
-
 **macOS / Linux:**
 
 ```bash
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 | iex"
 ```
 
 Both installers create a dedicated venv at `~/.hunteros/venv` — they do not
-touch your system Python. From a checkout they install editable; otherwise
-from PyPI (git fallback).
+touch your system Python. They also register `hunter` and `hunt` shims in
+`~/.hunteros/bin` (Windows: `%USERPROFILE%\.hunteros\bin`) via a tagged,
+idempotent PATH block, and start the onboarding wizard on first run
+(`--skip-setup` / `-SkipSetup` skips it). From a checkout they install
+editable; otherwise from PyPI (git fallback).
 
 Or manually:
 
@@ -39,8 +42,9 @@ pip install -e .                            # from a checkout
 
 ## 2. `hunter init` — configure a brain (~60s, optional)
 
-One wizard picks the provider, captures the key safely (the key itself is
-never echoed), runs a 1-token live test, and writes `~/.hunteros/config.yaml`:
+One wizard picks the provider, captures the key safely (a pasted key lands in
+`~/.hunteros/keys.env` — never echoed, never in the config), probes custom
+endpoints, runs a 1-token live test, and writes `~/.hunteros/config.yaml`:
 
 ```bash
 hunter init                    # interactive wizard
@@ -203,7 +207,9 @@ health at any time.
 **`hunter: command not found`** — the venv is not active. Activate it
 (`source ~/.hunteros/venv/bin/activate`, Windows:
 `~\.hunteros\venv\Scripts\Activate.ps1`) or call it via
-`~/.hunteros/venv/bin/hunter`.
+`~/.hunteros/venv/bin/hunter`, or use the shim path
+`~/.hunteros/bin/hunter` (Windows: `%USERPROFILE%\.hunteros\bin\hunter.cmd`),
+or re-run the installer which registers `~/.hunteros/bin` on your PATH.
 
 **Windows PowerShell: "running scripts is disabled"** — run
 `powershell -ExecutionPolicy Bypass -File install.ps1` exactly as shown, or
