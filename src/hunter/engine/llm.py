@@ -101,6 +101,12 @@ class LLMEngine:
                 hint="Run it through workflow.run_scan, which binds the ledger and run id.",
             )
         run_id = ctx.run_id or f"R-llm-{uuid.uuid4().hex[:12]}"
+        browser_enabled = bool(ctx.config.get("browser_enabled", False))
+        if "browser_enabled" not in ctx.config:
+            provider_config = getattr(self._provider, "config", None)
+            browser_enabled = bool(
+                getattr(getattr(provider_config, "agent", None), "browser", False)
+            )
         tool_ctx = ToolContext(
             run_id=run_id,
             ledger=ctx.ledger,
@@ -108,50 +114,58 @@ class LLMEngine:
             scope=target.scope,
             target_url=target.url,
             emit=ctx.emit,
-            config={**ctx.config, "tier": self.tier},
-        )
-        goal = build_goal(target, self.tier)
-        loop = AgentLoop(
-            self._provider,
-            build_registry(self.tier),
-            tier=self.tier,
-            budget=self._budget,
-            interrupt_check=ctx.config.get("interrupt_check"),
-        )
-        agent_result = loop.run(tool_ctx, goal, stream_cb=ctx.config.get("stream_cb"))
-
-        # Debunk: deterministic replay for every finding still CANDIDATE.
-        # This — not the model — promotes findings to VERIFIED (RULE-E2).
-        debunk_verified = 0
-        for finding in list(ctx.ledger.findings(run_id)):
-            if finding.status is FindingStatus.CANDIDATE and debunk_pass(finding, tool_ctx) == "verified":
-                debunk_verified += 1
-
-        findings = ctx.ledger.findings(run_id)
-        stats: dict[str, Any] = {
-            **agent_result.stats,
-            "findings": len(findings),
-            "verified": sum(1 for f in findings if f.status is FindingStatus.VERIFIED),
-            "ruled_out": sum(1 for f in findings if f.status is FindingStatus.RULED_OUT),
-            "debunk_verified": debunk_verified,
-            "yielded": agent_result.yield_message is not None,
-            "stalled": agent_result.stalled,
-            "interrupted": agent_result.interrupted,
-        }
-        ctx.emit(
-            "engine_event",
-            {
-                "stage": "agent_finished",
-                "run_id": run_id,
-                "findings": stats["findings"],
-                "verified": stats["verified"],
-                "turns": stats["turns"],
-                "cost_usd": round(stats["cost_usd"], 6),
+            config={
+                **ctx.config,
+                "tier": self.tier,
+                "browser_enabled": browser_enabled,
+                "hunt_permission": True,
             },
         )
-        # candidates=[] BY DESIGN: agent findings are already in the ledger;
-        # the pipeline's collect phase correctly finds zero new candidates.
-        return EngineResult(candidates=[], stats=stats)
+        try:
+            goal = build_goal(target, self.tier)
+            loop = AgentLoop(
+                self._provider,
+                build_registry(self.tier, browser_enabled=browser_enabled),
+                tier=self.tier,
+                budget=self._budget,
+                interrupt_check=ctx.config.get("interrupt_check"),
+            )
+            agent_result = loop.run(tool_ctx, goal, stream_cb=ctx.config.get("stream_cb"))
+
+            # Debunk: deterministic replay for every finding still CANDIDATE.
+            # This — not the model — promotes findings to VERIFIED (RULE-E2).
+            debunk_verified = 0
+            for finding in list(ctx.ledger.findings(run_id)):
+                if finding.status is FindingStatus.CANDIDATE and debunk_pass(finding, tool_ctx) == "verified":
+                    debunk_verified += 1
+
+            findings = ctx.ledger.findings(run_id)
+            stats: dict[str, Any] = {
+                **agent_result.stats,
+                "findings": len(findings),
+                "verified": sum(1 for f in findings if f.status is FindingStatus.VERIFIED),
+                "ruled_out": sum(1 for f in findings if f.status is FindingStatus.RULED_OUT),
+                "debunk_verified": debunk_verified,
+                "yielded": agent_result.yield_message is not None,
+                "stalled": agent_result.stalled,
+                "interrupted": agent_result.interrupted,
+            }
+            ctx.emit(
+                "engine_event",
+                {
+                    "stage": "agent_finished",
+                    "run_id": run_id,
+                    "findings": stats["findings"],
+                    "verified": stats["verified"],
+                    "turns": stats["turns"],
+                    "cost_usd": round(stats["cost_usd"], 6),
+                },
+            )
+            # candidates=[] BY DESIGN: agent findings are already in the ledger;
+            # the pipeline's collect phase correctly finds zero new candidates.
+            return EngineResult(candidates=[], stats=stats)
+        finally:
+            tool_ctx.close_browser()
 
     def replay(self, target: TargetSpec, ctx: EngineContext, candidate: CandidateFinding) -> bool:
         from hunter.engine.deterministic.probes import RECHECKS

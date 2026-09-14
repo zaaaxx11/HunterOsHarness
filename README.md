@@ -100,6 +100,12 @@ hunter chat                       # normal chat; hunt intent offers a governed a
 
 Chat is ordinary free text until you say something like `audit http://127.0.0.1:8941/`; the REPL asks for confirmation, while `/hunt on` enables process-local hunt mode. Use `/audit <target>` or `/hunt <target>` for a one-shot hunt, and `hunter hunt <target>` from the shell (including local directories). The scope gate is unchanged: non-localhost targets require an authorized scope manifest.
 
+Browser automation is optional and hunt-only: install `hunteros-harness[browser]`
+and then separately install Chromium with `python -m playwright install chromium`.
+Browser actions are scope-gated and available only inside an authorized hunt;
+normal chat remains browser-free. The onboarding `agent.browser` flag is usable
+without the extra, but enabling it does not authorize a hunt by itself.
+
 ```bash
 hunter hunt http://127.0.0.1:8941/        # one-shot CLI hunt
 ```

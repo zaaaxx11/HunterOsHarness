@@ -514,7 +514,11 @@ class ChatEngine:
             scope=scope,
             target_url=target,
             emit=lambda kind, payload: ledger.append(run_id, kind, payload),
-            config={"tier": tier},
+            config={
+                "tier": tier,
+                "browser_enabled": bool(getattr(getattr(self.config, "agent", None), "browser", False)),
+                "hunt_permission": True,
+            },
         )
         phase_machine = _open_phase_machine(ledger, run_id)
         if phase_machine is not None:
@@ -583,7 +587,10 @@ class ChatEngine:
         self.store.append_message(self.session_id, "user", text)
         loop = AgentLoop(
             self.provider,
-            build_registry(audit["tier"]),
+            build_registry(
+                audit["tier"],
+                browser_enabled=bool(audit["ctx"].config.get("browser_enabled", False)),
+            ),
             tier=audit["tier"],
             budget=audit["budget"],
         )
@@ -636,9 +643,12 @@ class ChatEngine:
             ledger.finish_run(run_id, status)
         finally:
             try:
-                audit["http"].close()
+                audit["ctx"].close_browser()
             finally:
-                ledger.close()
+                try:
+                    audit["http"].close()
+                finally:
+                    ledger.close()
         return (
             f"audit run {run_id} {status}: {len(findings)} finding(s) "
             f"(all claim-gated) — /report {run_id} renders the report"

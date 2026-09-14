@@ -157,7 +157,12 @@ class AgentLoop:
                     budget=self.budget,
                 )
                 calls = getattr(self.provider, "calls", None)
-                if calls and isinstance(calls[-1], list) and not isinstance(calls[-1], _MessagesCapture):
+                if (
+                    isinstance(calls, list)
+                    and calls
+                    and isinstance(calls[-1], list)
+                    and not isinstance(calls[-1], _MessagesCapture)
+                ):
                     calls[-1] = _MessagesCapture(calls[-1])
             except HunterError as exc:
                 if exc.code == "budget.exhausted":
@@ -202,10 +207,13 @@ class AgentLoop:
 
             assistant: dict[str, Any] = {"role": "assistant", "content": turn.text}
             if turn.tool_calls:
-                assistant["tool_calls"] = [
-                    {"id": call.id, "name": call.name, "arguments": call.arguments}
-                    for call in turn.tool_calls
-                ]
+                tool_messages = []
+                for call in turn.tool_calls:
+                    arguments = call.arguments
+                    if call.name == "browser_type" and isinstance(arguments, dict):
+                        arguments = {**arguments, "text": "[typed value omitted]"}
+                    tool_messages.append({"id": call.id, "name": call.name, "arguments": arguments})
+                assistant["tool_calls"] = tool_messages
             messages.append(assistant)
 
             if not turn.tool_calls:

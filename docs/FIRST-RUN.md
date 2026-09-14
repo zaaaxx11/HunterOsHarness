@@ -173,8 +173,12 @@ Scan only systems you own or are explicitly authorized to test.
 
 What happened: the pasted key went to `~/.hunteros/keys.env` (0600 POSIX,
 loaded at CLI startup — real env vars win), and the config carries only the
-env-var NAME. Auto mode gives all four roles (orchestrator / hunter / verifier /
-utility) the same model; answer `2` at the mode prompt to pick one per role.
+env-var NAME. Browser automation is optional, hunt-only, and scope-gated. If
+`agent.browser` is enabled, it remains usable without the `[browser]` extra;
+browser support requires that extra plus a separate Chromium install with
+`python -m playwright install chromium`. Normal chat cannot invoke browser tools.
+Auto mode gives all four roles (orchestrator / hunter / verifier / utility) the
+same model; answer `2` at the mode prompt to pick one per role.
 Picking `custom` probes your base URL for its API shape (chat vs responses)
 and offers the model ids it advertises at `GET {base}/models`. Every failure
 (a dead endpoint, a refused key) becomes a note under the panel — the run
