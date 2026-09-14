@@ -40,6 +40,16 @@ from hunter.kernel.findings import Finding, Severity, dedupe_key
 from hunter.tools.http_client import Exchange
 from hunter.tools.scope import ScopeViolation
 
+from .browser import (
+    BROWSER_TOOL_NAMES,
+    PLAYWRIGHT_INSTALL_HINT,
+    BrowserInputError,
+    BrowserSession,
+    BrowserUnavailable,
+    load_playwright,
+    validate_selector,
+    validate_url,
+)
 from .tools_base import TIER_ORDER, ToolContext, ToolOutcome, ToolRegistry, ToolSpec
 
 __all__ = [
@@ -63,6 +73,7 @@ PROBE_TIERS: dict[str, str] = {
     **{check_id: "advanced" for check_id in sorted(ACTIVE_PROBES)},
     **{check_id: "basic" for check_id in sorted(PASSIVE_PROBES)},
 }
+_AUTO = object()
 
 COVERAGE_OUTCOMES = ("reported", "no_issue_found", "ruled_out", "not_applicable", "needs_follow_up")
 SEVERITIES = ("critical", "high", "medium", "low", "info")
@@ -699,10 +710,126 @@ def _respond_to_user(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     return ToolOutcome(result_for_model="yielded to user.", lifecycle_yield=message)
 
 
+# -- browser tools --------------------------------------------------------------
+
+
+def _browser_permission(ctx: ToolContext) -> ToolOutcome | None:
+    if ctx.config.get("hunt_permission") is not True:
+        return _blocked(
+            "permission.hunt_required",
+            "browser actions require an explicitly authorized governed hunt.",
+        )
+    return None
+
+
+def _browser_outcome(ctx: ToolContext, action: Any, selector: str = "") -> ToolOutcome:
+    data: dict[str, Any] = {
+        "action": action.action,
+        "url": action.url,
+        "title": action.title,
+    }
+    if action.action == "snapshot":
+        data.update({"snapshot": action.snapshot, "truncated": action.truncated})
+        result = f"browser snapshot at {action.url}\n{action.snapshot}"
+    elif action.action == "type":
+        data.update({"selector": selector, "text_length": action.text_length})
+        result = f"browser type completed at {action.url}; text_length={action.text_length}"
+    else:
+        data.update({"selector": selector} if selector else {})
+        result = f"browser {action.action} completed at {action.url}; call browser_snapshot for visible text."
+    ctx.emit("engine_event", {"tool": f"browser_{action.action}", **data})
+    return ToolOutcome(result_for_model=result, evidence={"kind": "browser_event", "data": data})
+
+
+def _browser_error(exc: Exception) -> ToolOutcome:
+    if isinstance(exc, ScopeViolation):
+        return _blocked("scope.target_out_of_scope", "browser request was outside the authorized scope.")
+    if isinstance(exc, BrowserInputError):
+        message = str(exc)
+        if "exactly one" in message:
+            code = "browser.selector_not_unique"
+        elif "url" in message.lower() or "javascript" in message.lower():
+            code = "browser.url_invalid"
+        else:
+            code = "browser.selector_invalid"
+        return _blocked(code, message[:300])
+    if isinstance(exc, BrowserUnavailable):
+        return _blocked("browser.unavailable", PLAYWRIGHT_INSTALL_HINT)
+    return ToolOutcome(
+        ok=False,
+        code="browser.action_error",
+        result_for_model="[ERROR tool] browser action failed",
+    )
+
+
+def _browser_factory(ctx: ToolContext, module: Any = None) -> Any:
+    return BrowserSession(ctx.scope, playwright_module=module)
+
+
+def _ensure_browser(ctx: ToolContext, module: Any = _AUTO) -> Any:
+    factory = None if module is _AUTO else lambda: _browser_factory(ctx, module)
+    return ctx.ensure_browser(factory)
+
+
+def _browser_navigate(args: dict[str, Any], ctx: ToolContext, module: Any = _AUTO) -> ToolOutcome:
+    denied = _browser_permission(ctx)
+    if denied is not None:
+        return denied
+    try:
+        validate_url(args.get("url", ""))
+        ctx.scope.check_url(args.get("url", ""))
+        action = _ensure_browser(ctx, module).navigate(args.get("url", ""))
+        return _browser_outcome(ctx, action)
+    except Exception as exc:
+        return _browser_error(exc)
+
+
+def _browser_snapshot(args: dict[str, Any], ctx: ToolContext, module: Any = _AUTO) -> ToolOutcome:
+    denied = _browser_permission(ctx)
+    if denied is not None:
+        return denied
+    try:
+        action = _ensure_browser(ctx, module).snapshot()
+        return _browser_outcome(ctx, action)
+    except Exception as exc:
+        return _browser_error(exc)
+
+
+def _browser_click(args: dict[str, Any], ctx: ToolContext, module: Any = _AUTO) -> ToolOutcome:
+    denied = _browser_permission(ctx)
+    if denied is not None:
+        return denied
+    selector = args.get("selector", "")
+    try:
+        validate_selector(selector)
+        action = _ensure_browser(ctx, module).click(selector)
+        return _browser_outcome(ctx, action, selector=selector)
+    except Exception as exc:
+        return _browser_error(exc)
+
+
+def _browser_type(args: dict[str, Any], ctx: ToolContext, module: Any = _AUTO) -> ToolOutcome:
+    denied = _browser_permission(ctx)
+    if denied is not None:
+        return denied
+    selector = args.get("selector", "")
+    try:
+        validate_selector(selector)
+        action = _ensure_browser(ctx, module).type(selector, args.get("text", ""))
+        return _browser_outcome(ctx, action, selector=selector)
+    except Exception as exc:
+        return _browser_error(exc)
+
+
 # -- registry assembly -----------------------------------------------------------
 
 
-def build_registry(tier: str = "basic") -> ToolRegistry:
+def build_registry(
+    tier: str = "basic",
+    *,
+    browser_enabled: bool = False,
+    playwright_module: Any = _AUTO,
+) -> ToolRegistry:
     """Assemble the v0.2 agent tool registry.
 
     ``tier`` is validated and recorded (``registry.built_for_tier``) but does
@@ -889,4 +1016,73 @@ def build_registry(tier: str = "basic") -> ToolRegistry:
     ]
     for spec in specs:
         registry.register(spec)
+
+    if browser_enabled:
+        module = load_playwright() if playwright_module is _AUTO else playwright_module
+        if module is None:
+            for name in BROWSER_TOOL_NAMES:
+                registry.register_unavailable(name, "browser.unavailable", PLAYWRIGHT_INSTALL_HINT)
+        else:
+            registry.register(
+                ToolSpec(
+                    name="browser_navigate",
+                    description=(
+                        "Navigate the headless browser to one absolute in-scope http(s) URL. "
+                        "Redirects and all subrequests are scope-checked; no cookies or headers are returned."
+                    ),
+                    parameters=_schema(
+                        {"url": {"type": "string", "minLength": 1, "maxLength": 2048}}, ["url"]
+                    ),
+                    handler=lambda args, ctx, module=module: _browser_navigate(args, ctx, module),
+                )
+            )
+            registry.register(
+                ToolSpec(
+                    name="browser_snapshot",
+                    description=(
+                        "Return a bounded, redacted visible-text snapshot of the current page. "
+                        "Cookies, storage, headers, and arbitrary page code are never exposed."
+                    ),
+                    parameters=_schema({}, []),
+                    handler=lambda args, ctx, module=module: _browser_snapshot(args, ctx, module),
+                )
+            )
+            registry.register(
+                ToolSpec(
+                    name="browser_click",
+                    description=(
+                        "Click exactly one bounded CSS selector on the current in-scope page. "
+                        "Explicit link/form destinations and resulting redirects are scope-checked."
+                    ),
+                    parameters=_schema(
+                        {"selector": {"type": "string", "minLength": 1, "maxLength": 512}}, ["selector"]
+                    ),
+                    handler=lambda args, ctx, module=module: _browser_click(args, ctx, module),
+                )
+            )
+            registry.register(
+                ToolSpec(
+                    name="browser_type",
+                    description=(
+                        "Fill exactly one bounded CSS selector on the current in-scope page. "
+                        "The typed value is never returned or recorded; resulting requests "
+                        "remain scope-checked."
+                    ),
+                    parameters=_schema(
+                        {
+                            "selector": {"type": "string", "minLength": 1, "maxLength": 512},
+                            "text": {"type": "string", "maxLength": 4000},
+                        },
+                        ["selector", "text"],
+                    ),
+                    handler=lambda args, ctx, module=module: _browser_type(args, ctx, module),
+                )
+            )
+    else:
+        for name in BROWSER_TOOL_NAMES:
+            registry.register_unavailable(
+                name,
+                "browser.disabled",
+                "browser tools are disabled; enable agent.browser for a governed hunt.",
+            )
     return registry

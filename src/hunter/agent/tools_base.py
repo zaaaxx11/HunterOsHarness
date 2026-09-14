@@ -16,6 +16,7 @@ Design laws (v0.2):
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -56,6 +57,30 @@ class ToolContext:
     emit: EmitFn
     config: dict[str, Any] = field(default_factory=dict)
     state: dict[str, Any] = field(default_factory=dict)  # run-scoped notes/coverage/threat model
+    browser_session: Any | None = None
+    browser_factory: Callable[[], Any] | None = None
+
+    def ensure_browser(self, factory: Callable[[], Any] | None = None) -> Any:
+        """Return the one lazy browser session owned by this run."""
+        if self.browser_session is None:
+            creator = self.browser_factory or factory
+            if creator is None:
+                raise RuntimeError("browser session factory is not configured")
+            self.browser_session = creator()
+        return self.browser_session
+
+    def close_browser(self) -> None:
+        """Close the run-owned browser session, safely and idempotently."""
+        session = self.browser_session
+        if session is None:
+            return
+        try:
+            close = getattr(session, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
+        finally:
+            self.browser_session = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +99,11 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._specs: dict[str, ToolSpec] = {}
+        self._unavailable: dict[str, tuple[str, str]] = {}
+
+    def register_unavailable(self, name: str, code: str, message: str) -> None:
+        """Remember an optional capability without advertising a schema."""
+        self._unavailable[name] = (code, message)
 
     def register(self, spec: ToolSpec, *, override: bool = False) -> None:
         if spec.name in self._specs and not override:
@@ -108,6 +138,10 @@ class ToolRegistry:
     def dispatch(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
         spec = self._specs.get(name)
         if spec is None:
+            unavailable = self._unavailable.get(name)
+            if unavailable is not None:
+                code, message = unavailable
+                return ToolOutcome(ok=False, blocked=True, code=code, result_for_model=message)
             return ToolOutcome(
                 ok=False,
                 blocked=False,

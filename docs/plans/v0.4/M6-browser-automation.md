@@ -10,7 +10,7 @@ JavaScript execution.
 first; BUILDER implements until green. Every acceptance criterion maps to one
 planned test. Tests use a deterministic fake Playwright seam; no test starts a
 real browser, opens a socket, or downloads Chromium. The M1/M3/M5 contracts
-remain the baseline.
+remain the baseline. No test starts a real browser.
 
 ---
 
@@ -871,8 +871,9 @@ an authorized operator after installing both pieces:
 .venv/Scripts/python -m playwright install chromium
 ```
 
-The implementation must not run either command itself. Windows CI runs the
-normal dependency matrix with no Playwright/Chromium download step. A future
+The implementation must not run either command itself and never invokes `playwright install`
+during a hunt or test. Windows CI runs the normal dependency matrix with no
+Playwright/Chromium download step. A future
 manual browser smoke test must be a separately opt-in workflow, never part of
 pytest.
 

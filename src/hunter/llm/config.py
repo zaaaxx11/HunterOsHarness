@@ -112,7 +112,7 @@ class AgentConfig:
     """Agent-loop settings. ``tier`` selects the chat/scan model tier
     (AGENT_TIERS); ``api_max_retries`` is attempts per provider before
     failing over to the fallback chain. ``browser`` opts into web automation
-    (the [browser] extra, M6) — stored now, inert until then."""
+    (the optional [browser] extra) — enabled only for an authorized hunt."""
 
     tier: str = "basic"
     api_max_retries: int = 3

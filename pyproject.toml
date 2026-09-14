@@ -30,6 +30,7 @@ dependencies = [
 # Kept as aliases: `llm` is now part of the core install.
 llm = ["litellm>=1.40"]
 telegram = ["python-telegram-bot>=21"]
+browser = ["playwright>=1.40"]
 dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
 
 [project.scripts]
