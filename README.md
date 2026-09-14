@@ -11,7 +11,7 @@ cannot replay is a vulnerability you cannot bill, defend, or trust:
 
 ## User skills and curator
 
-Local methodology cards live under `~/.hunteros/skills/<name>/SKILL.md`. The merged bundled/user corpus shows `[bundled]`, `[user]`, and `[quarantined]` source markers; relevance matching selects at most five skills. The `/skills` and `hunter skills` surfaces mark each effective card with its `[source]`; `/curate` previews retro-derived cards before an explicit y/N save. Flagged drafts are saved with `[quarantined]` semantics and remain inert until manually reviewed.
+Local methodology cards live under `~/.hunteros/skills/<name>/SKILL.md`. The merged bundled/user corpus shows `[bundled]`, `[user]`, and `[quarantined]` source markers; relevance matching selects at most five skills. `hunter skills` lists the merged corpus, while `hunter skills --view NAME` shows one card. The `/skills` and `hunter skills` surfaces mark each effective card with its source; `/curate` and `hunter curate` preview retro-derived cards before an explicit y/N save. Duplicate drafts are skipped, flagged drafts are saved with quarantined semantics, and quarantined cards remain inert until manually reviewed and are never mounted into a prompt.
 
 ## Why it matters
 
@@ -35,12 +35,18 @@ the chat.
   OpenRouter, DeepSeek, Groq, Together, Ollama, LM Studio, vLLM, or any
   OpenAI-compatible endpoint, with model-tier routing
   (orchestrator/hunter/verifier/utility), a budget governor with staged spend
-  warnings, and a cross-provider fallback chain. [docs/LLM.md](docs/LLM.md).
-- **15 tools, nothing else** — `create_finding_request` is machine-validated
+  warnings, and a cross-provider fallback chain. The configured provider is
+  loaded consistently from `$HUNTEROS_CONFIG` or `~/.hunteros/config.yaml` for
+  chat, `hunter hunt`, and the LLM engine; an implicit hunt falls back to
+  deterministic when no config exists, while explicit `--engine llm` records a
+  governed failed run instead of silently switching providers.
+  [docs/LLM.md](docs/LLM.md).
+- **15 core tools by default** — `create_finding_request` is machine-validated
   (R1–R6: prose, evidence resolution + hash integrity, http_exchange
   required, endpoint match, dedupe, scales); a debunk replay — deterministic,
-  no LLM argument — decides what becomes verified. Capability tiers
-  (basic/advanced) are structural: out-of-tier tools are absent and refused.
+  no LLM argument — decides what becomes verified. Optional browser support adds
+  four narrow, hunt-only tools. Capability tiers (basic/advanced) are
+  structural: out-of-tier actions are refused by the handlers.
 - **Hash-chained ledger** — append-only SQLite store; every event chains
   `sha256(prev_hash + canonical row)`; `hunter verify` recomputes the chain
   at any time.
@@ -66,8 +72,10 @@ the chat.
   reachability, and the chat DB; `--json` for scripts.
 - **Beautiful TUI** (`hunter tui`) — runs with a live phase column, findings,
   event tail, doctor; `d` runs the demo from inside the dashboard.
-- **One-command demo** (`hunter demo`) — boots the practice target, scans,
-  9/9 first-blood, evidence in the ledger, retro lessons included.
+- **One-command safe demo** (`hunter demo`) — boots the deliberately
+  vulnerable PracticeVault only on `127.0.0.1`, runs deterministic probes with
+  no API key or external target, records evidence in the ledger, and tears the
+  server down. The first-blood gate requires at least 7/9 planted issues.
 
 ## Quick start
 
@@ -78,9 +86,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 ```
 
 The installer registers `hunter` and `hunt` shims in `~/.hunteros/bin` and
-starts the onboarding wizard on first run. From a checkout, run
-`./install.sh` (Windows: `powershell -ExecutionPolicy Bypass -File install.ps1`)
-instead, then:
+starts the onboarding wizard on an interactive first run. Run `hunter` for the
+welcome panel, or run `hunter init` explicitly at any time. The wizard writes
+`~/.hunteros/config.yaml`; a pasted key is stored in `~/.hunteros/keys.env`,
+never echoed and never written to YAML. Auto mode assigns one model to the
+`orchestrator`, `hunter`, `verifier`, and `utility` roles; Advanced mode lets
+you choose each role. A key is optional for `hunter demo`, deterministic scans,
+reports, and the TUI. Run `hunter doctor` to check the environment.
+
+From a checkout, run `./install.sh` (Windows:
+`powershell -ExecutionPolicy Bypass -File install.ps1`) instead, then:
 
 ```bash
 hunter                       # welcome panel + next steps
@@ -99,7 +114,7 @@ export HUNTEROS_MODEL=gpt-4o
 hunter chat                       # normal chat; hunt intent offers a governed audit
 ```
 
-Chat is ordinary free text until you say something like `audit http://127.0.0.1:8941/`; target-bearing hunt intent requires explicit confirmation when mode is off. `/hunt on` and `/hunt off` control process-local hunt mode. Use `/audit <target>` or `/hunt <target>` for a one-shot hunt, and `hunter hunt <target>` from the shell (including local directories). The scope gate is unchanged: non-localhost targets require an authorized scope manifest; authorization is your responsibility and enforcement is fail-closed.
+Chat is ordinary free text until you say something like `audit http://127.0.0.1:8941/`; target-bearing hunt intent requires explicit confirmation when mode is off. `/hunt on` and `/hunt off` control process-local hunt mode. Use `/audit <target>` or `/hunt <target>` inside chat for a one-shot governed hunt, and `hunter hunt <target>` from the shell for URLs, hosts, or local directories. `hunter scan <target>` remains the manifest-required pipeline command for non-localhost targets. For `hunter hunt`, localhost needs no prompt; a non-localhost target with `--scope scope.json` uses that manifest, while without `--scope` the CLI prints a minimal exact-host manifest and asks for authorization. Refusal exits 3 and nothing runs; `--yes` accepts the proposed exact-host scope. A local directory is served temporarily on loopback and shuts down when the command ends. Authorization is your responsibility and enforcement is fail-closed.
 
 Browser automation is optional and hunt-only. Install explicitly with
 `pip install 'hunteros-harness[browser]'` and then separately run
@@ -109,9 +124,9 @@ onboarding `agent.browser` flag is usable without the extra, but enabling it
 does not authorize a hunt by itself. HunterOs never automatically installs
 Chromium.
 
-```bash
-hunter hunt http://127.0.0.1:8941/        # one-shot CLI hunt
-```
+`hunter hunt` accepts a live localhost URL or a local directory. For the
+self-contained PracticeVault walkthrough, use `hunter demo` above; its port is
+ephemeral and the server is shut down when the demo ends.
 
 Add any third-party provider:
 
@@ -120,6 +135,13 @@ hunter config provider add lab-vllm --base-url http://10.0.0.9:8000/v1
 hunter config provider test lab-vllm --model mistralai/Mistral-7B-Instruct-v0.4.0
 hunter config provider list
 ```
+
+The same group is available as `hunter provider`. Providers feed the four
+model roles: `orchestrator`, `hunter`, `verifier`, and `utility`. Legacy
+`planner`, `exploit`, and `verify` names are accepted on load and canonicalized
+on the next config write. The interactive provider wizard can probe chat versus
+responses endpoints, list models, and assign one model to every role or assign
+roles individually.
 
 Scan a real target (authorized only — the scope gate is fail-closed):
 
@@ -137,12 +159,15 @@ hunter update
 ```
 
 `hunter update` detects how the harness was installed (installer venv,
-`pipx`, or plain `pip`) and runs the matching upgrade; a git checkout gets
+`pipx`, or plain `pip`) and asks for confirmation before upgrading (`--yes`
+for automation). A git checkout is never auto-mutated: it gets
 `git pull && pip install -e .` advice instead. The GitHub-first check falls
 back silently to PyPI, using a 24-hour cache. It prints one-line notices only
 on stderr (never into `--json` stdout and never in long-lived `chat`/`tui`/
 `gateway` surfaces). Disable it with `HUNTEROS_NO_UPDATE_CHECK=1`; CI
-environments are skipped automatically. Manual install, any time:
+environments are skipped automatically. If the check is offline or
+rate-limited, the manual installer command is printed and the command exits
+1. Config migration notes appear on the next command. Manual install, any time:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.sh | bash
@@ -178,11 +203,14 @@ and [docs/ROADMAP-v0.5.md](docs/ROADMAP-v0.5.md) for maintenance work.
 - Exit codes are stable: `0` clean, `1` error, `2` findings, and `3`
   refused/usage for `hunter hunt`; other classified CLI errors remain documented
   in the architecture and LLM references.
+- Provider roles are `orchestrator`, `hunter`, `verifier`, and `utility`;
+  legacy `planner`, `exploit`, and `verify` names are accepted on load and
+  rewritten to canonical names on the next config write.
 - Browser support is optional and explicit: `pip install 'hunteros-harness[browser]'`
   then `python -m playwright install chromium`. `agent.browser` remains
-  loadable without the extra; browser actions are hunt-only and scope-gated,
-  normal chat is browser-free, and HunterOs never installs Chromium
-  automatically.
+  loadable without the extra; browser actions require an explicitly authorized
+  governed hunt, are scope-gated, normal chat is browser-free, and HunterOs
+  never installs Chromium automatically.
 - Skills live at `~/.hunteros/skills/<name>/SKILL.md`; the merged corpus uses
   `[bundled]`, `[user]`, and `[quarantined]` markers, matches at most five, and
   `/curate`/`hunter curate` require preview plus explicit confirmation to save.

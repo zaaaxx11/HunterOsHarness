@@ -234,10 +234,14 @@ def hunt(
         chosen_scope = ScopeSet(frozenset({host}), False, name=host)
     if selected_engine is None:
         try:
-            from hunter.llm.config import load_config
-            from hunter.llm.router import ProviderRouter
-            load_config()
-            ProviderRouter.from_env()
+            from hunter.llm.config import find_config_path, load_config
+            from hunter.llm.router import provider_from_config
+
+            config_path = find_config_path()
+            if config_path is None or not config_path.is_file():
+                raise FileNotFoundError("no HunterOS LLM config")
+            config = load_config(config_path)
+            provider_from_config(config)
             selected_engine = "llm"
         except Exception:
             selected_engine = "deterministic"

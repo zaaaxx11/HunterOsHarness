@@ -34,7 +34,11 @@ from hunter.llm.config import (  # noqa: F401
     resolve_key,
     resolve_model,
 )
-from hunter.llm.router import ProviderRouter, hunter_error_from_classified  # noqa: F401
+from hunter.llm.router import (  # noqa: F401
+    ProviderRouter,
+    hunter_error_from_classified,
+    provider_from_config,
+)
 
 __all__ = [
     "AGENT_TIERS",
