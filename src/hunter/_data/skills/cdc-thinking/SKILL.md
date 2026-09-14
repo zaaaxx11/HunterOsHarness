@@ -4,6 +4,12 @@ description: Diverge before you converge — the zero-day reasoning loop.
 version: 0.2.0
 metadata:
   min_tier: advanced
+tags:
+- divergence
+- convergence
+- zero-day
+- reasoning
+- hypothesis
 ---
 
 # CDC thinking — the meta-pattern behind zero-day discovery

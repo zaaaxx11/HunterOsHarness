@@ -92,6 +92,9 @@ class AgentLoop:
     ) -> None:
         if tier not in TIER_ORDER:
             raise ValueError(f"unknown tier {tier!r} (use basic|advanced)")
+        from .skills import install_default_skill_selector
+
+        install_default_skill_selector()
         self.provider = provider
         self.registry = registry
         self.tier = tier
@@ -118,8 +121,10 @@ class AgentLoop:
             "evidence_stored": 0,
         }
         skills_index = ctx.config.get("skills_index")
-        if skills_index is None:
-            skills_index = resolve_skills_index()
+        from .prompts import current_skill_selector
+        from .skills import is_default_skill_selector
+        if skills_index is None or not is_default_skill_selector(current_skill_selector()):
+            skills_index = resolve_skills_index(question=goal)
         system = build_system_prompt(
             target_url=ctx.target_url,
             scope_summary=ctx.scope.summary(),

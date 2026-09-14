@@ -201,7 +201,27 @@ class ChatEngine:
             self.options["session_id"] = new_sid
         if reply.data.get("audit_start"):
             spec = reply.data["audit_start"]
-            opening = self._audit_open(spec)
+            goal = ""
+            if reply.data.get("audit_auto"):
+                from hunter.agent.prompts import build_goal
+                from hunter.engine.base import TargetSpec
+                from hunter.tools.scope import ScopeSet
+
+                scope_data = spec.get("scope", {})
+                goal = build_goal(
+                    TargetSpec(
+                        url=spec["target"],
+                        scope=ScopeSet(
+                            frozenset(scope_data.get("hosts") or ()),
+                            allow_subdomains=bool(scope_data.get("allow_subdomains")),
+                            name=str(scope_data.get("name", "chat-audit")),
+                        ),
+                        notes={},
+                    ),
+                    self._agent_tier(),
+                )
+            opening = self._audit_open(spec, goal_text=goal)
+
             if self._audit is not None:
                 run_id = self._audit["run_id"]
                 reply.data["audit_start_run_id"] = run_id
@@ -342,7 +362,7 @@ class ChatEngine:
             "engine_name": "agent-chat",
             "scope": scope.summary(),
         }
-        opening = self._audit_open(spec, marker=f"/audit {target}")
+        opening = self._audit_open(spec, marker=f"/audit {target}", goal_text=text)
         if self._audit is None:
             return TurnOutput(
                 self._no_provider_text(),
@@ -454,7 +474,7 @@ class ChatEngine:
 
     # -- interactive audit (/audit) ----------------------------------------------
 
-    def _audit_open(self, spec: dict[str, Any], *, marker: str | None = None) -> str:
+    def _audit_open(self, spec: dict[str, Any], *, marker: str | None = None, goal_text: str = "") -> str:
         """Open a governed audit run: ledger run + scoped ToolContext + budget."""
         if self.provider is None:
             return self._no_provider_text()
@@ -517,17 +537,25 @@ class ChatEngine:
         self.store.append_message(self.session_id, "user", marker or f"/audit {target}")
         from urllib.parse import urlparse
 
-        from hunter.agent.prompts import mounted_skills
+        from hunter.agent.skills import selected_skill_names
 
         host = urlparse(target).hostname or ""
-        names = mounted_skills()
-        skills_line = f"skills mounted: {len(names)}"
-        if names:
-            skills_line += f" ({', '.join(names)})"
+        selected = selected_skill_names(goal_text or target, goal_text or target)
+        skills_line = f"skills mounted: {len(selected)}"
+        if selected:
+            skills_line += f" ({', '.join(f'{name} [{source}]' for name, source in selected)})"
+        # Keep the pre-M5 corpus line as a secondary compatibility breadcrumb;
+        # the first mounted line above is the authoritative selected set.
+        from hunter.agent.prompts import mounted_skills
+
+        legacy = mounted_skills()
+        legacy_line = (
+            f"skills mounted: {len(legacy)} ({', '.join(legacy)})" if legacy else "skills mounted: 0"
+        )
         opening = (
             f"audit run {run_id} opened against {target} (scope: {scope.name})\n"
             f"target check: {target} — valid URL (host: {host})\n"
-            f"{skills_line}\n"
+            f"{skills_line}\n{legacy_line}\n"
             "Every probe is scope-gated and every finding is claim-gated: evidence or nothing."
         )
         self.store.append_message(

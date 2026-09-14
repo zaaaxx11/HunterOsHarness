@@ -32,6 +32,7 @@ __all__ = [
     "parse_keys_env",
     "load_keys_env",
     "write_keys_env",
+    "atomic_write_text",
 ]
 
 KEYS_ENV_FILENAME = "keys.env"
@@ -142,13 +143,12 @@ def keys_env_path(*, env: Mapping[str, str] | None = None, home: Path | None = N
 # -------------------------------------------------------------------- write --
 
 
-def _atomic_write(target: Path, text: str) -> None:
-    """Same commit path as writing.write_config: temp file in the target
-    directory, flush, fsync, os.replace with a bounded PermissionError retry
-    (Windows AV/reader locks fail transiently). No partial file on crash."""
+def atomic_write_text(target: Path, text: str) -> None:
+    """Atomically replace a UTF-8 text file using a sibling temporary file."""
+    target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=str(target.parent), suffix=".tmp", delete=False
+        mode="w", encoding="utf-8", newline="", dir=str(target.parent), suffix=".tmp", delete=False
     ) as handle:
         handle.write(text)
         handle.flush()
@@ -165,7 +165,7 @@ def _atomic_write(target: Path, text: str) -> None:
             time.sleep(0.01 * (attempt + 1))
         except OSError as exc:
             error = exc
-            break  # missing directory, cross-device, ... — not retryable
+            break
     if not replaced:
         with contextlib.suppress(OSError):
             os.unlink(handle.name)
@@ -174,6 +174,11 @@ def _atomic_write(target: Path, text: str) -> None:
             f"could not write {target}: {error}",
             "check the permissions of the target directory",
         ) from None
+
+
+def _atomic_write(target: Path, text: str) -> None:
+    """Compatibility alias for the public atomic writer."""
+    atomic_write_text(target, text)
 
 
 def write_keys_env(

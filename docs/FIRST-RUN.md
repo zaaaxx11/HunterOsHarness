@@ -1,5 +1,9 @@
 # FIRST-RUN — the exact operator preview
 
+## User skills and curator
+
+User-authored cards live at `~/.hunteros/skills/<name>/SKILL.md` and listings show their `[source]`. Run `/curate` for an always-on preview and y/N confirmation before saving. A flagged card carries `[quarantined]` semantics and is inert until manually reviewed.
+
 Everything below is **actual rendered output** (captured from real runs in
 throwaway state directories; the one fake is the API key, which is never
 shown). Paths are trimmed for readability. Follow it top to bottom for the

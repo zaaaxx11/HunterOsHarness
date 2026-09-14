@@ -2,6 +2,13 @@
 name: scope-discipline
 description: Fail-closed scope — consent is code, not prompts.
 version: 0.1.0
+tags:
+- core
+- scope
+- consent
+- manifest
+- gate
+- blocked
 ---
 
 # Scope discipline — the gate is structural

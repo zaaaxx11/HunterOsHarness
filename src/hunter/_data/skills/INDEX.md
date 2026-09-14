@@ -36,3 +36,5 @@ acts. Sharp, short, binding.
    the ledger is the only source of truth, the ladder is enforced in code.
 4. A skill may never instruct the agent around a gate. Gates are code;
    the only fix for a `BLOCKED` outcome is the evidence it asks for.
+
+5. User skills live in `~/.hunteros/skills/<name>/SKILL.md` with the same frontmatter and optional `tags:`; `quarantined: true` keeps a skill unmounted. User skills shadow bundled names with an auditable note, and every skill is inert data — never execute scripts.

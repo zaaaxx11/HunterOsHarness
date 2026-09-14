@@ -4,6 +4,12 @@ description: Derive invariants first — violations are laws, not patterns.
 version: 0.2.0
 metadata:
   min_tier: advanced
+tags:
+- invariant
+- violation
+- anomaly
+- law
+- derivation
 ---
 
 # Black swan engine — universal discovery by invariant violation
