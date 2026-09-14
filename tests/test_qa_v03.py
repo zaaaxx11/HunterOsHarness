@@ -217,16 +217,10 @@ class _YieldProvider:
         )
 
 
-class _QuietProvider:
-    """Provider that is never dialed (the audit is torn down before any turn)."""
-
-    name = "fake-quiet"
-
-    def complete(self, *_args, **_kwargs):  # pragma: no cover — never reached
-        raise AssertionError("the teardown test must not dial the model")
-
-
 def _audit_engine(tmp_path, provider) -> tuple[Any, str]:
+    """M3 rewrite: /audit <target> is a ONE-SHOT now, so arming goes through
+    the hunt-intent path with an auto-YES confirm; the arming call also drives
+    the auto turn (a yielding provider keeps the audit armed)."""
     from hunter.chat.repl import ChatEngine
     from hunter.chat.sessions import ChatStore
 
@@ -236,9 +230,10 @@ def _audit_engine(tmp_path, provider) -> tuple[Any, str]:
         config=None,
         provider=provider,
         options={"state_dir": str(tmp_path), "verbosity": "normal"},
+        confirm_fn=lambda _prompt: True,
     )
-    out = engine.handle_text("/audit http://127.0.0.1:8941/")
-    run_id = out.data["audit_start_run_id"]
+    out = engine.handle_text("audit http://127.0.0.1:8941/")
+    run_id = out.data["hunt"]["run_id"]
     return engine, run_id
 
 
@@ -248,8 +243,10 @@ def test_chat_audit_interrupted_teardown_aborts_open_phase(tmp_path):
     ever left open in the ledger, and the chain still verifies."""
     from hunter.phases import PhaseState
 
-    engine, run_id = _audit_engine(tmp_path, _QuietProvider())
-    engine.close()  # the interrupt path: no /audit finish, no agent turn
+    # The mandatory auto-drive turn yields once; the test then tears down
+    # without any further agent turn (the old never-dial _QuietProvider shape).
+    engine, run_id = _audit_engine(tmp_path, _YieldProvider())
+    engine.close()  # the interrupt path: no /audit finish, no further turn
 
     ledger = Ledger(tmp_path / "ledger.db")
     try:

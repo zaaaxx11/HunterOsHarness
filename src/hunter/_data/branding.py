@@ -46,6 +46,7 @@ def banner_lines(
     tier: str = "basic",
     model: str = "",
     session_id: str = "",
+    mode: str = "chat",
 ) -> list[str]:
     """The banner body lines, ready for rich panels or plain printing.
 
@@ -54,7 +55,7 @@ def banner_lines(
     """
     return [
         f"{BANNER_TITLE} — {BANNER_TAGLINE}",
-        f"v{version}  |  tier: {tier}  |  model: {model or '(unset)'}",
+        f"v{version}  |  tier: {tier}  |  model: {model or '(unset)'}  |  mode: {mode}",
         f"session: {session_id or '(new)'}",
         NO_FABRICATION_LINE,
         HINT_LINE,

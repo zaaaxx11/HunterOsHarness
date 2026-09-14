@@ -233,7 +233,9 @@ class YieldProvider:
 @needs_phases
 def test_audit_lifecycle_records_phase_events(tmp_path):
     """/audit mounts the PhaseState machine: score opens+closes, the run lives
-    in recon, and finish closes the open phase with its honest ledger gate."""
+    in recon, and finish closes the open phase with its honest ledger gate.
+    (M3 rewrite: arming goes through the hunt-intent path with an auto-YES
+    confirm — the auto-drive turn IS the old "go" turn.)"""
     from hunter.chat.repl import ChatEngine
     from hunter.chat.sessions import ChatStore
     from hunter.kernel.ledger import Ledger
@@ -244,10 +246,10 @@ def test_audit_lifecycle_records_phase_events(tmp_path):
         config=None,
         provider=YieldProvider(),
         options={"state_dir": str(tmp_path), "verbosity": "normal"},
+        confirm_fn=lambda _prompt: True,
     )
-    out = engine.handle_text("/audit http://127.0.0.1:8941/")
-    run_id = out.data["audit_start_run_id"]
-    engine.handle_text("go")  # the fake agent yields immediately
+    out = engine.handle_text("audit http://127.0.0.1:8941/")
+    run_id = out.data["hunt"]["run_id"]
     engine.close()  # honest finish: closes the open phase, ends the run
     ledger = Ledger(tmp_path / "ledger.db")
     try:

@@ -164,7 +164,9 @@ def test_provider_error_keeps_repl_alive(store, monkeypatch):
 
 
 def test_audit_conversational_turns_are_governed(store, tmp_path):
-    """Stretch check: /audit opens a ledger run; chat text drives the loop."""
+    """Stretch check: a hunt-intent audit opens a ledger run; chat text drives
+    the loop. (M3 rewrite: /audit <target> is one-shot, so arming goes through
+    the intent path with an auto-YES confirm.)"""
     from hunter.kernel.ledger import Ledger
     from hunter.llm.base import ToolCall
 
@@ -187,9 +189,10 @@ def test_audit_conversational_turns_are_governed(store, tmp_path):
         config=default_config(),
         provider=AuditProvider(),
         options={"state_dir": str(tmp_path), "verbosity": "normal"},
+        confirm_fn=lambda _prompt: True,
     )
-    out = engine.handle_text("/audit http://127.0.0.1:8941/")
-    run_id = out.data["audit_start_run_id"]
+    out = engine.handle_text("audit http://127.0.0.1:8941/")
+    run_id = out.data["hunt"]["run_id"]
     assert run_id.startswith("R-")
     reply = engine.handle_text("what did you find?")
     assert "yield" in reply.text

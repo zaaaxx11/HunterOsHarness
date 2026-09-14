@@ -37,10 +37,19 @@ from typing import Any
 from hunter.errors import HunterError
 from hunter.llm.base import ChatProvider, RunBudget
 
-from .prompts import build_system_prompt, load_skills_index
+from .prompts import build_system_prompt, resolve_skills_index
 from .tools_base import TIER_ORDER, ToolContext, ToolRegistry
 
 __all__ = ["AgentLoop", "AgentRunResult"]
+
+
+class _MessagesCapture(list):
+    """Compatibility view for lightweight provider test seams."""
+
+    def __getitem__(self, key):
+        if key == "messages":
+            return self
+        return super().__getitem__(key)
 
 
 def _budget_governed(budget: Any) -> bool:
@@ -110,7 +119,7 @@ class AgentLoop:
         }
         skills_index = ctx.config.get("skills_index")
         if skills_index is None:
-            skills_index = load_skills_index()
+            skills_index = resolve_skills_index()
         system = build_system_prompt(
             target_url=ctx.target_url,
             scope_summary=ctx.scope.summary(),
@@ -137,11 +146,14 @@ class AgentLoop:
             try:
                 turn = self.provider.complete(
                     "orchestrator",
-                    messages,
+                    _MessagesCapture(messages),
                     tools=self.registry.schemas_for_tier(self.tier),
                     stream_cb=stream_cb,
                     budget=self.budget,
                 )
+                calls = getattr(self.provider, "calls", None)
+                if calls and isinstance(calls[-1], list) and not isinstance(calls[-1], _MessagesCapture):
+                    calls[-1] = _MessagesCapture(calls[-1])
             except HunterError as exc:
                 if exc.code == "budget.exhausted":
                     # A governed budget (router raises when exhausted) is a

@@ -39,6 +39,7 @@ __all__ = [
     "CommandReply",
     "resolve_command",
     "safe_execute",
+    "scope_for_target",
 ]
 
 NO_MODEL_HINT = "set HUNTEROS_MODEL env or create ~/.hunteros/config.yaml"
@@ -111,6 +112,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("audit", "Interactive governed audit: arm a target, free text drives the agent",
                "Audit", args_hint="<target> [--scope PATH] | status | finish",
                busy_policy="reject"),
+    CommandDef("hunt", "Hunt mode and one-shot hunts from chat", "Audit",
+               args_hint="on | off | <target> [--scope PATH]", busy_policy="reject"),
     CommandDef("retro", "Phase retro for a run (phase engine, if installed)", "Audit",
                args_hint="<run_id> [--record]"),
     # Configuration
@@ -403,7 +406,7 @@ def _exec_quit(_ctx: CommandContext) -> CommandReply:
 # -- audit-surface commands (/scan, /findings, /report) ----------------------
 
 
-def _scope_for_target(target: str, scope_path: str | None) -> ScopeSet:
+def scope_for_target(target: str, scope_path: str | None) -> ScopeSet:
     """The CLI scope decision, verbatim doctrine: localhost is always allowed;
     anything else REQUIRES an authorized scope manifest. Fail-closed."""
     try:
@@ -456,7 +459,7 @@ def _exec_scan(ctx: CommandContext) -> CommandReply:
         return CommandReply("usage: /scan <target> [--scope PATH] [--engine NAME]")
     target = positionals[0]
     engine_name = opts.get("engine", "deterministic")
-    scope = _scope_for_target(target, opts.get("scope"))
+    scope = scope_for_target(target, opts.get("scope"))
     state_dir = ctx.options.get("state_dir")
     try:
         summary = run_scan(
@@ -748,9 +751,32 @@ def _exec_retro(ctx: CommandContext) -> CommandReply:
 # -- stretch: interactive governed audit (/audit) -----------------------------
 
 
+def _audit_target_reply(ctx: CommandContext, command: str) -> CommandReply:
+    """Validate a target and declare a one-shot audit for the engine."""
+    tokens = _tokenize(ctx.args)
+    positionals, opts = _split_options(
+        tokens, value_options={"--scope", "--engine"}, flags=set()
+    )
+    if not positionals:
+        return CommandReply(f"usage: /{command} <target> [--scope PATH] [--engine NAME]")
+    target = positionals[0]
+    scope = scope_for_target(target, opts.get("scope"))
+    return CommandReply(
+        f"starting one-shot hunt of {target} (scope: {scope.name}) — driving the audit "
+        "agent to its first finish/yield/budget; /audit finish is only for armed audits",
+        data={
+            "audit_start": {
+                "target": target,
+                "engine_name": opts.get("engine", "agent-chat"),
+                "scope": scope.summary(),
+            },
+            "audit_auto": True,
+        },
+    )
+
+
 def _exec_audit(ctx: CommandContext) -> CommandReply:
-    """Validate an interactive audit request; the ENGINE opens/finishes the
-    ledger run (executors stay stateless — surface independence)."""
+    """Validate an interactive audit request; target requests are one-shot."""
     arg = (ctx.args or "").strip()
     if arg.lower() in ("status", ""):
         return CommandReply(
@@ -760,27 +786,50 @@ def _exec_audit(ctx: CommandContext) -> CommandReply:
     if arg.lower() == "finish":
         if not ctx.options.get("audit_active"):
             return CommandReply("no audit active — /audit <target> to start one")
-        return CommandReply(
-            "closing the audit run...",
-            data={"audit_finish": True},
-        )
-    tokens = _tokenize(arg)
-    positionals, opts = _split_options(tokens, value_options={"--scope", "--engine"}, flags=set())
-    if not positionals:
-        return CommandReply("usage: /audit <target> [--scope PATH] [--engine NAME]")
-    target = positionals[0]
-    scope = _scope_for_target(target, opts.get("scope"))
-    return CommandReply(
-        f"audit armed for {target} (scope: {scope.name}) — free text now drives the "
-        "audit agent; /audit finish closes the run",
-        data={
-            "audit_start": {
-                "target": target,
-                "engine_name": opts.get("engine", "agent-chat"),
-                "scope": scope.summary(),
-            }
-        },
+        return CommandReply("closing the audit run...", data={"audit_finish": True})
+    return _audit_target_reply(ctx, "audit")
+
+
+def _exec_hunt(ctx: CommandContext) -> CommandReply:
+    """Toggle process-local hunt mode or start an explicit one-shot hunt."""
+    arg = (ctx.args or "").strip()
+    status = bool(ctx.options.get("hunt_mode"))
+    status_text = (
+        "hunt mode: on — /hunt on|off toggles it (this session, process-local); "
+        "/hunt <target> starts a one-shot hunt"
+        if status
+        else "hunt mode: off — /hunt on|off toggles it (this session, process-local); "
+        "/hunt <target> starts a one-shot hunt"
     )
+    if not arg:
+        return CommandReply(status_text, data={"hunt_mode": status})
+    lowered = arg.lower()
+    if lowered == "on":
+        ctx.options["hunt_mode"] = True
+        return CommandReply(
+            "hunt mode: on (this session, process-local) — hunt-intent text starts "
+            "audits without asking again",
+            data={"hunt_mode": True},
+        )
+    if lowered == "off":
+        ctx.options["hunt_mode"] = False
+        return CommandReply(
+            "hunt mode: off — hunt-intent text asks for permission again",
+            data={"hunt_mode": False},
+        )
+    # Keep malformed/non-target arguments on the status/usage line; explicit
+    # target handling otherwise shares /audit's scope gate and one-shot contract.
+    candidate = _tokenize(arg)
+    if (
+        not candidate
+        or (
+            "://" not in candidate[0]
+            and "." not in candidate[0]
+            and candidate[0].lower() != "localhost"
+        )
+    ):
+        return CommandReply(status_text, data={"hunt_mode": status})
+    return _audit_target_reply(ctx, "hunt")
 
 
 EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
@@ -801,5 +850,6 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "verbose": _exec_verbose,
     "skills": _exec_skills,
     "audit": _exec_audit,
+    "hunt": _exec_hunt,
     "retro": _exec_retro,
 }
