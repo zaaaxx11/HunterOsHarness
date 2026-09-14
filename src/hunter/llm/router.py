@@ -773,6 +773,21 @@ class ProviderRouter:
         )
 
 
+def provider_from_config(
+    config: HunterConfig, *, litellm_module: Any | None = None
+) -> ProviderRouter:
+    """Build the canonical provider for an already-loaded HunterConfig.
+
+    Keeping construction here gives chat, the engine registry, and one-shot
+    hunt selection one config-aware path while retaining the ``litellm_module``
+    seam used by router tests.  The ordinary call intentionally passes only
+    the config so lightweight constructor fakes remain valid.
+    """
+    if litellm_module is None:
+        return ProviderRouter(config)
+    return ProviderRouter(config, litellm_module=litellm_module)
+
+
 class _StreamToolCall:
     """Adapter so streamed tool-call fragments reuse _parse_tool_call."""
 
@@ -787,4 +802,4 @@ class _StreamFunction:
         self.arguments = arguments
 
 
-__all__ = ["ProviderRouter", "hunter_error_from_classified", "_wire_model"]
+__all__ = ["ProviderRouter", "hunter_error_from_classified", "provider_from_config", "_wire_model"]

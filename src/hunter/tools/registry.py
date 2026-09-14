@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from hunter.engine.base import EngineDriver
+    from hunter.llm.config import HunterConfig
 
 __all__ = ["available_engines", "get_engine"]
 
@@ -40,26 +41,36 @@ def available_engines() -> list[str]:
     return list(_ENGINES)
 
 
-def _default_llm_provider() -> Any | None:
-    """Best-effort default provider for the ``llm`` engine (B5's seam).
+def _default_llm_provider(config: HunterConfig | None = None) -> Any | None:
+    """Best-effort default provider for the ``llm`` engine.
 
-    Tries ``hunter.llm.router.ProviderRouter`` via ``from_env()`` when B5
-    ships that classmethod, else the no-arg constructor. ANY failure — module
-    not shipped yet, litellm missing, construction error — returns None so
-    the engine keeps its ships-dark stub behavior with an actionable message.
+    The provider is always built from one explicitly loaded config.  Config
+    errors, missing optional dependencies, and other construction failures
+    intentionally degrade to ``LLMEngine(None)`` so explicit LLM runs retain
+    their ledgered failed-run behavior.
     """
     try:
-        from hunter.llm.router import ProviderRouter  # noqa: PLC0415 — optional, B5-owned
-    except Exception:  # noqa: BLE001 — ImportError or import-time failure
-        return None
-    factory = getattr(ProviderRouter, "from_env", None) or ProviderRouter
-    try:
-        return factory()
-    except Exception:  # noqa: BLE001 — broken config degrades to the stub
+        from hunter.llm.config import (  # noqa: PLC0415 — optional LLM path
+            find_config_path,
+            load_config,
+        )
+        from hunter.llm.router import provider_from_config  # noqa: PLC0415 — optional LLM path
+
+        if config is None:
+            # HUNTEROS_CONFIG is an explicit operator choice.  A stale path
+            # must not turn into a provider backed by pure defaults.
+            configured_path = find_config_path()
+            if configured_path is not None and not configured_path.is_file():
+                return None
+            config = load_config()
+        return provider_from_config(config)
+    except Exception:  # noqa: BLE001 — broken config/provider degrades to stub
         return None
 
 
-def get_engine(name: str, *, provider: Any | None = None) -> EngineDriver:
+def get_engine(
+    name: str, *, provider: Any | None = None, config: HunterConfig | None = None
+) -> EngineDriver:
     """Instantiate the engine registered under ``name``.
 
     Raises:
@@ -77,6 +88,8 @@ def get_engine(name: str, *, provider: Any | None = None) -> EngineDriver:
     if name == "llm":
         from hunter.engine.llm import LLMEngine
 
-        return LLMEngine(provider if provider is not None else _default_llm_provider())
+        return LLMEngine(
+            provider if provider is not None else _default_llm_provider(config)
+        )
     available = ", ".join(available_engines())
     raise ValueError(f"unknown engine {name!r}; available engines: {available}")

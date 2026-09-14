@@ -132,9 +132,9 @@ class ChatEngine:
                     self._provider_error = exc
             if self.config is not None:
                 try:
-                    from hunter.llm.router import ProviderRouter
+                    from hunter.llm.router import provider_from_config
 
-                    self.provider = ProviderRouter(self.config)
+                    self.provider = provider_from_config(self.config)
                 except HunterError as exc:
                     self._provider_error = exc
         if session_id is not None and self.store.get_session(session_id) is None:
