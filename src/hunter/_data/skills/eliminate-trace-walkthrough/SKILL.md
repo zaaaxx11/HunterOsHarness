@@ -4,6 +4,12 @@ description: The method loop — eliminate, trace, walk through, repeat.
 version: 0.2.0
 metadata:
   min_tier: advanced
+tags:
+- method
+- eliminate
+- trace
+- walkthrough
+- loop
 ---
 
 # The method — eliminate, trace, walk through

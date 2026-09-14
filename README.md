@@ -9,6 +9,10 @@ the claim gate vetoes any claim the ledger cannot prove. A vulnerability you
 cannot replay is a vulnerability you cannot bill, defend, or trust:
 **evidence or nothing**.
 
+## User skills and curator
+
+Local methodology cards live under `~/.hunteros/skills/<name>/SKILL.md`. The `/skills` and `hunter skills` surfaces mark each effective card with its `[source]`; `/curate` previews retro-derived cards before an explicit y/N save. Flagged drafts are saved with `[quarantined]` semantics and remain inert until manually reviewed.
+
 ## Why it matters
 
 Prompt-only agents are asked not to fabricate; HunterOs makes fabrication

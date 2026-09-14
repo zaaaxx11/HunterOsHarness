@@ -4,6 +4,13 @@ description: Bypasses hijack trusted mechanisms — never attack head-on.
 version: 0.2.0
 metadata:
   min_tier: advanced
+tags:
+- bypass
+- auth
+- session
+- trust
+- boundary
+- webhook
 ---
 
 # Bypass principles — the gap between assumed and actual trust

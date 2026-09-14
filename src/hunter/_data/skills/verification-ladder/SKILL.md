@@ -2,6 +2,13 @@
 name: verification-ladder
 description: Candidate to verified — replay or it did not happen.
 version: 0.1.0
+tags:
+- core
+- evidence
+- replay
+- verification
+- findings
+- claim
 ---
 
 # The verification ladder — evidence or nothing

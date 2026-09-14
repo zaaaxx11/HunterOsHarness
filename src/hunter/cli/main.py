@@ -205,11 +205,11 @@ def hunt(
                 )
             chosen_scope = localhost_scope()
             selected_engine = selected_engine or "deterministic"
-            from hunter.agent.prompts import mounted_skills
-            names = mounted_skills()
+            from hunter.agent.skills import selected_skill_names
+            selected = selected_skill_names(mount.url, mount.url)
             if not json_out:
                 typer.echo(f"target check: {mount.url} — valid URL (host: 127.0.0.1)")
-                typer.echo(f"skills mounted: {len(names)}" + (f" ({', '.join(names)})" if names else ""))
+                typer.echo(f"skills mounted: {len(selected)}" + (f" ({', '.join(f'{name} [{source}]' for name, source in selected)})" if selected else ""))
             outcome = run_hunt(mount.url, scope=chosen_scope, engine_name=selected_engine, state_dir=state)
             _render_hunt_outcome(outcome, json_out=json_out)
             raise typer.Exit(outcome.exit_code)
@@ -242,11 +242,11 @@ def hunt(
         except Exception:
             selected_engine = "deterministic"
             err_console.print("no brain configured — using the deterministic engine.")
-    from hunter.agent.prompts import mounted_skills
-    names = mounted_skills()
+    from hunter.agent.skills import selected_skill_names
+    selected = selected_skill_names(normalized, normalized)
     if not json_out:
         typer.echo(f"target check: {normalized} — valid URL (host: {host})")
-        typer.echo(f"skills mounted: {len(names)}" + (f" ({', '.join(names)})" if names else ""))
+        typer.echo(f"skills mounted: {len(selected)}" + (f" ({', '.join(f'{name} [{source}]' for name, source in selected)})" if selected else ""))
     outcome = run_hunt(normalized, scope=chosen_scope, engine_name=selected_engine, state_dir=state)
     _render_hunt_outcome(outcome, json_out=json_out)
     raise typer.Exit(outcome.exit_code)
@@ -647,6 +647,15 @@ def retro(
             err_console.print(f"[red]unknown run:[/red] {rid}")
             raise typer.Exit(1)
         lines = _phase_retro_lines(ledger, rid, record=record)
+        if record and lines is not None:
+            from hunter.agent.curator import extract_candidates
+            from hunter.phases import compute_retro
+            retro = compute_retro(ledger, rid)
+            candidates = extract_candidates(retro, ledger.findings(rid))
+            if candidates:
+                lines.append(
+                    f"curator: {len(candidates)} candidate technique(s) — run /curate (or 'hunter curate {rid}') to review and save"
+                )
     except sqlite3.DatabaseError as exc:
         raise _ledger_guard(exc) from exc
     finally:
@@ -679,44 +688,52 @@ def _phase_retro_lines(ledger: Ledger, run_id: str, *, record: bool) -> list[str
     return lines or ["(no retro data)"]
 
 
+# --------------------------------------------------------------------- curate ---
+
+@app.command()
+def curate(
+    run_id: str | None = typer.Argument(None, help="Run id (default: latest run)."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Preview and optionally save methodology skills from a run retro."""
+    ledger = _open_ledger(state)
+    try:
+        rid = run_id or _latest_run_id(ledger)
+        from hunter.agent.curator import curate as run_curator
+        result = run_curator(rid, ledger=ledger, home=Path.home(), console=console)
+    finally:
+        ledger.close()
+    console.print(result)
+
+
 # --------------------------------------------------------------------- skills ---
 
 @app.command()
 def skills(
     view: str | None = typer.Option(None, "--view", help="Print the full SKILL.md of this skill name."),
 ) -> None:
-    """List (or view) bundled methodology skills."""
-    from importlib import resources
+    """List or view the merged bundled and user methodology skills."""
+    from hunter.agent.skills import load_corpus
 
-    root = resources.files("hunter") / "_data" / "skills"  # type: ignore[assignment]
+    corpus = load_corpus()
     if view is not None:
-        skill_file = root / view / "SKILL.md"
-        try:
-            console.print(RichMarkdown(skill_file.read_text(encoding="utf-8")))
-        except (FileNotFoundError, OSError, UnicodeDecodeError) as exc:
-            err_console.print(f"[red]unknown skill or unreadable file:[/red] {view} ({type(exc).__name__})")
-            raise typer.Exit(1) from exc
+        skill = next((item for item in corpus.skills if item.name == view), None)
+        if skill is None:
+            err_console.print(f"[red]unknown skill or unreadable file:[/red] {view}")
+            raise typer.Exit(1)
+        for note in corpus.notes:
+            if view in note and "shadows the bundled" in note:
+                console.print(f"note: {note}")
+        console.print(RichMarkdown(f"# {skill.name}\n\n{skill.description}\n\n{skill.body}"))
         return
-    table = Table(title="Skills (hunter/_data/skills)")
+    table = Table(title="Skills (bundled + user)")
     table.add_column("name")
     table.add_column("description")
-    try:
-        for entry in sorted(resource.name for resource in root.iterdir()):
-            if entry == "INDEX.md" or entry.startswith("_"):
-                continue
-            skill_md = root / entry / "SKILL.md"
-            desc = ""
-            if skill_md.is_file():
-                try:
-                    for line in skill_md.read_text(encoding="utf-8").splitlines():
-                        if line.lower().startswith("description:"):
-                            desc = line.split(":", 1)[1].strip()
-                            break
-                except (OSError, UnicodeDecodeError):
-                    desc = ""  # unreadable skill file — list the name, skip the blurb
-            table.add_row(entry, desc)
-    except FileNotFoundError:
-        err_console.print("[yellow]skills corpus not installed[/yellow]")
+    table.add_column("source")
+    for skill in corpus.skills:
+        table.add_row(skill.name, skill.description, "quarantined" if skill.quarantined else skill.source)
+    for note in corpus.notes:
+        console.print(f"note: {note}")
     console.print(table)
 
 

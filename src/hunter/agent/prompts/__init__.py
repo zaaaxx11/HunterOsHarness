@@ -23,6 +23,7 @@ __all__ = [
     "mounted_skills",
     "resolve_skills_index",
     "install_skill_selector",
+    "current_skill_selector",
     "SkillSelector",
 ]
 
@@ -151,11 +152,15 @@ def install_skill_selector(fn: SkillSelector | None) -> None:
     _SKILL_SELECTOR = fn
 
 
-def resolve_skills_index() -> str:
-    """The skills block to mount: the selector's answer when installed, else
-    the shipped whole-INDEX (M3 default). agent/loop.py calls THIS."""
+def current_skill_selector() -> SkillSelector | None:
+    """Return the explicitly installed selector, if any."""
+    return _SKILL_SELECTOR
+
+
+def resolve_skills_index(question: str = "") -> str:
+    """The skills block to mount, preserving the inert M3 default."""
     if _SKILL_SELECTOR is not None:
-        return _SKILL_SELECTOR("")
+        return _SKILL_SELECTOR(question)
     return load_skills_index()
 
 

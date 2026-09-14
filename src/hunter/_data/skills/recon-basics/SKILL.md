@@ -2,6 +2,11 @@
 name: recon-basics
 description: Map before you touch — recon that builds proof, not noise.
 version: 0.1.0
+tags:
+- recon
+- surface
+- mapping
+- passive
 ---
 
 # Recon basics — chain over collection

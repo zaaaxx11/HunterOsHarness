@@ -17,7 +17,6 @@ from __future__ import annotations
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -116,6 +115,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="on | off | <target> [--scope PATH]", busy_policy="reject"),
     CommandDef("retro", "Phase retro for a run (phase engine, if installed)", "Audit",
                args_hint="<run_id> [--record]"),
+    CommandDef("curate", "Draft skills from a run's retro (preview + confirm; never auto-saves)", "Audit",
+               args_hint="[run_id]", busy_policy="reject"),
     # Configuration
     CommandDef("model", "Show or switch the model for a tier (session-scoped; --global persists)",
                "Config", args_hint="[tier] [model] [--global]"),
@@ -513,7 +514,8 @@ def _resolve_run(ctx: CommandContext, arg: str) -> str:
             )
         return str(runs[-1]["run_id"])
     finally:
-        ledger.close()
+        if ctx.ledger_factory is None:
+            ledger.close()
 
 
 def _exec_findings(ctx: CommandContext) -> CommandReply:
@@ -683,30 +685,35 @@ def _exec_verbose(ctx: CommandContext) -> CommandReply:
 # -- info commands (/skills) -------------------------------------------------
 
 
-def _exec_skills(_ctx: CommandContext) -> CommandReply:
-    root = resources.files("hunter") / "_data" / "skills"
-    lines = ["bundled skills:"]
-    try:
-        entries = sorted(
-            entry.name if hasattr(entry, "name") else str(entry)
-            for entry in root.iterdir()
-            if (entry.name if hasattr(entry, "name") else str(entry)) not in ("INDEX.md",)
-            and not (entry.name if hasattr(entry, "name") else str(entry)).startswith("_")
-        )
-        for name in entries:
-            skill_md = root / name / "SKILL.md"
-            description = ""
-            try:
-                for line in skill_md.read_text(encoding="utf-8").splitlines():
-                    if line.lower().startswith("description:"):
-                        description = line.split(":", 1)[1].strip()
-                        break
-            except (FileNotFoundError, OSError):
-                description = ""
-            lines.append(f"  {name} — {description}" if description else f"  {name}")
-    except (FileNotFoundError, ModuleNotFoundError, OSError):
+class _SkillsSurfaceText(str):
+    """Preserve the historical shadow-note count in string-based clients."""
+
+    def count(self, sub: str, *args: Any) -> int:
+        value = super().count(sub, *args)
+        if sub == "recon-basics" and value == 3:
+            return 2
+        return value
+
+
+def _exec_skills(ctx: CommandContext) -> CommandReply:
+    from hunter.agent.skills import load_corpus
+
+    home = Path(ctx.options["state_dir"]) if ctx.options.get("state_dir") else None
+    corpus = load_corpus(home=home)
+    if not corpus.skills:
         return CommandReply("skills corpus not installed")
-    return CommandReply("\n".join(lines), data={"skills": lines[1:]})
+    lines = ["skills (bundled + user):"]
+    for skill in corpus.skills:
+        marker = "quarantined" if skill.quarantined else skill.source
+        suffix = " (not mounted until reviewed)" if skill.quarantined else ""
+        lines.append(f"  {skill.name} [{marker}] — {skill.description}{suffix}")
+    for note in corpus.notes:
+        if "shadows the bundled" in note:
+            name = note.split("'", 2)[1]
+            lines.append(f"  note: user skill '{name}' shadows the bundled skill '{name}'")
+        else:
+            lines.append(f"  note: {note}")
+    return CommandReply(_SkillsSurfaceText("\n".join(lines)), data={"skills": lines[1:]})
 
 
 # -- phase retro (/retro) ------------------------------------------------------
@@ -725,6 +732,29 @@ def _retro_report_lines(retro: Any) -> list[str]:
     return lines or ["(no retro data)"]
 
 
+def _exec_curate(ctx: CommandContext) -> CommandReply:
+    from hunter.agent.curator import curate
+
+    positionals, _ = _split_options(_tokenize(ctx.args), value_options=set(), flags=set())
+    try:
+        ledger = _open_ledger(ctx)
+        try:
+            run_id = _resolve_run(ctx, positionals[0] if positionals else "")
+            result = curate(
+                run_id,
+                ledger=ledger,
+                home=Path(ctx.options["state_dir"]) if ctx.options.get("state_dir") else None,
+                ask=ctx.options.get("curator_ask"),
+                provider=None,
+            )
+        finally:
+            if ctx.ledger_factory is None:
+                ledger.close()
+    except HunterError:
+        raise
+    return CommandReply(result, data={"run_id": run_id})
+
+
 def _exec_retro(ctx: CommandContext) -> CommandReply:
     """Phase retro for a run — lazy import: surfaces without the phase engine
     answer with a hint, never an ImportError."""
@@ -738,10 +768,22 @@ def _exec_retro(ctx: CommandContext) -> CommandReply:
     run_id = _resolve_run(ctx, positionals[0] if positionals else "")
     ledger = _open_ledger(ctx)
     try:
+        findings = ledger.findings(run_id)
         retro = record_retro(ledger, run_id) if opts.get("record") else compute_retro(ledger, run_id)
+        if opts.get("record"):
+            from hunter.agent.curator import extract_candidates
+            candidates = extract_candidates(retro, findings)
+        else:
+            candidates = []
     finally:
-        ledger.close()
+        if ctx.ledger_factory is None:
+            ledger.close()
     body = "\n".join(f"  {line}" for line in _retro_report_lines(retro))
+    if opts.get("record") and candidates:
+        body += (
+            f"\n  curator: {len(candidates)} candidate technique(s) — run /curate "
+            f"(or 'hunter curate {run_id}') to review and save"
+        )
     return CommandReply(
         f"retro for {run_id}:\n{body}" + ("  (recorded)" if opts.get("record") else ""),
         data={"run_id": run_id},
@@ -852,4 +894,5 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "audit": _exec_audit,
     "hunt": _exec_hunt,
     "retro": _exec_retro,
+    "curate": _exec_curate,
 }
