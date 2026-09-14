@@ -1,4 +1,4 @@
-# QUICKSTART — HunterOs Harness in 60 seconds
+# QUICKSTART — HunterOs Harness v0.4.0 in 60 seconds
 
 **Evidence-first security auditing.** Every finding lives in a hash-chained
 ledger with bound evidence — a claim the harness cannot prove is a claim it
@@ -209,9 +209,36 @@ hunter update
 ```
 
 Detects the install method and runs the matching upgrade (a git checkout
-gets `git pull` advice instead). The daily background version check prints a
-one-line stderr notice after command output; disable it with
-`HUNTEROS_NO_UPDATE_CHECK=1` (CI is skipped automatically).
+gets `git pull` advice instead). The GitHub-first check falls back to PyPI and
+uses a 24-hour cache. The daily background version check prints a one-line
+stderr notice after command output; disable it with
+`HUNTEROS_NO_UPDATE_CHECK=1` (CI is skipped automatically). Notices are
+stderr-only and quiet in long-lived `chat`, `tui`, and `gateway` surfaces.
+
+## v0.4.0 contracts
+
+Ordinary free text remains chat. Target-bearing hunt intent requires explicit
+confirmation when hunt mode is off; `/hunt on` and `/hunt off` are process-local.
+`/audit <target>` and `/hunt <target>` are one-shot commands, while `hunter hunt`
+supports authorized URLs and local directories. Exit codes 0 (clean), 1 (error),
+2 (findings), and 3 (refused/usage) are stable for hunts. Non-localhost targets
+require an authorized scope manifest; authorization is your responsibility and
+enforcement is fail-closed.
+
+Provider roles are `orchestrator`, `hunter`, `verifier`, and `utility`. Legacy
+`planner`/`exploit`/`verify` names load and are canonicalized on the next write.
+The `verify` phase and `hunter verify` ledger command retain their meaning.
+
+Browser support is optional, hunt-only, and scope-gated. `agent.browser` remains
+loadable without the extra. Install explicitly with `pip install
+'hunteros-harness[browser]'`, then `python -m playwright install chromium`;
+normal chat does not use browser tools and HunterOs never installs Chromium
+automatically.
+
+Skills live at `~/.hunteros/skills/<name>/SKILL.md` in a merged bundled/user
+corpus with `[bundled]`, `[user]`, and `[quarantined]` markers. Matching selects
+at most five skills. `/curate` and `hunter curate` preview cards and require
+explicit y/N confirmation before save; quarantined cards are inert until review.
 
 ## Troubleshooting
 

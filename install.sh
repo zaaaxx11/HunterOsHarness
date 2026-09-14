@@ -8,8 +8,8 @@
 #   3. Otherwise falls back to:        pip install git+<REPO_URL>
 #
 # Then it registers `hunter` + `hunt` shims in ~/.hunteros/bin, adds that
-# directory to your shell rc's PATH (a tagged, idempotent block), and — on an
-# interactive terminal — launches `hunter init` (the onboarding wizard).
+# directory to your shell rc's PATH (a tagged, idempotent block), and - on an
+# interactive terminal - launches `hunter init` (the onboarding wizard).
 #
 # Usage:
 #   ./install.sh [--skip-setup] [--dry-run] [git-url]
@@ -46,7 +46,7 @@ done
 
 VENV_DIR="$HOME/.hunteros/venv"
 BIN_DIR="$HOME/.hunteros/bin"
-PATH_MARKER='# >>> hunteros PATH >>>'
+PATH_TAG='hunteros PATH'
 
 echo
 cat <<'BANNER'
@@ -96,7 +96,7 @@ register_path() {
     if [ ! -f "$rc" ]; then
         ( umask 077 && touch "$rc" )
     fi
-    if grep -qF "$PATH_MARKER" "$rc"; then
+    if grep -qF "$PATH_TAG" "$rc"; then
         ok "PATH already registered in $rc"
     else
         cat >> "$rc" <<'BLOCK'
@@ -107,7 +107,7 @@ export PATH="$HOME/.hunteros/bin:$PATH"
 # <<< hunteros PATH <<<
 
 BLOCK
-        ok "PATH registered in $rc — open a NEW shell or: source $rc"
+        ok "PATH registered in $rc - open a NEW shell or: source $rc"
     fi
 }
 
@@ -119,7 +119,7 @@ final_printout() {
     echo "       hunter"
     echo "     The onboarding wizard configures your brain in about a minute -"
     echo "     then \`hunter chat\` talks to it. (\`hunt\` works anywhere \`hunter\` does.)"
-    echo "  2. Coming in a later release:"
+    echo "  2. Run a governed hunt on an authorized target:"
     echo "       hunter hunt <url> - one-command hunt on an authorized target."
     echo
     echo "Scan only systems you own or are explicitly authorized to test."
@@ -169,23 +169,23 @@ else
     "$PYTHON_EXE" -m venv "$VENV_DIR" || fail "Failed to create the venv at $VENV_DIR."
 fi
 VENV_PYTHON="$VENV_DIR/bin/python"
-[ -x "$VENV_PYTHON" ] || fail "venv python missing at $VENV_PYTHON — delete $VENV_DIR and re-run."
+[ -x "$VENV_PYTHON" ] || fail "venv python missing at $VENV_PYTHON - delete $VENV_DIR and re-run."
 
 step "Upgrading pip (quiet)"
 "$VENV_PYTHON" -m pip install --upgrade pip --quiet --disable-pip-version-check \
-    || fail "pip upgrade failed — check your network/proxy settings."
+    || fail "pip upgrade failed - check your network/proxy settings."
 
 # --- 3. Install the harness ------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
 if [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
-    step "Local checkout detected — installing editable from $SCRIPT_DIR"
+    step "Local checkout detected - installing editable from $SCRIPT_DIR"
     "$VENV_PYTHON" -m pip install -e "$SCRIPT_DIR" --disable-pip-version-check \
-        || fail "Editable install failed — see the pip output above."
+        || fail "Editable install failed - see the pip output above."
 else
     step "Installing hunteros-harness from PyPI"
     if ! "$VENV_PYTHON" -m pip install hunteros-harness --disable-pip-version-check; then
-        step "PyPI install failed — falling back to git ($REPO_URL)"
+        step "PyPI install failed - falling back to git ($REPO_URL)"
         "$VENV_PYTHON" -m pip install "git+$REPO_URL" --disable-pip-version-check \
             || fail "All install sources failed. Check the repo URL and your network, then re-run."
     fi
@@ -194,8 +194,8 @@ fi
 "$VENV_PYTHON" -c "import hunter; print('hunteros-harness', hunter.__version__, 'installed')"
 
 # --- 4. Verify the venv entry points (pins the `hunt` alias) ----------------------
-[ -x "$VENV_DIR/bin/hunter" ] || fail "the 'hunter' entry point is missing — re-run the installer"
-[ -x "$VENV_DIR/bin/hunt" ] || fail "the 'hunt' entry point is missing — re-run the installer"
+[ -x "$VENV_DIR/bin/hunter" ] || fail "the 'hunter' entry point is missing - re-run the installer"
+[ -x "$VENV_DIR/bin/hunt" ] || fail "the 'hunt' entry point is missing - re-run the installer"
 
 # --- 5. Shims + PATH ----------------------------------------------------------------
 write_shims
@@ -207,12 +207,12 @@ register_path
 if [ "$SKIP_SETUP" = "1" ]; then
     step "Skipping setup (--skip-setup)"
 elif [ -n "${HUNTEROS_CONFIG:-}" ] || [ -f "$HOME/.hunteros/config.yaml" ]; then
-    step "Config found — skipping the wizard (run 'hunter init' to reconfigure)"
+    step "Config found - skipping the wizard (run 'hunter init' to reconfigure)"
 elif [ -t 0 ]; then
     step "Launching the onboarding wizard"
     "$VENV_DIR/bin/hunter" init || true
 else
-    step "Non-interactive session — run 'hunter init' to configure your brain"
+    step "Non-interactive session - run 'hunter init' to configure your brain"
 fi
 
 # --- 7. Next steps --------------------------------------------------------------------

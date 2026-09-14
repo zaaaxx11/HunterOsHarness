@@ -47,7 +47,7 @@ Installed. Next steps:
        hunter
      The onboarding wizard configures your brain in about a minute -
      then `hunter chat` talks to it. (`hunt` works anywhere `hunter` does.)
-  2. Coming in a later release:
+  2. Run a governed hunt now:
        hunter hunt <url> - one-command hunt on an authorized target.
 
 Scan only systems you own or are explicitly authorized to test.
@@ -67,7 +67,7 @@ to do next:
 ```
 $ hunter
 ┌────────────────────────────────── hunter ───────────────────────────────────┐
-│ HunterOs Harness v0.3.0 — evidence-first security auditing                  │
+│ HunterOs Harness v0.4.0 — evidence-first security auditing                  │
 │                                                                             │
 │ every finding is proven by a hash-chained ledger, or it does not exist      │
 │                                                                             │
@@ -87,7 +87,7 @@ $ hunter
 
 ```
 $ hunter doctor
-HunterOs Harness doctor — hunter 0.3.0
+HunterOs Harness doctor — hunter 0.4.0
   OK  python 3.13.7 on Windows
   OK  dep:typer 0.27.2
   OK  dep:rich 15.0.0
@@ -236,7 +236,7 @@ not decoration.
 $ hunter chat
 ╭─────────────── hunter chat ───────────────╮
 │ HUNTEROS — Evidence or Nothing            │
-│ v0.3.0  |  tier: advanced  |  model:      │
+│ v0.4.0  |  tier: advanced  |  model:      │
 │ anthropic/claude-sonnet-4.5               │
 │ session: S-9f2c…                          │
 │ No fabricated claims: a finding exists    │
@@ -339,7 +339,7 @@ plus target and mounted-skill checks. From the shell, use:
 ```text
 $ hunter hunt http://127.0.0.1:8941/
 target check: http://127.0.0.1:8941/ — valid URL (host: 127.0.0.1)
-skills mounted: 7
+skills mounted: [bundled] core, [user] local-method, [quarantined] pending-review
 10 verified / 0 candidates — 10 findings
 report: .hunter/reports/R-...md
 ```
@@ -359,7 +359,8 @@ use a temporary loopback mount that shuts down when the command ends.
 | Update check | `~/.hunteros/update-check.json` (24h cache; `HUNTEROS_NO_UPDATE_CHECK=1` disables) |
 | Report | `hunter report` — markdown from ledger rows only |
 
-Once a day the CLI checks GitHub (falling back to PyPI) for a newer release
-and, when one exists, prints a one-line notice on stderr after your command's
-output — `hunter update` applies it; the check never prints into `--json`
+Once a day the CLI checks GitHub first (falling back to PyPI) for a newer
+release using a 24-hour cache and, when one exists, prints a one-line notice on
+stderr after your command's output — `hunter update` applies it; set
+`HUNTEROS_NO_UPDATE_CHECK=1` to opt out. The check never prints into `--json`
 stdout and never interrupts `chat`/`tui`/`gateway` sessions.
