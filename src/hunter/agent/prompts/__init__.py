@@ -9,13 +9,22 @@ four placeholders: ``{target_url}``, ``{scope_block}``, ``{tier_note}``,
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from importlib import resources
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from hunter.engine.base import TargetSpec
 
-__all__ = ["build_goal", "build_system_prompt", "load_skills_index"]
+__all__ = [
+    "build_goal",
+    "build_system_prompt",
+    "load_skills_index",
+    "mounted_skills",
+    "resolve_skills_index",
+    "install_skill_selector",
+    "SkillSelector",
+]
 
 _TEMPLATE_RESOURCE = "_data/prompts/audit_system_prompt.md"
 
@@ -122,6 +131,48 @@ def load_skills_index() -> str:
         )
     except (FileNotFoundError, ModuleNotFoundError, OSError, UnicodeDecodeError):
         return ""
+
+
+# --- M5 extension point (documented): skill selection seam ---------------------
+#
+# M3 mounts the WHOLE skills index into every audit prompt. M5 installs a
+# selector that trims it to the max-5 skills relevant to the goal. Until then
+# the selector is inert: resolve_skills_index() is byte-identical to
+# load_skills_index(), and nothing outside tests calls install_skill_selector.
+
+SkillSelector = Callable[[str], str]  # (goal/question) -> skills block to mount
+
+_SKILL_SELECTOR: SkillSelector | None = None
+
+
+def install_skill_selector(fn: SkillSelector | None) -> None:
+    """Set (or clear, with None) the skills selector — idempotent."""
+    global _SKILL_SELECTOR  # noqa: PLW0603 — the documented module-level seam
+    _SKILL_SELECTOR = fn
+
+
+def resolve_skills_index() -> str:
+    """The skills block to mount: the selector's answer when installed, else
+    the shipped whole-INDEX (M3 default). agent/loop.py calls THIS."""
+    if _SKILL_SELECTOR is not None:
+        return _SKILL_SELECTOR("")
+    return load_skills_index()
+
+
+def mounted_skills() -> list[str]:
+    """Names of the bundled skills (hunter/_data/skills/*, INDEX.md and
+    ``_``-prefixed helpers excluded, sorted); ``[]`` when the corpus is
+    missing — a listing must never break a hunt."""
+    try:
+        root = resources.files("hunter") / "_data" / "skills"
+        return sorted(
+            entry.name if hasattr(entry, "name") else str(entry)
+            for entry in root.iterdir()
+            if (entry.name if hasattr(entry, "name") else str(entry)) != "INDEX.md"
+            and not (entry.name if hasattr(entry, "name") else str(entry)).startswith("_")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError, AttributeError, TypeError):
+        return []
 
 
 def _scope_block(scope_summary: str | dict[str, Any], target_url: str) -> str:

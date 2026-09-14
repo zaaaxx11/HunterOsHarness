@@ -29,7 +29,14 @@ from rich.panel import Panel
 from rich.text import Text
 
 from hunter import __version__
-from hunter.chat.commands import CommandContext, CommandReply, resolve_command, safe_execute
+from hunter.chat.commands import (
+    CommandContext,
+    CommandReply,
+    resolve_command,
+    safe_execute,
+    scope_for_target,
+)
+from hunter.chat.intent import HuntIntent, IntentRouter
 from hunter.chat.sessions import ChatStore
 from hunter.errors import HunterError
 from hunter.llm.base import StreamCb, TurnResult
@@ -109,6 +116,7 @@ class ChatEngine:
         provider: ChatProvider | None = None,
         ledger_factory: Any = None,
         options: dict[str, Any] | None = None,
+        confirm_fn: Any = None,
     ) -> None:
         self._owns_store = store is None
         self.store = store if store is not None else ChatStore()
@@ -135,7 +143,10 @@ class ChatEngine:
         self.options: dict[str, Any] = options if options is not None else {}
         self.options.setdefault("verbosity", "normal")
         self.options.setdefault("state_dir", state_dir)
+        self.options.setdefault("hunt_mode", False)
         self.options["session_id"] = self.session_id
+        self.confirm_fn = confirm_fn
+        self._intent = IntentRouter()
         self._ledger_factory = ledger_factory
         self._audit: Any | None = None
         self._stream_buffer: list[str] = []
@@ -189,12 +200,38 @@ class ChatEngine:
             self.session_id = new_sid
             self.options["session_id"] = new_sid
         if reply.data.get("audit_start"):
-            self._audit_open(reply.data["audit_start"])
+            spec = reply.data["audit_start"]
+            opening = self._audit_open(spec)
             if self._audit is not None:
-                reply.data["audit_start_run_id"] = self._audit["run_id"]
+                run_id = self._audit["run_id"]
+                reply.data["audit_start_run_id"] = run_id
+                if reply.data.get("audit_auto"):
+                    from hunter.agent.prompts import build_goal
+                    from hunter.engine.base import TargetSpec
+
+                    goal = build_goal(
+                        TargetSpec(url=spec["target"], scope=self._audit["ctx"].scope, notes={}),
+                        self._audit["tier"],
+                    )
+                    out_text, result = self._audit_turn_result(goal)
+                    parts = [opening, out_text]
+                    if not result.finished:
+                        status = "interrupted" if result.interrupted else "completed"
+                        summary = self._audit_finish(status)
+                        summary += " (agent yielded early — run closed)"
+                    else:
+                        summary = self._audit_finish(
+                            "interrupted" if result.interrupted else "completed"
+                        ) if self._audit is not None else ""
+                    if summary:
+                        parts.append(summary)
+                    report = self._write_report(run_id)
+                    parts.append(
+                        f"report: {report}" if report else "report unavailable — chain blocked"
+                    )
+                    reply.text = "\n\n".join(parts)
+                    reply.data["report_path"] = str(report) if report else None
             else:
-                # QA red-audit v0.2: the executor promised an armed audit, but
-                # the engine refused to open one (no provider / no model).
                 # Never leave the user with a false "audit armed" reply.
                 reply.text = self._no_provider_text()
                 reply.data["audit_refused"] = True
@@ -207,6 +244,11 @@ class ChatEngine:
         self._autotitle(text)
         if self._audit is not None:
             return TurnOutput(self._audit_turn(text, stream_cb=stream_cb), kind="message")
+        intent = self._intent.classify(text)
+        if intent.is_hunt:
+            handled = self._handle_hunt_intent(intent, text, stream_cb=stream_cb)
+            if handled is not None:
+                return handled
         if self.provider is None:
             return TurnOutput(self._no_provider_text(), kind="error")
         self.store.append_message(self.session_id, "user", text)
@@ -224,6 +266,137 @@ class ChatEngine:
         except KeyboardInterrupt:
             return self._interrupted_output()
         return self._persist_assistant_turn(turn)
+
+    def _handle_hunt_intent(
+        self, intent: HuntIntent, text: str, *, stream_cb: StreamCb | None
+    ) -> TurnOutput | None:
+        target = intent.target or ""
+        if intent.kind == "path":
+            return TurnOutput(
+                f"'{target}' looks like a local path — the chat audit surface handles URLs only.\n"
+                f'Hunt it with: hunter hunt "{target}"',
+                data={
+                    "hunt": {
+                        "target": target,
+                        "action": "path_guidance",
+                        "run_id": None,
+                        "report_path": None,
+                    }
+                },
+            )
+        if self.provider is None:
+            return TurnOutput(
+                self._no_provider_text(),
+                kind="error",
+                data={
+                    "hunt": {
+                        "target": target,
+                        "action": "headless_declined",
+                        "run_id": None,
+                        "report_path": None,
+                    }
+                },
+            )
+
+        mode = bool(self.options.get("hunt_mode"))
+        if not mode:
+            if self.confirm_fn is None:
+                return TurnOutput(
+                    self._headless_decline_text(target),
+                    data={
+                        "hunt": {
+                            "target": target,
+                            "action": "headless_declined",
+                            "run_id": None,
+                            "report_path": None,
+                        }
+                    },
+                )
+            try:
+                confirmed = bool(
+                    self.confirm_fn(
+                        f"start a governed hunt against {target}? [y/N] "
+                    )
+                )
+            except Exception:  # noqa: BLE001 — confirmation is fail-closed
+                confirmed = False
+            if not confirmed:
+                return None
+
+        try:
+            scope = scope_for_target(target, None)
+        except HunterError as exc:
+            return TurnOutput(
+                exc.user_message(),
+                data={
+                    "hunt": {
+                        "target": target,
+                        "action": "scope_refused",
+                        "run_id": None,
+                        "report_path": None,
+                    }
+                },
+            )
+        spec = {
+            "target": target,
+            "engine_name": "agent-chat",
+            "scope": scope.summary(),
+        }
+        opening = self._audit_open(spec, marker=f"/audit {target}")
+        if self._audit is None:
+            return TurnOutput(
+                self._no_provider_text(),
+                kind="error",
+                data={
+                    "hunt": {
+                        "target": target,
+                        "action": "headless_declined",
+                        "run_id": None,
+                        "report_path": None,
+                    }
+                },
+            )
+        run_id = self._audit["run_id"]
+        out_text, result = self._audit_turn_result(text, stream_cb=stream_cb)
+        action = "closed" if result.finished else "started"
+        parts = [opening, out_text]
+        report_path = None
+        if result.finished:
+            report_path = self._write_report(run_id)
+            parts.append(
+                f"report: {report_path}"
+                if report_path
+                else "report unavailable — chain blocked"
+            )
+        response = "\n\n".join(part for part in parts if part)
+        if mode:
+            response = f"hunt mode: starting audit of {target}\n\n{response}"
+        return TurnOutput(
+            response,
+            kind="message",
+            data={
+                "hunt": {
+                    "target": target,
+                    "action": action,
+                    "run_id": run_id,
+                    "report_path": str(report_path) if report_path else None,
+                }
+            },
+        )
+
+    @staticmethod
+    def _headless_decline_text(target: str) -> str:
+        return (
+            f"hunt request detected for {target} — declined: no interactive confirmation is "
+            "available on this surface. Start explicitly with /audit <target> --scope "
+            "<manifest> or `hunter hunt <target>` (which can generate a minimal manifest "
+            "after confirmation)."
+        )
+
+    def _write_report(self, run_id: str):
+        from hunter.hunt import write_hunt_report
+
+        return write_hunt_report(run_id, state_dir=self.options.get("state_dir"))
 
     def _wrap_stream(self, stream_cb: StreamCb | None) -> StreamCb | None:
         if stream_cb is None:
@@ -281,7 +454,7 @@ class ChatEngine:
 
     # -- interactive audit (/audit) ----------------------------------------------
 
-    def _audit_open(self, spec: dict[str, Any]) -> str:
+    def _audit_open(self, spec: dict[str, Any], *, marker: str | None = None) -> str:
         """Open a governed audit run: ledger run + scoped ToolContext + budget."""
         if self.provider is None:
             return self._no_provider_text()
@@ -341,21 +514,41 @@ class ChatEngine:
             f"audit active: run {run_id} on {target} — free text drives the agent; "
             "/audit finish closes the run"
         )
-        self.store.append_message(self.session_id, "user", f"/audit {target}")
+        self.store.append_message(self.session_id, "user", marker or f"/audit {target}")
+        from urllib.parse import urlparse
+
+        from hunter.agent.prompts import mounted_skills
+
+        host = urlparse(target).hostname or ""
+        names = mounted_skills()
+        skills_line = f"skills mounted: {len(names)}"
+        if names:
+            skills_line += f" ({', '.join(names)})"
+        opening = (
+            f"audit run {run_id} opened against {target} (scope: {scope.name})\n"
+            f"target check: {target} — valid URL (host: {host})\n"
+            f"{skills_line}\n"
+            "Every probe is scope-gated and every finding is claim-gated: evidence or nothing."
+        )
         self.store.append_message(
             self.session_id,
             "assistant",
-            f"audit run {run_id} opened against {target} (scope: {scope.name}). "
-            "Every probe is scope-gated and every finding is claim-gated: evidence or nothing.",
+            opening,
             run_id=run_id,
         )
-        return f"audit run {run_id} opened — free text now drives the audit agent"
+        return f"audit run {run_id} opened — free text now drives the audit agent\n{opening}"
 
     def _audit_turn(self, text: str, *, stream_cb: StreamCb | None = None) -> str:
         """One user message against the audit agent loop."""
+        return self._audit_turn_result(text, stream_cb=stream_cb)[0]
+
+    def _audit_turn_result(
+        self, text: str, *, stream_cb: StreamCb | None = None
+    ) -> tuple[str, Any]:
+        """Drive one audit turn and return rendered text plus its result."""
         audit = self._audit
         if audit is None:  # pragma: no cover — guarded by caller
-            return "no audit active"
+            return "no audit active", type("Result", (), {"finished": False, "interrupted": False})()
         from hunter.agent.loop import AgentLoop
         from hunter.agent.tools import build_registry
 
@@ -369,11 +562,7 @@ class ChatEngine:
         try:
             result = loop.run(audit["ctx"], text, stream_cb=stream_cb)
         except HunterError as exc:
-            # QA red-audit v0.2: a config/provider failure mid-audit (e.g. no
-            # model resolved) must surface as a readable error, never kill the
-            # REPL with a traceback. The audit stays armed; the run is closed
-            # by close() if the user gives up.
-            return exc.user_message()
+            return exc.user_message(), type("Result", (), {"finished": False, "interrupted": False})()
         out_text = result.yield_message or result.summary or "(no output)"
         self.store.append_message(
             self.session_id,
@@ -385,8 +574,8 @@ class ChatEngine:
         if result.finished:
             status = "interrupted" if result.interrupted else "completed"
             summary = self._audit_finish(status)
-            return f"{out_text}\n\n{summary}"
-        return out_text
+            return f"{out_text}\n\n{summary}", result
+        return out_text, result
 
     def _audit_finish(self, status: str) -> str:
         audit = self._audit
@@ -461,6 +650,7 @@ def banner(engine: ChatEngine) -> Panel:
         tier=cfg.agent.tier if cfg is not None else "basic",
         model=default_model(cfg) if cfg is not None else "",
         session_id=engine.session_id,
+        mode="hunt" if engine.options.get("hunt_mode") else "chat",
     )
     body = Text("\n".join(lines))
     return Panel(body, title="hunter chat", border_style="cyan", subtitle="Evidence or Nothing")
@@ -510,6 +700,14 @@ def run_repl(
     scripted console via the keyword-only hooks)."""
     console = console if console is not None else Console()
     engine = engine if engine is not None else ChatEngine(session_id=session_id, state_dir=state_dir)
+    if engine.confirm_fn is None:
+        def _console_confirm(prompt: str) -> bool:
+            try:
+                answer = console.input(prompt).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return False
+            return answer in ("y", "yes")
+        engine.confirm_fn = _console_confirm
     console.print(banner(engine))
     armed = 0  # Ctrl-C stage within the current prompt cycle
     while True:

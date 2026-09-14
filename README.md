@@ -91,7 +91,13 @@ installed — LiteLLM ships in the core install):
 ```bash
 export OPENAI_API_KEY=sk-...      # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
 export HUNTEROS_MODEL=gpt-4o
-hunter chat                       # talk to it; /audit <target> for a governed audit
+hunter chat                       # normal chat; hunt intent offers a governed audit
+```
+
+Chat is ordinary free text until you say something like `audit http://127.0.0.1:8941/`; the REPL asks for confirmation, while `/hunt on` enables process-local hunt mode. Use `/audit <target>` or `/hunt <target>` for a one-shot hunt, and `hunter hunt <target>` from the shell (including local directories). The scope gate is unchanged: non-localhost targets require an authorized scope manifest.
+
+```bash
+hunter hunt http://127.0.0.1:8941/        # one-shot CLI hunt
 ```
 
 Add any third-party provider:

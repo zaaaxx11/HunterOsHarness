@@ -322,6 +322,23 @@ RuntimeError: simulated crash for the docs
 
 ---
 
+## Chat and one-shot hunts
+
+Free text remains chat until a hunt intent is confirmed. `/hunt on` enables
+process-local hunt mode; a started audit shows `hunt mode: starting audit of`
+plus target and mounted-skill checks. From the shell, use:
+
+```text
+$ hunter hunt http://127.0.0.1:8941/
+target check: http://127.0.0.1:8941/ — valid URL (host: 127.0.0.1)
+skills mounted: 7
+10 verified / 0 candidates — 10 findings
+report: .hunter/reports/R-...md
+```
+
+Non-localhost hunts require an authorized scope manifest. Local directory hunts
+use a temporary loopback mount that shuts down when the command ends.
+
 ## Where things live
 
 | What | Where |

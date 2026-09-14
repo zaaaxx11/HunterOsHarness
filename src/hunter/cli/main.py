@@ -163,6 +163,115 @@ def version() -> None:
     console.print(f"hunter {_version()}")
 
 
+# --------------------------------------------------------------------- hunt ---
+
+@app.command()
+def hunt(
+    target: str = typer.Argument(..., help="URL, host[:port], or local directory."),
+    scope: Path | None = typer.Option(None, "--scope", help="Scope manifest JSON."),
+    engine: str | None = typer.Option(None, "--engine", help="deterministic | mock | llm."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Assume yes for proposed scope."),
+) -> None:
+    """One-command hunt with Strix exit codes: 0 clean, 1 error, 2 findings, 3 refused."""
+    import json
+
+    from hunter.hunt import (
+        confirm_prompt,
+        mount_local_dir,
+        normalize_hunt_target,
+        propose_manifest,
+        run_hunt,
+    )
+    from hunter.tools.scope import ScopeSet, scope_from_manifest
+
+    normalized, kind = normalize_hunt_target(target)
+    if kind == "invalid":
+        err_console.print("[red]BLOCKED:[/red] invalid hunt target")
+        raise typer.Exit(3)
+    selected_engine = engine
+    if selected_engine is not None and selected_engine not in {"deterministic", "mock", "llm"}:
+        err_console.print("[red]BLOCKED:[/red] unknown engine; engines: deterministic, mock, llm")
+        raise typer.Exit(3)
+    chosen_scope = None
+    if kind == "dir":
+        mount = mount_local_dir(normalized)
+        with mount:
+            if not json_out:
+                typer.echo(
+                    f"mounting local directory {normalized} on {mount.url} "
+                    "(temporary, localhost-only) — everything inside is reachable by the audit."
+                )
+            chosen_scope = localhost_scope()
+            selected_engine = selected_engine or "deterministic"
+            from hunter.agent.prompts import mounted_skills
+            names = mounted_skills()
+            if not json_out:
+                typer.echo(f"target check: {mount.url} — valid URL (host: 127.0.0.1)")
+                typer.echo(f"skills mounted: {len(names)}" + (f" ({', '.join(names)})" if names else ""))
+            outcome = run_hunt(mount.url, scope=chosen_scope, engine_name=selected_engine, state_dir=state)
+            _render_hunt_outcome(outcome, json_out=json_out)
+            raise typer.Exit(outcome.exit_code)
+
+    host = (urlparse(normalized).hostname or "").lower()
+    if host in LOCAL_HOSTS:
+        chosen_scope = localhost_scope()
+    elif scope is not None:
+        try:
+            chosen_scope = scope_from_manifest(scope)
+        except (ValueError, OSError) as exc:
+            err_console.print(f"[red]BLOCKED:[/red] invalid scope manifest: {exc}")
+            raise typer.Exit(3) from exc
+    else:
+        proposed = propose_manifest(host)
+        console.print(f"target {host} is not localhost — a scope manifest is required.")
+        console.print("proposed minimal scope manifest (JSON):")
+        console.print(json.dumps(proposed))
+        if not (yes or confirm_prompt("Authorize this exact scope? [y/N] ")):
+            err_console.print("refused — nothing ran.")
+            raise typer.Exit(3)
+        chosen_scope = ScopeSet(frozenset({host}), False, name=host)
+    if selected_engine is None:
+        try:
+            from hunter.llm.config import load_config
+            from hunter.llm.router import ProviderRouter
+            load_config()
+            ProviderRouter.from_env()
+            selected_engine = "llm"
+        except Exception:
+            selected_engine = "deterministic"
+            err_console.print("no brain configured — using the deterministic engine.")
+    from hunter.agent.prompts import mounted_skills
+    names = mounted_skills()
+    if not json_out:
+        typer.echo(f"target check: {normalized} — valid URL (host: {host})")
+        typer.echo(f"skills mounted: {len(names)}" + (f" ({', '.join(names)})" if names else ""))
+    outcome = run_hunt(normalized, scope=chosen_scope, engine_name=selected_engine, state_dir=state)
+    _render_hunt_outcome(outcome, json_out=json_out)
+    raise typer.Exit(outcome.exit_code)
+
+
+def _render_hunt_outcome(outcome, *, json_out: bool) -> None:
+    import json
+    if json_out:
+        console.print_json(json.dumps({
+            "run_id": outcome.run_id, "status": outcome.status,
+            "verified": outcome.verified, "candidates": outcome.candidates,
+            "findings": outcome.finding_rows or [], "stats": outcome.stats or {},
+            "report": outcome.report_path,
+        }))
+        return
+    if outcome.status != "completed":
+        err_console.print(f"[red]run failed[/red] {outcome.stats.get('error', '') if outcome.stats else ''}")
+        return
+    typer.echo(f"{outcome.verified} verified / {outcome.candidates} candidates — {outcome.findings} findings")
+    if outcome.report_path:
+        typer.echo(f"report: {outcome.report_path}")
+    else:
+        typer.echo("report unavailable — chain blocked")
+
+
 # --------------------------------------------------------------------- update ---
 
 @app.command()
