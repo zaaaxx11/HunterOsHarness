@@ -717,6 +717,10 @@ def run_update(
         )
         console.print(one_liner)
         return 1
+    # Keep the check result's running-version field authoritative when a caller
+    # injects a check seam (the update protocol and its historical tests do
+    # this); production checks populate it from the installed package metadata.
+    current = result.current or current
     latest = result.latest
     if not result.update_available:
         console.print(f"hunter {current} is up to date (latest release: {latest})")

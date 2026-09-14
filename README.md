@@ -11,7 +11,7 @@ cannot replay is a vulnerability you cannot bill, defend, or trust:
 
 ## User skills and curator
 
-Local methodology cards live under `~/.hunteros/skills/<name>/SKILL.md`. The `/skills` and `hunter skills` surfaces mark each effective card with its `[source]`; `/curate` previews retro-derived cards before an explicit y/N save. Flagged drafts are saved with `[quarantined]` semantics and remain inert until manually reviewed.
+Local methodology cards live under `~/.hunteros/skills/<name>/SKILL.md`. The merged bundled/user corpus shows `[bundled]`, `[user]`, and `[quarantined]` source markers; relevance matching selects at most five skills. The `/skills` and `hunter skills` surfaces mark each effective card with its `[source]`; `/curate` previews retro-derived cards before an explicit y/N save. Flagged drafts are saved with `[quarantined]` semantics and remain inert until manually reviewed.
 
 ## Why it matters
 
@@ -24,7 +24,7 @@ the chat.
 
 ## Features
 
-- **The HunterOS phase pipeline, enforced** (v0.3) — every run walks
+- **The HunterOS phase pipeline, enforced** (v0.4) — every run walks
   `score → recon → classify → hunting → verify → report → retro`. Canonical
   phases are hash-chained ledger events, order is enforced in code (no
   skipping, no re-ordering), and each phase closes through a deterministic
@@ -51,9 +51,10 @@ the chat.
   fail-closed in the HTTP client; a prompt injection cannot open the socket.
 - **Deterministic engine** — 12 baseline-first probes run offline with zero
   keys; every signal is baseline-diffed and evidence-bound.
-- **Chat + gateway** — `hunter chat` REPL with sessions, 17 slash commands,
-  and interactive `/audit`; Telegram and HMAC-signed webhook front-ends with
-  default-deny allowlists, anti-replay signatures, and turn leases.
+- **Chat + gateway** — `hunter chat` REPL with sessions, 20 slash commands,
+  unified chat, `/hunt`, `/audit`, and `/curate`; Telegram and HMAC-signed
+  webhook front-ends with default-deny allowlists, anti-replay signatures,
+  and turn leases.
   [docs/GATEWAY.md](docs/GATEWAY.md).
 - **Errors that tell you where** — every failure is notified as
   `[BLOCKED]` / `[ERROR <layer>]` with a `where: file:line` location, an
@@ -98,13 +99,15 @@ export HUNTEROS_MODEL=gpt-4o
 hunter chat                       # normal chat; hunt intent offers a governed audit
 ```
 
-Chat is ordinary free text until you say something like `audit http://127.0.0.1:8941/`; the REPL asks for confirmation, while `/hunt on` enables process-local hunt mode. Use `/audit <target>` or `/hunt <target>` for a one-shot hunt, and `hunter hunt <target>` from the shell (including local directories). The scope gate is unchanged: non-localhost targets require an authorized scope manifest.
+Chat is ordinary free text until you say something like `audit http://127.0.0.1:8941/`; target-bearing hunt intent requires explicit confirmation when mode is off. `/hunt on` and `/hunt off` control process-local hunt mode. Use `/audit <target>` or `/hunt <target>` for a one-shot hunt, and `hunter hunt <target>` from the shell (including local directories). The scope gate is unchanged: non-localhost targets require an authorized scope manifest; authorization is your responsibility and enforcement is fail-closed.
 
-Browser automation is optional and hunt-only: install `hunteros-harness[browser]`
-and then separately install Chromium with `python -m playwright install chromium`.
-Browser actions are scope-gated and available only inside an authorized hunt;
-normal chat remains browser-free. The onboarding `agent.browser` flag is usable
-without the extra, but enabling it does not authorize a hunt by itself.
+Browser automation is optional and hunt-only. Install explicitly with
+`pip install 'hunteros-harness[browser]'` and then separately run
+`python -m playwright install chromium`. Browser actions are scope-gated and
+available only inside an authorized hunt; normal chat remains browser-free. The
+onboarding `agent.browser` flag is usable without the extra, but enabling it
+does not authorize a hunt by itself. HunterOs never automatically installs
+Chromium.
 
 ```bash
 hunter hunt http://127.0.0.1:8941/        # one-shot CLI hunt
@@ -114,7 +117,7 @@ Add any third-party provider:
 
 ```bash
 hunter config provider add lab-vllm --base-url http://10.0.0.9:8000/v1
-hunter config provider test lab-vllm --model mistralai/Mistral-7B-Instruct-v0.3
+hunter config provider test lab-vllm --model mistralai/Mistral-7B-Instruct-v0.4.0
 hunter config provider list
 ```
 
@@ -135,10 +138,10 @@ hunter update
 
 `hunter update` detects how the harness was installed (installer venv,
 `pipx`, or plain `pip`) and runs the matching upgrade; a git checkout gets
-`git pull && pip install -e .` advice instead. Once a day a background check
-looks for a newer release and prints a one-line notice on stderr after the
-command output (never into `--json` stdout, never mid-session in
-`chat`/`tui`/`gateway`). Disable it with `HUNTEROS_NO_UPDATE_CHECK=1`; CI
+`git pull && pip install -e .` advice instead. The GitHub-first check falls
+back silently to PyPI, using a 24-hour cache. It prints one-line notices only
+on stderr (never into `--json` stdout and never in long-lived `chat`/`tui`/
+`gateway` surfaces). Disable it with `HUNTEROS_NO_UPDATE_CHECK=1`; CI
 environments are skipped automatically. Manual install, any time:
 
 ```bash
@@ -164,13 +167,29 @@ Full layer diagram, governance flow, invariants, and the L1–L5 framing:
 
 ## Status
 
-**v0.3.1** — the phase pipeline is enforced, the brain is core, `hunter
-init` onboards in one command, custom providers are first-class, and every
-error tells you where it lives. 636 tests (including 144 adversarial), ruff
-clean, CI green on ubuntu/windows × py3.11/3.13. Next: installer & onboarding
-polish, challenger-LLM falsification pass, sub-agent graph, context
-compaction for long audits ([docs/ROADMAP-v0.3.md](docs/ROADMAP-v0.3.md));
-commercial roadmap in [docs/BUSINESS.md](docs/BUSINESS.md).
+**v0.4.0** — the phase pipeline, governed provider roles, unified chat and
+`hunter hunt`, advisory GitHub-first/PyPI-fallback updates, dynamic skills and
+curator, and optional hunt-only browser tools are shipped. Release quality is
+tracked by the offline test matrix and Ruff gates; see [CHANGELOG.md](CHANGELOG.md)
+and [docs/ROADMAP-v0.5.md](docs/ROADMAP-v0.5.md) for maintenance work.
+
+## v0.4.0 current contracts
+
+- Exit codes are stable: `0` clean, `1` error, `2` findings, and `3`
+  refused/usage for `hunter hunt`; other classified CLI errors remain documented
+  in the architecture and LLM references.
+- Browser support is optional and explicit: `pip install 'hunteros-harness[browser]'`
+  then `python -m playwright install chromium`. `agent.browser` remains
+  loadable without the extra; browser actions are hunt-only and scope-gated,
+  normal chat is browser-free, and HunterOs never installs Chromium
+  automatically.
+- Skills live at `~/.hunteros/skills/<name>/SKILL.md`; the merged corpus uses
+  `[bundled]`, `[user]`, and `[quarantined]` markers, matches at most five, and
+  `/curate`/`hunter curate` require preview plus explicit confirmation to save.
+  Quarantined cards are inert until review.
+- Scan only systems you own or are explicitly authorized to test. Authorization
+  is your responsibility; enforcement is the harness's. Non-localhost targets
+  require an authorized scope manifest.
 
 ## Doctrine
 

@@ -507,7 +507,7 @@ hunt.
 1. `git status --short` shows only intended M7/M6 release files; no `.env`, key,
    cache, database, report, `.venv`, or generated artifact is tracked.
 2. Secret scan passes (see §10); inspect all findings, including examples and
-   captured transcripts, before staging.
+   captured transcripts, before staging. No changelog, transcript, cache, database, report, or release command may contain a real credential.
 3. Version parity, changelog, roadmap, docs consistency, full test, Ruff,
    installer syntax/dry-run, and package build checks pass.
 4. Review the four CI jobs on the release commit; do not publish from a local

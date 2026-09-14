@@ -1,4 +1,4 @@
-# Architecture — HunterOs Harness (v0.2)
+# Architecture — HunterOs Harness (v0.4.0)
 
 The harness is a layered system with one hard rule: **everything of value is
 a row in the hash-chained ledger**. Layers may be rewritten; the ledger
@@ -248,8 +248,7 @@ retries. `detail` is for verbose logs and never contains secrets.
 | ------- | ----- | ------- |
 | v0.1 | Deterministic core | kernel, scope gate, deterministic engine, pipeline, reporting, TUI, installers |
 | v0.2 | LLM brain + governance | LiteLLM tier router, 15-tool agent with R1–R6 evidence validation, debunk replay, chat REPL, gateway (Telegram/webhook), tier-advanced skills |
-| v0.3 | Multi-agent workflow | planner/recon/exploit-verify agents over the same ledger; arsenal adapters (nuclei, semgrep) as additional `EngineDriver`s |
-| v0.4 | Assurance atoms | coverage certificate: every probe attempt is an atom — a signed, Merkle-ready "we checked X and here is the proof" set, not just findings |
-| v0.5 | Engagement layer | engagement management, billing against verified findings, customer evidence packs |
+| v0.4 | Release and maintenance | unified chat/hunt, update path, dynamic skills, curator, and optional browser tools |
+| v0.5+ | Operability and integration | dashboard, gateway hardening, provider catalog, skills growth, and distribution maturity |
 
 The v0.3 working backlog lives in [docs/ROADMAP-v0.3.md](ROADMAP-v0.3.md).

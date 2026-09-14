@@ -57,7 +57,7 @@ function Write-Fail([string]$Message) {
 
 $binDir = Join-Path $env:USERPROFILE ".hunteros\bin"
 $venvDir = Join-Path $env:USERPROFILE ".hunteros\venv"
-$pathMarker = "# >>> hunteros PATH >>>"
+$pathMarker = "hunteros PATH"
 
 Write-Host ""
 Write-Host @'
@@ -118,7 +118,7 @@ function Write-FinalPrintout {
     Write-Host "       hunter" -ForegroundColor Yellow
     Write-Host "     The onboarding wizard configures your brain in about a minute -" -ForegroundColor White
     Write-Host "     then 'hunter chat' talks to it. ('hunt' works anywhere 'hunter' does.)" -ForegroundColor White
-    Write-Host "  2. Coming in a later release:" -ForegroundColor White
+    Write-Host "  2. Run a governed hunt on an authorized target:" -ForegroundColor White
     Write-Host "       hunter hunt <url> - one-command hunt on an authorized target." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "Scan only systems you own or are explicitly authorized to test." -ForegroundColor DarkGray
@@ -178,7 +178,7 @@ if (Test-Path $venvPython) {
 
 Write-Step "Upgrading pip (quiet)"
 & $venvPython -m pip install --upgrade pip --quiet --disable-pip-version-check
-if ($LASTEXITCODE -ne 0) { Write-Fail "pip upgrade failed — check your network/proxy settings." }
+if ($LASTEXITCODE -ne 0) { Write-Fail "pip upgrade failed - check your network/proxy settings." }
 
 # --- 3. Install the harness ---------------------------------------------------
 # Under `irm | iex` both $PSScriptRoot and $MyInvocation.MyCommand.Path are
@@ -194,14 +194,14 @@ $scriptDir = if ($PSScriptRoot) {
 $localCheckout = [bool]$scriptDir -and (Test-Path (Join-Path $scriptDir "pyproject.toml"))
 
 if ($localCheckout) {
-    Write-Step "Local checkout detected — installing editable from $scriptDir"
+    Write-Step "Local checkout detected - installing editable from $scriptDir"
     & $venvPython -m pip install -e "$scriptDir" --disable-pip-version-check
-    if ($LASTEXITCODE -ne 0) { Write-Fail "Editable install failed — see the pip output above." }
+    if ($LASTEXITCODE -ne 0) { Write-Fail "Editable install failed - see the pip output above." }
 } else {
     Write-Step "Installing hunteros-harness from PyPI"
     & $venvPython -m pip install hunteros-harness --disable-pip-version-check
     if ($LASTEXITCODE -ne 0) {
-        Write-Step "PyPI install failed — falling back to git ($RepoUrl)"
+        Write-Step "PyPI install failed - falling back to git ($RepoUrl)"
         & $venvPython -m pip install "git+$RepoUrl" --disable-pip-version-check
         if ($LASTEXITCODE -ne 0) {
             Write-Fail "All install sources failed. Check the RepoUrl and your network, then re-run."
@@ -215,10 +215,10 @@ if ($LASTEXITCODE -ne 0) { Write-Fail "Installation verification failed: the 'hu
 # --- 4. Verify the venv entry points (pins the `hunt` alias) --------------------
 
 if (-not (Test-Path (Join-Path $venvDir "Scripts\hunter.exe"))) {
-    Write-Fail "the 'hunter' entry point is missing — re-run the installer"
+    Write-Fail "the 'hunter' entry point is missing - re-run the installer"
 }
 if (-not (Test-Path (Join-Path $venvDir "Scripts\hunt.exe"))) {
-    Write-Fail "the 'hunt' entry point is missing — re-run the installer"
+    Write-Fail "the 'hunt' entry point is missing - re-run the installer"
 }
 
 # --- 5. Shims + PATH ---------------------------------------------------------------
@@ -233,13 +233,13 @@ Register-Path
 if ($SkipSetup) {
     Write-Step "Skipping setup (-SkipSetup)"
 } elseif ($env:HUNTEROS_CONFIG -or (Test-Path (Join-Path $env:USERPROFILE ".hunteros\config.yaml"))) {
-    Write-Step "Config found — skipping the wizard (run 'hunter init' to reconfigure)"
+    Write-Step "Config found - skipping the wizard (run 'hunter init' to reconfigure)"
 } elseif (-not [Console]::IsInputRedirected) {
     Write-Step "Launching the onboarding wizard"
     & (Join-Path $venvDir "Scripts\hunter.exe") init
     # native exe: a declined/failed wizard must not fail the install ($LASTEXITCODE ignored)
 } else {
-    Write-Step "Non-interactive session — run 'hunter init' to configure your brain"
+    Write-Step "Non-interactive session - run 'hunter init' to configure your brain"
 }
 
 # --- 7. Next steps --------------------------------------------------------------------
