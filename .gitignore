@@ -16,14 +16,8 @@ dist/
 nul
 .zcode/
 
-# Owner-private persona (never tracked, never ships)
-SOUL.local.md
-soul.local.md
-
-# v0.5 release posture (owner directive): roadmap, plans, tests, and ALL
-# testing products stay untracked; state, logs, and artifacts never ship.
-# Fresh clones ship without tests — the canonical QA path is the owner's
-# local checkout, where tests/ exists on disk.
+# v0.5 release posture: roadmap, plans, tests, and ALL testing
+# products stay untracked; state, logs, and artifacts never ship.
 docs/ROADMAP*.md
 docs/plans/
 tests/
