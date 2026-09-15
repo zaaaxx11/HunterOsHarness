@@ -36,7 +36,9 @@ class ToolSpec:
     handler: Callable[[dict[str, Any], ToolContext], ToolOutcome]
     min_tier: str = "basic"
     lifecycle: str | None = None  # None | "respond_to_user" | "finish_scan"
-    danger: str = "none"  # "none" | "approval" (approval floors land in v0.2 P1)
+    danger: str = "none"  # "none" | "approval" — approval-danger tools run ONLY
+    #  through a configured approval gate (v0.5 F1); without one, dispatch
+    #  fails closed (approval.unavailable) — never a silent bypass.
 
 
 @dataclass
@@ -162,6 +164,19 @@ class ToolRegistry:
                     f"(current tier '{ctx.config.get('tier', 'basic')}')."
                 ),
             )
+        if spec.danger == "approval":
+            gate = ctx.config.get("approval_gate")
+            if gate is None:  # fail closed — no silent bypass on unaudited surfaces
+                return ToolOutcome(
+                    ok=False,
+                    blocked=True,
+                    code="approval.unavailable",
+                    result_for_model=f"BLOCKED: tool '{name}' requires an approval gate; "
+                    "none is configured on this surface.",
+                )
+            decision = gate(name, args, ctx)
+            if decision is not None:
+                return decision
         try:
             return spec.handler(args, ctx)
         except Exception as exc:  # tools must never crash the run

@@ -58,9 +58,9 @@ the chat.
 - **Deterministic engine** — 12 baseline-first probes run offline with zero
   keys; every signal is baseline-diffed and evidence-bound.
 - **Chat + gateway** — `hunter chat` REPL with sessions, 20 slash commands,
-  unified chat, `/hunt`, `/audit`, and `/curate`; Telegram and HMAC-signed
-  webhook front-ends with default-deny allowlists, anti-replay signatures,
-  and turn leases.
+  unified chat, `/hunt`, `/audit`, and `/curate`; Telegram, Discord, WhatsApp,
+  and HMAC-signed webhook front-ends with default-deny allowlists,
+  anti-replay signatures, and turn leases.
   [docs/GATEWAY.md](docs/GATEWAY.md).
 - **Errors that tell you where** — every failure is notified as
   `[BLOCKED]` / `[ERROR <layer>]` with a `where: file:line` location, an
@@ -190,13 +190,51 @@ irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 
 Full layer diagram, governance flow, invariants, and the L1–L5 framing:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## v0.5.0 additions
+
+- **24/7 daemon** — `hunt start --target URL --time 2h --min-time 30m`
+  spawns a detached daemon that claims governed tasks from an atomic queue;
+  `hunt status`, `hunt logs`, `hunt stop` manage it. The time you give a
+  hunt is a minimum: the engine will not stop before `--min-time` and may
+  run up to `--time`. `0 = unlimited` for every budget key (cost,
+  iterations, wall clock, min wall).
+- **Shell approval** — `shell_exec` requires an explicit `/approve <id>`
+  (single-use, expires after 300 seconds); catastrophic commands are
+  refused in every mode, output is redacted and capped at 16k, the cwd is
+  locked inside the state directory, and every run is ledgered.
+- **Browser cloak** — on by default (`agent.browser_cloak`): plausible
+  user-agent/viewport/locale/timezone pools, non-automation launch args,
+  and one masking init script. The scope interceptor and redaction are
+  untouched; `cloak: false` restores stock behavior exactly.
+- **Soul** — `SOUL.md` is the general operating character (silent,
+  precise, patient, evidence-or-nothing; no levels, no scoring). It binds
+  every turn; a private override lives at `~/.hunteros/SOUL.local.md`
+  (gitignored by design) and is sanitized and capped before it reaches a
+  prompt.
+- **Session compression** — `/compress` and automatic 24k-char compaction
+  keep head and tail verbatim and summarize the middle extractively;
+  evidence ids are never dropped or invented; the store stays append-only.
+- **Discord + WhatsApp gateways** — the same default-deny allowlists as
+  Telegram: `HUNTEROS_DISCORD_TOKEN` + `HUNTEROS_DISCORD_ALLOWED_USERS`,
+  or the `HUNTEROS_WHATSAPP_TOKEN` / `HUNTEROS_WHATSAPP_PHONE_NUMBER_ID` /
+  `HUNTEROS_WHATSAPP_ALLOWED_USERS` trio. WhatsApp inbound payloads are
+  HMAC-verified against the Meta app secret or refused with 403.
+  See [docs/GATEWAY.md](docs/GATEWAY.md).
+- **Testing products stay local (owner directive)** — roadmaps, plans,
+  tests, and all testing products are gitignored from v0.5: fresh clones
+  ship WITHOUT tests, and the canonical QA path is the owner's local
+  checkout, where `tests/` exists on disk.
+
 ## Status
 
-**v0.4.0** — the phase pipeline, governed provider roles, unified chat and
-`hunter hunt`, advisory GitHub-first/PyPI-fallback updates, dynamic skills and
-curator, and optional hunt-only browser tools are shipped. Release quality is
-tracked by the offline test matrix and Ruff gates; see [CHANGELOG.md](CHANGELOG.md)
-and [docs/ROADMAP-v0.5.md](docs/ROADMAP-v0.5.md) for maintenance work.
+**v0.5.0** — approval-gated shell, the 24/7 hunt daemon, minimum-time
+budgets with unlimited-credit semantics, the browser cloak, the operating
+character, session compression, Discord and WhatsApp gateways, and the
+`scripts/` toolkit are shipped. v0.4.0 shipped the phase pipeline, governed
+provider roles, unified chat and `hunter hunt`, advisory GitHub-first/
+PyPI-fallback updates, dynamic skills and curator, and optional hunt-only
+browser tools. Release quality is tracked by the offline test matrix and
+Ruff gates; see [CHANGELOG.md](CHANGELOG.md).
 
 ## v0.4.0 current contracts
 

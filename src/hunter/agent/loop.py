@@ -88,6 +88,7 @@ class AgentLoop:
         tier: str = "basic",
         budget: RunBudget | None = None,
         max_text_nudges: int = 3,
+        max_time_nudges: int = 50,
         interrupt_check: Callable[[], bool] | None = None,
     ) -> None:
         if tier not in TIER_ORDER:
@@ -106,6 +107,11 @@ class AgentLoop:
         # naive providers still exhaust on cost/iterations.
         self._budget_governed = _budget_governed(self.budget)
         self.max_text_nudges = max(1, int(max_text_nudges))
+        # M8 F3: minimum-time floor. While budget.remaining_seconds() > 0 the
+        # loop HOLDS lifecycle outcomes (finish_scan / respond_to_user) and
+        # re-feeds the tool result with a [BUDGET min-time] nudge, bounded at
+        # max_time_nudges so min-time can never become an infinite loop.
+        self.max_time_nudges = max(1, int(max_time_nudges))
         self.interrupt_check = interrupt_check
 
     # -- public API ------------------------------------------------------------
@@ -138,6 +144,7 @@ class AgentLoop:
         ]
         self._arm_budget()
         nudges = 0
+        time_nudges = 0
 
         while True:
             if self._interrupted(ctx):
@@ -239,6 +246,7 @@ class AgentLoop:
             stats["tool_calls"] += len(turn.tool_calls)
             yield_message: str | None = None
             finished_summary: str | None = None
+            held_min_time = False
             for call in turn.tool_calls:
                 if self._interrupted(ctx):
                     return AgentRunResult(interrupted=True, stats=stats)
@@ -259,10 +267,39 @@ class AgentLoop:
                     stats["evidence_stored"] += len(evidence_ids)
                     content = content + "\n" + "\n".join(f"evidence_id: {eid}" for eid in evidence_ids)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+                if (
+                    outcome.lifecycle_yield is not None or outcome.lifecycle_finish
+                ) and self._hold_for_min_time(time_nudges):
+                    # M8 F3: min-time floor not elapsed yet — do NOT end the
+                    # turn; re-feed the tool result with the pinned nudge.
+                    time_nudges += 1
+                    held_min_time = True
+                    minutes = int(self._min_time_remaining() // 60)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": (
+                                f"{content}\n[BUDGET min-time] time left {minutes}m — continue "
+                                "hunting: next objectives, uncovered areas. "
+                                f"(min-time nudge {time_nudges}/{self.max_time_nudges})"
+                            ),
+                        }
+                    )
+                    continue
                 if outcome.lifecycle_yield is not None:
                     yield_message = outcome.lifecycle_yield
                 if outcome.lifecycle_finish:
                     finished_summary = outcome.result_for_model
+                    if time_nudges >= self.max_time_nudges:
+                        # Fail-open after the cap: the stop is honored, and the
+                        # summary says why it was held so long.
+                        finished_summary += (
+                            f" (min-time nudge cap of {self.max_time_nudges} reached — "
+                            "honoring the stop)"
+                        )
+            if held_min_time:
+                continue
             if yield_message is not None:
                 return AgentRunResult(yield_message=yield_message, finished=False, stats=stats)
             if finished_summary is not None:
@@ -315,6 +352,27 @@ class AgentLoop:
         if fired:
             ctx.emit("error", {"stage": "agent_loop", "reason": "interrupted"})
         return fired
+
+    def _min_time_remaining(self) -> float:
+        """Seconds left in the budget's min-time floor (M8 F3), 0.0 when the
+        budget has no usable ``remaining_seconds`` (bare base-contract
+        dataclass) or the floor is disarmed. A broken implementation must
+        never crash the loop — fail open with 0.0 (never hold)."""
+        remaining_fn = getattr(self.budget, "remaining_seconds", None)
+        if not callable(remaining_fn):
+            return 0.0
+        try:
+            remaining = float(remaining_fn() or 0.0)
+        except Exception:  # noqa: BLE001 — a broken floor never stops the loop
+            return 0.0
+        return max(0.0, remaining)
+
+    def _hold_for_min_time(self, time_nudges: int) -> bool:
+        """True when a lifecycle outcome must be HELD because the min-time
+        floor has not elapsed yet and the nudge cap has not fired."""
+        return (
+            self._min_time_remaining() > 0.0 and time_nudges < self.max_time_nudges
+        )
 
     def _arm_budget(self) -> None:
         """Anchor the wall clock once per run, using the concrete budget's

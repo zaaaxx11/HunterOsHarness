@@ -1,0 +1,446 @@
+"""Approval gate — the human checkpoint for dangerous agent tools (M8 F1).
+
+Doctrine: catastrophic commands NEVER run in any mode; every other
+``danger="approval"`` tool needs a user decision (``/approve <id>``) before it
+executes — a pending request is a BLOCKED outcome, never a side effect.
+Fail-closed everywhere: a surface without a configured gate refuses the tool
+(``approval.unavailable``), a gateway without a confirm callback creates a
+pending request and blocks (``approval.required``).
+
+Persistence: one JSON file per request under ``<state>/approvals/<id>.json``.
+Expiry is COMPUTED (never stored); decisions are single-use (``used_ts`` is
+set when a decision is consumed, so an approval cannot be replayed).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import re
+import threading
+import time
+import uuid
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from hunter.kernel.events import canonical_json, sha256_hex
+from hunter.kernel.redaction import redact_text
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from hunter.agent.tools_base import ToolContext, ToolOutcome
+    from hunter.kernel.ledger import Ledger
+
+__all__ = [
+    "APPROVAL_FILE_KEYS",
+    "APPROVAL_TTL_SECONDS",
+    "ApprovalRequest",
+    "ApprovalStore",
+    "CATASTROPHIC_PATTERNS_SOURCE",
+    "GateCallback",
+    "effective_status",
+    "is_catastrophic",
+    "make_approval_gate",
+]
+
+# (regex, reason) — matched against the RAW command and a normalized form
+# (lowercased, "^"/"\" replaced by space, quotes removed, whitespace
+# collapsed) so quoting/caret/backslash games cannot slip through.
+CATASTROPHIC_PATTERNS_SOURCE: tuple[tuple[str, str], ...] = (
+    (r"\brm\b[^;\n|&]*\s-\w*r\w*f", "recursive force delete"),
+    (r"\brm\b[^;\n|&]*\s+(?:/|~/|~\b|\*)", "rm of root/home/glob"),
+    (r"\bdel\b\s+/[sq]", "windows recursive delete"),
+    (r"\brd\b\s+/s", "windows recursive delete"),
+    (r"\bremove-item\b[^;\n]*\s-(?:recurse|force)\b", "powershell recursive delete"),
+    (r"\bformat\b(?:\.com)?\b", "disk format"),
+    (r"\bdiskpart\b", "disk partitioning"),
+    (r"\bmkfs(?:\.\w+)?\b", "filesystem creation"),
+    (r"\bdd\b[^;\n]*\bof=/dev/", "raw disk write"),
+    (r">\s*/dev/(?:sd|nvme|hd)", "raw disk redirect"),
+    (r"\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b", "machine power control"),
+    (r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;", "fork bomb"),
+)
+
+_CATASTROPHIC_COMPILED: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(pattern, re.IGNORECASE), reason) for pattern, reason in CATASTROPHIC_PATTERNS_SOURCE
+)
+
+_QUOTE_CHARS_RE = re.compile(r"[\'\"`]")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_command(command: str) -> str:
+    """Lowercase, neutralize caret/backslash escapes and quotes, collapse
+    whitespace — the form denylist matching cannot be quoted around."""
+    text = str(command or "")
+    text = text.replace("^", " ").replace("\\", " ")
+    text = _QUOTE_CHARS_RE.sub("", text)
+    return _WHITESPACE_RE.sub(" ", text).strip().lower()
+
+
+def is_catastrophic(command: str) -> str | None:
+    """Reason string when ``command`` matches the catastrophic denylist,
+    checked against BOTH the raw text and the normalized form; else None."""
+    raw = str(command or "")
+    normalized = normalize_command(raw)
+    for pattern, reason in _CATASTROPHIC_COMPILED:
+        if pattern.search(raw) or pattern.search(normalized):
+            return reason
+    return None
+
+
+APPROVAL_TTL_SECONDS = 300
+
+APPROVAL_FILE_KEYS: tuple[str, ...] = (
+    "request_id",
+    "tool",
+    "fingerprint",
+    "summary",
+    "args",
+    "status",
+    "surface",
+    "created_ts",
+    "expires_ts",
+    "decided_ts",
+    "used_ts",
+)
+
+
+@dataclass
+class ApprovalRequest:
+    """One pending/decided dangerous-tool request (mirrors the JSON file)."""
+
+    request_id: str  # "A-" + uuid4().hex[:8]
+    tool: str
+    fingerprint: str  # sha256_hex(canonical_json({"tool": tool, "args": args}))
+    summary: str  # <=200 chars, redact_text()'d one-line arg summary
+    args: dict[str, Any]
+    status: str  # stored: "pending" | "approved" | "denied"
+    surface: str  # e.g. "telegram:12345" | "repl" | ""
+    created_ts: float
+    expires_ts: float
+    decided_ts: float | None
+    used_ts: float | None  # set when a decision is consumed (single-use)
+
+
+def _summary_for(tool: str, args: dict[str, Any]) -> str:
+    """One-line, redacted, bounded arg summary for humans and the model."""
+    joined = " ".join(f"{key}={args[key]}" for key in args) if isinstance(args, dict) and args else str(tool)
+    text = redact_text(str(joined))
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    return text[:200]
+
+
+def _write_json_atomic(path: Path, obj: Any) -> None:
+    """tmp file + os.replace — atomic-enough on win32 and POSIX."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp")
+    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def effective_status(record: ApprovalRequest, *, now: float | None = None) -> str:
+    """``"expired"`` when pending and ``now >= expires_ts``, else
+    ``record.status``. Expiry is COMPUTED, never stored."""
+    moment = time.time() if now is None else now
+    if record.status == "pending" and moment >= record.expires_ts:
+        return "expired"
+    return record.status
+
+
+class ApprovalStore:
+    """File-backed approval requests under ``root`` (thread-safe)."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+
+    # -- internals -----------------------------------------------------------
+
+    def _path(self, request_id: str) -> Path:
+        return self.root / f"{request_id}.json"
+
+    @staticmethod
+    def _decode(data: Any) -> ApprovalRequest | None:
+        """Corrupt/foreign/partial files decode to None — id forgery and
+        garbage JSON must never raise."""
+        if not isinstance(data, dict):
+            return None
+        if not set(APPROVAL_FILE_KEYS) <= set(data):
+            return None
+        try:
+            return ApprovalRequest(
+                request_id=str(data["request_id"]),
+                tool=str(data["tool"]),
+                fingerprint=str(data["fingerprint"]),
+                summary=str(data["summary"]),
+                args=data["args"] if isinstance(data["args"], dict) else {},
+                status=str(data["status"]),
+                surface=str(data["surface"]),
+                created_ts=float(data["created_ts"]),
+                expires_ts=float(data["expires_ts"]),
+                decided_ts=(None if data["decided_ts"] is None else float(data["decided_ts"])),
+                used_ts=(None if data["used_ts"] is None else float(data["used_ts"])),
+            )
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def _load(self, request_id: str | None) -> ApprovalRequest | None:
+        if not request_id or not isinstance(request_id, str):
+            return None
+        path = self._path(request_id)
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            return None
+        return self._decode(data)
+
+    def _store(self, request: ApprovalRequest) -> None:
+        payload = {key: asdict(request)[key] for key in APPROVAL_FILE_KEYS}
+        _write_json_atomic(self._path(request.request_id), payload)
+
+    # -- public API ------------------------------------------------------------
+
+    def create(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        ttl_seconds: int = APPROVAL_TTL_SECONDS,
+        surface: str = "",
+    ) -> ApprovalRequest:
+        with self._lock:
+            now = time.time()
+            request = ApprovalRequest(
+                request_id=f"A-{uuid.uuid4().hex[:8]}",
+                tool=str(tool),
+                fingerprint=sha256_hex(canonical_json({"tool": str(tool), "args": args})),
+                summary=_summary_for(str(tool), args),
+                args=dict(args) if isinstance(args, dict) else {},
+                status="pending",
+                surface=str(surface or ""),
+                created_ts=now,
+                expires_ts=now + float(ttl_seconds),
+                decided_ts=None,
+                used_ts=None,
+            )
+            self._store(request)
+            return request
+
+    def get(self, request_id: str | None) -> ApprovalRequest | None:
+        with self._lock:
+            return self._load(request_id)
+
+    def decide(self, request_id: str, decision: str) -> ApprovalRequest | None:
+        """Apply ``"approved"``/``"denied"`` once; None when the request is
+        missing, already decided, TTL-expired, or the decision is invalid."""
+        if decision not in ("approved", "denied"):
+            return None
+        with self._lock:
+            record = self._load(request_id)
+            if record is None:
+                return None
+            if record.status != "pending" or effective_status(record) == "expired":
+                return None
+            record.status = decision
+            record.decided_ts = time.time()
+            self._store(record)
+            return record
+
+    def find_approved(self, fingerprint: str) -> ApprovalRequest | None:
+        """Newest approved, unexpired, unconsumed record for ``fingerprint``;
+        does NOT consume."""
+        with self._lock:
+            best: ApprovalRequest | None = None
+            for path in self.root.glob("*.json"):
+                try:
+                    record = self._decode(json.loads(path.read_text(encoding="utf-8")))
+                except (OSError, ValueError, UnicodeDecodeError):
+                    continue
+                if record is None or record.fingerprint != fingerprint:
+                    continue
+                if record.status != "approved" or record.used_ts is not None:
+                    continue
+                if effective_status(record) == "expired":
+                    continue
+                if best is None or record.created_ts > best.created_ts:
+                    best = record
+            return best
+
+    def find_decided(self, fingerprint: str) -> ApprovalRequest | None:
+        """Newest DECIDED (approved or denied) record for ``fingerprint``.
+
+        The gate uses this to ask the interactive ``confirm_fn`` at most once
+        per exact call: once a decision exists, a retry falls through to a NEW
+        pending request (``approval.required``) so the user can still approve
+        asynchronously via ``/approve <id>`` — the recorded denial itself is
+        never silently reused to auto-deny."""
+        with self._lock:
+            best: ApprovalRequest | None = None
+            for path in self.root.glob("*.json"):
+                try:
+                    record = self._decode(json.loads(path.read_text(encoding="utf-8")))
+                except (OSError, ValueError, UnicodeDecodeError):
+                    continue
+                if record is None or record.fingerprint != fingerprint:
+                    continue
+                if record.status not in ("approved", "denied"):
+                    continue
+                if best is None or record.created_ts > best.created_ts:
+                    best = record
+            return best
+
+    def consume(self, request_id: str) -> None:
+        """Mark a decision used (single-use). Missing ids are a no-op."""
+        with self._lock:
+            record = self._load(request_id)
+            if record is None or record.used_ts is not None:
+                return
+            record.used_ts = time.time()
+            self._store(record)
+
+
+GateCallback = Callable[[str, dict[str, Any], "ToolContext"], "ToolOutcome | None"]
+
+
+def _gate_event(ledger: Ledger, run_id: str, payload: dict[str, Any]) -> None:
+    """Ledger the approval decision directly (engine_event) — the gate is
+    invoked from dispatch paths that may not have an emit callback."""
+    with contextlib.suppress(Exception):  # bookkeeping must never block a tool
+        ledger.append(run_id, "engine_event", payload)
+
+
+def _blocked_outcome(code: str, message: str) -> ToolOutcome:
+    from hunter.agent.tools_base import ToolOutcome  # noqa: PLC0415 — lazy, cycle-safe
+
+    return ToolOutcome(ok=False, blocked=True, code=code, result_for_model=message)
+
+
+def make_approval_gate(
+    store: ApprovalStore,
+    *,
+    ledger: Ledger,
+    run_id: str,
+    auto_allow: bool = False,
+    confirm_fn: Callable[[ApprovalRequest], bool] | None = None,
+    surface: str = "",
+) -> GateCallback:
+    """Build the pinned 5-step dispatch gate.
+
+    Order (``None`` = run the tool):
+    1. ``shell_exec`` + catastrophic → blocked ``shell.denylist`` (no file,
+       no ask — never runs, even in hunter mode);
+    2. ``find_approved(fingerprint)`` → consume + ledger event → None;
+    3. ``auto_allow`` → ledger event, no file → None;
+    4. ``confirm_fn`` (asked once per fingerprint) → create + ask; True →
+       decide approved + consume → None; False → decide denied → blocked
+       ``approval.denied``;
+    5. else → create → blocked ``approval.required`` (fail-closed when no
+       confirm_fn — the gateway; also the retry path after a confirm_fn
+       decision — a NEW pending request, never a replayed denial).
+    """
+
+    def gate(tool: str, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome | None:
+        if tool == "shell_exec":
+            reason = is_catastrophic(str(args.get("command", "")))
+            if reason is not None:
+                return _blocked_outcome(
+                    "shell.denylist",
+                    f"BLOCKED [shell.denylist] command refused — {reason}. "
+                    "Catastrophic commands never run, in any mode.",
+                )
+        fingerprint = sha256_hex(canonical_json({"tool": str(tool), "args": args}))
+        approved = store.find_approved(fingerprint)
+        if approved is not None:
+            store.consume(approved.request_id)
+            _gate_event(
+                ledger,
+                run_id,
+                {
+                    "tool": str(tool),
+                    "approval": f"consumed:{approved.request_id}",
+                    "fingerprint": fingerprint,
+                },
+            )
+            if ctx is not None:
+                ctx.config["approval_id"] = approved.request_id
+            return None
+        if auto_allow:
+            _gate_event(
+                ledger,
+                run_id,
+                {"tool": str(tool), "approval": "auto_allowed", "fingerprint": fingerprint},
+            )
+            return None
+        if confirm_fn is not None and store.find_decided(fingerprint) is None:
+            # The interactive ask happens ONCE per exact call (fingerprint):
+            # once a decision exists, a retry falls through to step 5 — a NEW
+            # pending request the user can approve asynchronously. The old
+            # denial is recorded but never replayed as a silent auto-deny.
+            request = store.create(str(tool), args, surface=surface)
+            _gate_event(
+                ledger,
+                run_id,
+                {
+                    "tool": str(tool),
+                    "approval": f"requested:{request.request_id}",
+                    "fingerprint": fingerprint,
+                },
+            )
+            try:
+                allowed = bool(confirm_fn(request))
+            except Exception:  # noqa: BLE001 — a broken confirm is a denial
+                allowed = False
+            if allowed:
+                store.decide(request.request_id, "approved")
+                store.consume(request.request_id)
+                _gate_event(
+                    ledger,
+                    run_id,
+                    {
+                        "tool": str(tool),
+                        "approval": f"granted:{request.request_id}",
+                        "fingerprint": fingerprint,
+                    },
+                )
+                if ctx is not None:
+                    ctx.config["approval_id"] = request.request_id
+                return None
+            store.decide(request.request_id, "denied")
+            _gate_event(
+                ledger,
+                run_id,
+                {
+                    "tool": str(tool),
+                    "approval": f"denied:{request.request_id}",
+                    "fingerprint": fingerprint,
+                },
+            )
+            return _blocked_outcome(
+                "approval.denied",
+                f"BLOCKED: tool '{tool}' was denied by the user "
+                f"(request {request.request_id}). Do not retry the same call.",
+            )
+        request = store.create(str(tool), args, surface=surface)
+        _gate_event(
+            ledger,
+            run_id,
+            {
+                "tool": str(tool),
+                "approval": f"requested:{request.request_id}",
+                "fingerprint": fingerprint,
+            },
+        )
+        return _blocked_outcome(
+            "approval.required",
+            f"BLOCKED: tool '{tool}' requires user approval. Request id: "
+            f"{request.request_id} (expires in {APPROVAL_TTL_SECONDS}s). Ask the user to "
+            f"reply /approve {request.request_id} — do not retry before approval.",
+        )
+
+    return gate

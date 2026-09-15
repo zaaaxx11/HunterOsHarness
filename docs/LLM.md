@@ -93,7 +93,13 @@ resolved is skipped silently — failover must not fail.
 | --- | ------- | ------- |
 | `max_cost_usd` | `5.0` | Hard spend cap. Staged **one-time** warnings at 70% / 85% / 95% ("wind down" advisories), then the run stops. |
 | `max_iterations` | `60` | Agent tool-loop turns. |
-| `wall_seconds` | `1800.0` | Wall-clock cap (30 min). Set `0` to disable any limit. |
+| `wall_seconds` | `1800.0` | Wall-clock cap (30 min). |
+| `min_wall_seconds` | `0.0` | Minimum wall clock. The engine will not stop a governed run before this much time has passed — it is a floor, never a stop reason, and it never feeds `exhausted()`. The loop holds lifecycle tools with bounded nudges until the floor passes; the run may go longer than the minimum. |
+
+Unlimited hunting credit: a value of `0 = unlimited` for each of the four
+keys `max_cost_usd`, `max_iterations`, `wall_seconds`, and
+`min_wall_seconds` — the governor stands down for that key entirely.
+Negative values are refused at load.
 
 ### `agent` — loop settings
 

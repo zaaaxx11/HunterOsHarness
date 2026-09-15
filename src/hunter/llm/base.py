@@ -87,7 +87,13 @@ class TurnResult:
 class RunBudget:
     """Iteration + wall-clock + cost governor for one agent run (hermes
     IterationBudget + Strix usage hooks, merged). Implement logic in
-    ``hunter.llm.budget``; this is the data contract."""
+    ``hunter.llm.budget``; this is the data contract.
+
+    v0.5 M8 additions: ``min_wall_seconds`` is a FLOOR — the engine may not
+    stop before it elapses (the loop holds lifecycle tools and nudges) — and
+    ``stop_file`` is the user-issued kill switch (its presence outranks every
+    automatic limit). ``min_wall_seconds`` never feeds ``exhausted()``.
+    """
 
     max_cost_usd: float = 5.0
     max_iterations: int = 60
@@ -96,6 +102,8 @@ class RunBudget:
     spent_usd: float = 0.0
     iterations_used: int = 0
     warned_levels: tuple[int, ...] = ()  # staged-warning levels already fired
+    min_wall_seconds: float = 0.0  # M8 F3: minimum-time floor (never a stop reason)
+    stop_file: str | None = None  # M8 F2: estop path — presence = immediate stop
 
     def consume_iteration(self) -> bool:
         raise NotImplementedError
@@ -111,6 +119,11 @@ class RunBudget:
 
     def exhausted(self) -> str | None:
         """Human reason when the run must wind down, else None."""
+
+    def remaining_seconds(self) -> float:
+        """Seconds left in the ``min_wall_seconds`` floor (0.0 when unarmed or
+        disarmed). Docstring-only stub — ``hunter.llm.budget.RunBudget``
+        implements it; a bare base-contract budget simply has no min-time."""
 
 
 class ChatProvider(Protocol):

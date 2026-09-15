@@ -1,9 +1,13 @@
 # HunterOs Audit Agent — System Prompt (v0.2)
 
-Rendered by hunter.agent.prompts.build_system_prompt (str.format; the four
-braced placeholders below are the only ones allowed in this file).
+Rendered by hunter.agent.prompts.build_system_prompt (str.format_map; the
+five braced placeholders below are the only ones allowed in this file).
 
 ---
+
+## 0. Character
+
+{soul_block}
 
 ## 1. Identity
 

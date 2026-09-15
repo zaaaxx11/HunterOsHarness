@@ -2,9 +2,13 @@
 
 The long-form prompt template lives in ``hunter._data.prompts``
 (``audit_system_prompt.md``) and is loaded via ``importlib.resources`` with
-an inline fallback (no jinja dependency — plain ``str.format`` with exactly
-four placeholders: ``{target_url}``, ``{scope_block}``, ``{tier_note}``,
-``{skills_index}``).
+an inline fallback (no jinja dependency — plain ``str.format_map`` with
+exactly five placeholders: ``{target_url}``, ``{scope_block}``,
+``{tier_note}``, ``{skills_index}``, ``{soul_block}``).
+
+Rendering uses :class:`_PromptDefaults` so a template is never a crash:
+placeholders the caller never supplied (old templates, renamed keys)
+resolve to ``""`` instead of raising KeyError.
 """
 
 from __future__ import annotations
@@ -31,6 +35,10 @@ _TEMPLATE_RESOURCE = "_data/prompts/audit_system_prompt.md"
 
 # Content mirrors the shipped template; used when package data is unavailable.
 _INLINE_FALLBACK = """# HunterOs Audit Agent — System Prompt (v0.2)
+
+## 0. Character
+
+{soul_block}
 
 ## 1. Identity
 
@@ -109,6 +117,16 @@ _TIER_NOTES = {
         "ledger evidence and the scope gate stays fail-closed."
     ),
 }
+
+
+class _PromptDefaults(dict):
+    """``format_map`` backend: any placeholder the caller never supplied
+    (old templates, renamed keys, invented markers) resolves to ``""``
+    instead of raising KeyError — templates may evolve without breaking
+    older call sites, and a missing soul renders as no section body."""
+
+    def __missing__(self, key: str) -> str:
+        return ""
 
 
 def _load_template() -> str:
@@ -207,6 +225,7 @@ def build_system_prompt(
     tier: str,
     skills_index: str,
     config_note: str = "",
+    soul_block: str = "",
 ) -> str:
     """Render the audit system prompt for one run.
 
@@ -217,13 +236,18 @@ def build_system_prompt(
         skills_index: Skills block to mount (``load_skills_index()`` gives the
             shipped one); rendered verbatim.
         config_note: Optional extra harness note appended at the end.
+        soul_block: Pre-rendered operating-character block (see
+            ``hunter.agent.soul``); empty renders no character section body.
     """
     template = _load_template()
-    prompt = template.format(
-        target_url=target_url,
-        scope_block=_scope_block(scope_summary, target_url),
-        tier_note=_TIER_NOTES.get(tier, _TIER_NOTES["basic"]),
-        skills_index=skills_index or "(no skills mounted)",
+    prompt = template.format_map(
+        _PromptDefaults(
+            target_url=target_url,
+            scope_block=_scope_block(scope_summary, target_url),
+            tier_note=_TIER_NOTES.get(tier, _TIER_NOTES["basic"]),
+            skills_index=skills_index or "(no skills mounted)",
+            soul_block=soul_block or "",
+        )
     )
     if config_note:
         prompt = f"{prompt}\n\nHarness note: {config_note}\n"

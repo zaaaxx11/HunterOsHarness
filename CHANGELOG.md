@@ -6,6 +6,78 @@ Compare releases: `v0.3.1...v0.4.0`.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-14
+
+### Approval gate and shell
+
+- Added `shell_exec` (denylist-first, minimal env, state-dir-contained cwd,
+  16k redacted output cap, unparseable commands refused) and
+  `runtime_inventory`; every execution — allowed or blocked — lands a ledger
+  event.
+- Added the approval gate: catastrophic commands never run in any mode,
+  `approval`-danger tools fail closed without a gate, pending requests
+  expire (300s TTL) and decisions are single-use, and `/approve <id>` /
+  `/deny <id>` over chat nudge the agent to retry or move on.
+
+### Daemon — 24/7 hunts
+
+- Added `hunt start/stop/status/restart/logs` (plus top-level `hunter
+  start/stop/status` aliases): detached spawn with a PID-reuse guard,
+  heartbeats with staleness, an atomic single-winner task queue, and a
+  stop-file estop that outranks cost inside the run budget.
+
+### Time budget and unlimited credit
+
+- Added `min_wall_seconds`: the time given to a hunt is a floor, never a
+  stop reason — the engine is nudged to keep hunting (bounded) until it
+  passes. Added the `hunter.duration` grammar (`90s`, `90m`, `2h`,
+  `1h30m`). `0 = unlimited` for every budget key (`max_cost_usd`,
+  `max_iterations`, `wall_seconds`, `min_wall_seconds`); negatives stay
+  refused.
+
+### Browser cloak
+
+- Added the browser cloak (on by default): plausible user-agent, viewport,
+  locale, and timezone pools chosen per context, non-automation launch
+  arguments, and one masking init script. The scope route interceptor,
+  out-of-scope aborts, and every redaction pass are untouched; `cloak:
+  false` restores stock behavior exactly.
+
+### Soul — the operating character
+
+- Added `SOUL.md`: the general operating character (silent, precise,
+  patient, evidence-or-nothing, scope discipline, no drama, hard-won
+  brevity — no levels, no scoring). It ships bundled byte-equal, binds
+  every prompt turn, and is overridden by the gitignored
+  `~/.hunteros/SOUL.local.md`. Override text is sanitize-not-refuse:
+  injection markers are neutralized and length is capped at 4000 chars.
+
+### Context compression
+
+- Added extractive session compaction: head and tail kept verbatim, the
+  middle summarized with real-message prefixes only, evidence and run ids
+  preserved in full, the store untouched (append-only) — `/compress` in
+  chat, automatic above 24k chars in the conversational path.
+
+### Discord and WhatsApp gateways
+
+- Added the Discord adapter (`hunteros-harness[discord]`; 2000-char UTF-16
+  chunking) and the WhatsApp Cloud adapter (4096-char chunks; loopback
+  webhook with Meta hub verification and `X-Hub-Signature-256` HMAC checks
+  — missing or invalid signatures get 403 and the handler is never called).
+  Both are default-deny: a token without an allowlist refuses to start.
+
+### Scripts, docs, and release hygiene
+
+- Added `scripts/`: `huntctl.py`, `stop_hunt.py`, `audit_toolkit.py`,
+  `compress_session.py`, `quick_recon.py`, `report_pack.py` — stdlib +
+  httpx + hunter imports only, scope-gated, Windows-safe, exit codes
+  0/1/3.
+- Owner directive: roadmaps, plans, tests, and ALL testing products are
+  gitignored from v0.5 (fresh clones ship without tests; the canonical QA
+  path is the owner's local checkout). README, QUICKSTART, ARCHITECTURE,
+  GATEWAY, and LLM docs updated for every surface above.
+
 ## [0.4.0] - 2026-09-14
 
 ### M1 — Installer and onboarding
