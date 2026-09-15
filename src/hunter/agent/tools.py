@@ -29,6 +29,12 @@ network, or filesystem directly. Governance invariants implemented here:
 
 from __future__ import annotations
 
+import json
+import random
+import shlex
+import subprocess
+import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -37,9 +43,11 @@ import httpx
 from hunter.engine.base import CandidateFinding
 from hunter.kernel.events import canonical_json, sha256_hex
 from hunter.kernel.findings import Finding, Severity, dedupe_key
+from hunter.kernel.redaction import redact_text
 from hunter.tools.http_client import Exchange
 from hunter.tools.scope import ScopeViolation
 
+from .approval import is_catastrophic
 from .browser import (
     BROWSER_TOOL_NAMES,
     PLAYWRIGHT_INSTALL_HINT,
@@ -47,9 +55,11 @@ from .browser import (
     BrowserSession,
     BrowserUnavailable,
     load_playwright,
+    sanitize_browser_text,
     validate_selector,
     validate_url,
 )
+from .inventory import inventory_binaries
 from .tools_base import TIER_ORDER, ToolContext, ToolOutcome, ToolRegistry, ToolSpec
 
 __all__ = [
@@ -710,6 +720,251 @@ def _respond_to_user(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     return ToolOutcome(result_for_model="yielded to user.", lifecycle_yield=message)
 
 
+# -- shell + inventory tools (M8 F1) ----------------------------------------------
+#
+# shell_exec is the ONLY way the model runs local processes, and it is
+# triple-gated: (1) the dispatch approval gate (catastrophic denylist FIRST,
+# then approval), (2) the handler's own denylist pass (defense-in-depth),
+# (3) the cwd jail + minimal env + 16k redacted output cap below. Every run
+# — allowed or blocked — lands a ledger engine_event (no unlogged side
+# effects). shell=False + shlex.split only: no pipelines, no redirects, no
+# shell injection surface.
+
+_SHELL_MIN_TIMEOUT = 1
+_SHELL_MAX_TIMEOUT = 600
+_SHELL_DEFAULT_TIMEOUT = 120
+_SHELL_OUTPUT_LIMIT = 16_384
+_SHELL_TRUNCATION_MARKER = f"...[output truncated at {_SHELL_OUTPUT_LIMIT} chars]"
+
+# env-leak mitigation: ONLY these pass through to the child process.
+_SHELL_ENV_ALLOWLIST = (
+    "PATH",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "COMSPEC",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+)
+
+
+def _minimal_shell_env(cwd: str) -> dict[str, str]:
+    import os  # noqa: PLC0415 — local import keeps the module import light
+
+    env: dict[str, str] = {}
+    for key in _SHELL_ENV_ALLOWLIST:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    env["HOME"] = cwd  # the child's HOME is the jail, never the operator's
+    env["HUNTER_SANDBOX"] = "1"
+    return env
+
+
+def _shell_state_dir(ctx: ToolContext) -> Any:
+    return ctx.config.get("state_dir")
+
+
+def _shell_cwd(args: dict[str, Any], ctx: ToolContext) -> tuple[str | None, str | None]:
+    """Resolve the execution directory inside the state-dir jail.
+
+    Returns ``(cwd, error_code)``. A provided cwd must resolve (symlinks and
+    '..' included) strictly inside the resolved state dir."""
+    state_raw = _shell_state_dir(ctx)
+    if not state_raw:
+        return None, "shell.cwd_outside_state"
+    try:
+        state_dir = Path(state_raw).resolve()
+    except OSError:
+        return None, "shell.cwd_outside_state"
+    requested = args.get("cwd")
+    if requested in (None, ""):
+        return str(state_dir), None
+    candidate = Path(str(requested))
+    if not candidate.is_absolute():
+        candidate = state_dir / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None, "shell.cwd_outside_state"
+    if resolved != state_dir and state_dir not in resolved.parents:
+        return None, "shell.cwd_outside_state"
+    return str(resolved), None
+
+
+def _shell_event(
+    ctx: ToolContext,
+    *,
+    command: str,
+    exit_code: int | None,
+    timed_out: bool,
+    duration_ms: float,
+    cwd: str,
+) -> None:
+    ctx.emit(
+        "engine_event",
+        {
+            "tool": "shell_exec",
+            "command": redact_text(str(command))[:500],
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "duration_ms": round(float(duration_ms), 2),
+            "cwd": cwd,
+            "approval_id": ctx.config.get("approval_id"),
+        },
+    )
+
+
+def _shell_exec(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+    command = _as_str(args.get("command", ""))
+    started = time.perf_counter()
+    cwd, cwd_error = _shell_cwd(args, ctx)
+
+    # Denylist first (defense-in-depth; the approval gate already refused).
+    reason = is_catastrophic(command)
+    if reason is not None:
+        _shell_event(
+            ctx, command=command, exit_code=None, timed_out=False,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            cwd=cwd or "",
+        )
+        return _blocked(
+            "shell.denylist",
+            f"command refused — {reason}. Catastrophic commands never run, in any mode.",
+        )
+    if cwd_error is not None or cwd is None:
+        _shell_event(
+            ctx, command=command, exit_code=None, timed_out=False,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            cwd=str(cwd or ""),
+        )
+        return _blocked(
+            "shell.cwd_outside_state",
+            "cwd must resolve strictly inside the run's state directory "
+            "(no '..', no absolute paths outside it, no symlink escapes).",
+        )
+
+    timeout_raw = args.get("timeout_seconds", _SHELL_DEFAULT_TIMEOUT)
+    try:
+        timeout = int(timeout_raw)
+    except (TypeError, ValueError):
+        timeout = -1
+    if timeout < _SHELL_MIN_TIMEOUT or timeout > _SHELL_MAX_TIMEOUT:
+        _shell_event(
+            ctx, command=command, exit_code=None, timed_out=False,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            cwd=cwd,
+        )
+        return _blocked(
+            "shell.timeout_bounds",
+            f"timeout_seconds must be between {_SHELL_MIN_TIMEOUT} and "
+            f"{_SHELL_MAX_TIMEOUT} (got {timeout_raw!r}; default "
+            f"{_SHELL_DEFAULT_TIMEOUT}s).",
+        )
+
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        _shell_event(
+            ctx, command=command, exit_code=None, timed_out=False,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            cwd=cwd,
+        )
+        return _blocked(
+            "shell.command_unparseable",
+            f"command is not parseable without a shell ({exc}); plain argv only — "
+            "no pipelines, redirects, or shell syntax.",
+        )
+    if not argv:
+        _shell_event(
+            ctx, command=command, exit_code=None, timed_out=False,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            cwd=cwd,
+        )
+        return _blocked("shell.command_unparseable", "command is empty after parsing.")
+
+    timed_out = False
+    exit_code: int | None = None
+    stdout = ""
+    stderr = ""
+    try:
+        completed = subprocess.run(
+            argv,
+            shell=False,
+            cwd=cwd,
+            env=_minimal_shell_env(cwd),
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        exit_code = completed.returncode
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        stdout = _as_text(exc.stdout)
+        stderr = _as_text(exc.stderr)
+    except OSError as exc:
+        _shell_event(
+            ctx, command=command, exit_code=None, timed_out=False,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            cwd=cwd,
+        )
+        return ToolOutcome(
+            ok=False,
+            code="shell.spawn_error",
+            result_for_model=f"[ERROR tool] could not start the process: "
+            f"{type(exc).__name__}: {exc}",
+        )
+
+    if timed_out:
+        combined = f"$ {command}\n[stdout]\n{stdout}\n[stderr]\n{stderr}\n[timed out after {timeout}s]"
+    else:
+        combined = f"$ {command}\n[stdout]\n{stdout}\n[stderr]\n{stderr}"
+    truncated = len(combined) > _SHELL_OUTPUT_LIMIT
+    safe = sanitize_browser_text(combined, limit=_SHELL_OUTPUT_LIMIT)
+    if truncated:
+        safe = f"{safe}\n{_SHELL_TRUNCATION_MARKER}"
+    _shell_event(
+        ctx,
+        command=command,
+        exit_code=exit_code,
+        timed_out=timed_out,
+        duration_ms=(time.perf_counter() - started) * 1000.0,
+        cwd=cwd,
+    )
+    if timed_out:
+        return ToolOutcome(
+            ok=False,
+            code="shell.timeout",
+            result_for_model=safe,
+        )
+    return ToolOutcome(result_for_model=safe)
+
+
+def _as_text(value: Any) -> str:
+    """TimeoutExpired output can be bytes (POSIX) or str (Windows)."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _runtime_inventory(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+    payload = ctx.state.get("runtime_inventory")
+    if payload is None:
+        payload = inventory_binaries()
+        ctx.state["runtime_inventory"] = payload  # at most one which-scan per run
+    ctx.emit(
+        "engine_event",
+        {"tool": "runtime_inventory", "available_count": len(payload["available"])},
+    )
+    return ToolOutcome(result_for_model=json.dumps(payload, sort_keys=True))
+
+
 # -- browser tools --------------------------------------------------------------
 
 
@@ -763,7 +1018,13 @@ def _browser_error(exc: Exception) -> ToolOutcome:
 
 
 def _browser_factory(ctx: ToolContext, module: Any = None) -> Any:
-    return BrowserSession(ctx.scope, playwright_module=module)
+    # M8 F5 wiring: cloak defaults ON (config key agent.browser_cloak); an
+    # explicit seed makes the fingerprint deterministic for a whole run.
+    kwargs: dict[str, Any] = {"cloak": bool(ctx.config.get("browser_cloak", True))}
+    seed = ctx.config.get("browser_cloak_seed")
+    if seed is not None:
+        kwargs["cloak_rng"] = random.Random(str(seed))
+    return BrowserSession(ctx.scope, playwright_module=module, **kwargs)
 
 
 def _ensure_browser(ctx: ToolContext, module: Any = _AUTO) -> Any:
@@ -1012,6 +1273,38 @@ def build_registry(
             parameters=_schema({"message": {"type": "string"}}, ["message"]),
             handler=_respond_to_user,
             lifecycle="respond_to_user",
+        ),
+        ToolSpec(
+            name="shell_exec",
+            description=(
+                "Run ONE local command inside the run's sandboxed state directory: "
+                "plain argv only (shlex-split, no shell, no pipes/redirects), minimal "
+                "environment, output redacted and capped at 16384 chars. cwd defaults "
+                "to the state dir and must stay inside it. Catastrophic commands "
+                "(rm -rf, format, disk writes, power control) are refused in ALL "
+                "modes; other runs need user approval (/approve <request id>)."
+            ),
+            parameters=_schema(
+                {
+                    "command": {"type": "string", "minLength": 1, "maxLength": 4000},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600},
+                    "cwd": {"type": "string"},
+                },
+                ["command"],
+            ),
+            handler=_shell_exec,
+            min_tier="advanced",
+            danger="approval",
+        ),
+        ToolSpec(
+            name="runtime_inventory",
+            description=(
+                "Passive capability read: which audit binaries (nmap, sqlmap, ...) "
+                "exist on this machine. No side effects; cached for the run."
+            ),
+            parameters=_schema({}, []),
+            handler=_runtime_inventory,
+            min_tier="basic",
         ),
     ]
     for spec in specs:

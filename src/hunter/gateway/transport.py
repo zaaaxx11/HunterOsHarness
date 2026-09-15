@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-__all__ = ["ChatTransport", "InboundMessage", "chunk_text"]
+__all__ = ["ChatTransport", "InboundMessage", "chunk_text", "is_authorized"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +62,20 @@ class ChatTransport(ABC):
     async def set_status(self, chat_id: str, status: str = "typing") -> None:
         """Best-effort presence hint (e.g. Telegram typing). Default no-op."""
         return None
+
+
+def is_authorized(user_id: str | None, allowed_users) -> bool:
+    """Fail-closed allowlist check shared by every messaging surface.
+
+    An empty or missing allowlist denies EVERYONE — an open bot is never an
+    accident. ``user_id`` must be a non-empty id present (after whitespace
+    normalization) in ``allowed_users``. Adapters keep thin local aliases of
+    this helper so their modules stay self-describing; the semantics live here.
+    """
+    if not user_id or not allowed_users:
+        return False
+    allowed = {str(u).strip() for u in allowed_users}
+    return str(user_id).strip() in allowed
 
 
 def chunk_text(text: str, limit: int) -> list[str]:

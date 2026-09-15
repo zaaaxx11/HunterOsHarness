@@ -1,4 +1,4 @@
-# QUICKSTART — HunterOs Harness v0.4.0 in 60 seconds
+# QUICKSTART — HunterOs Harness v0.5.0 in 60 seconds
 
 **Evidence-first security auditing.** Every finding lives in a hash-chained
 ledger with bound evidence — a claim the harness cannot prove is a claim it
@@ -8,6 +8,9 @@ refuses to store.
 > test. The scope gate is fail-closed: nothing outside `localhost` and the
 > hosts in your scope manifest can be touched. Authorization is your
 > responsibility; enforcement is the harness's.
+
+Upgrading from v0.4.0: config and state are compatible — nothing to
+migrate; every budget key now accepts `0 = unlimited`.
 
 ---
 
@@ -172,8 +175,46 @@ export HUNTEROS_TELEGRAM_ALLOWED_USERS="111111111"   # numeric ids, CSV
 hunter gateway start
 ```
 
-Bot setup, the HMAC-signed webhook transport, and the security model:
-**[docs/GATEWAY.md](docs/GATEWAY.md)**.
+Discord (`HUNTEROS_DISCORD_TOKEN` + `HUNTEROS_DISCORD_ALLOWED_USERS`) and
+WhatsApp (`HUNTEROS_WHATSAPP_TOKEN` / `_PHONE_NUMBER_ID` / `_ALLOWED_USERS`,
+HMAC-verified inbound) work the same way. Bot setup, the HMAC-signed webhook
+transport, and the security model: **[docs/GATEWAY.md](docs/GATEWAY.md)**.
+
+## 10. Run a hunt 24/7 (daemon)
+
+The time you give a hunt is a **minimum**: `--min-time` is a floor the
+engine will not stop before (it may run longer), `--time` is the wall-clock
+cap, and `0 = unlimited` for every budget key.
+
+```bash
+hunt start --target http://127.0.0.1:8941/ --time 2h --min-time 30m --yes
+hunt status                       # running? queue? last run? transports?
+hunt logs --lines 20              # tail the daemon log
+hunt stop                         # cooperative stop — the in-flight budget checks the flag first
+```
+
+`hunt start` spawns a detached daemon, enqueues the governed task, and the
+daemon claims it atomically; a stale or dead daemon never blocks a fresh
+start.
+
+## 11. Approvals over chat (`/approve`)
+
+Inside `hunter chat` (or over any gateway), a dangerous tool call such as
+`shell_exec` is BLOCKED until you approve it. The agent does not run the
+command; it asks:
+
+```
+agent> BLOCKED: tool 'shell_exec' requires user approval. Request id:
+       A-1a2b3c4d (expires in 300s). Ask the user to reply
+       /approve A-1a2b3c4d — do not retry before approval.
+you> /approve A-1a2b3c4d
+hunter> approval A-1a2b3c4d granted — the agent will be nudged to retry
+```
+
+Approvals are single-use (one decision = one retry) and expire after 300
+seconds; `/deny <id>` records the refusal and the agent moves on.
+Catastrophic commands are refused in every mode — an approval never
+overrides the denylist or the scope gate.
 
 ---
 

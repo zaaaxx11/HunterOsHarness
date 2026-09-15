@@ -100,6 +100,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[N]"),
     CommandDef("clear", "Start a fresh untitled session", "Session"),
     CommandDef("usage", "Show session message count and cost totals", "Session"),
+    CommandDef("compress", "Compact the current session view (store untouched)", "Session",
+               args_hint="[--report]"),
     CommandDef("quit", "Leave the chat (saves the session)", "Session", aliases=("exit", "q")),
     # Audit
     CommandDef("scan", "Run a governed scan of an authorized target", "Audit",
@@ -113,6 +115,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="reject"),
     CommandDef("hunt", "Hunt mode and one-shot hunts from chat", "Audit",
                args_hint="on | off | <target> [--scope PATH]", busy_policy="reject"),
+    CommandDef("approve", "Approve a pending dangerous-tool request", "Audit",
+               args_hint="<request_id>"),
+    CommandDef("deny", "Deny a pending dangerous-tool request", "Audit",
+               args_hint="<request_id>"),
     CommandDef("retro", "Phase retro for a run (phase engine, if installed)", "Audit",
                args_hint="<run_id> [--record]"),
     CommandDef("curate", "Draft skills from a run's retro (preview + confirm; never auto-saves)", "Audit",
@@ -239,6 +245,20 @@ def _open_ledger(ctx: CommandContext) -> Ledger:
     if state_dir:
         return Ledger(Path(state_dir) / "ledger.db")
     return Ledger()
+
+
+def default_state_dir() -> Path:
+    """The Ledger default state-directory convention: ``$HUNTER_STATE_DIR``
+    or ``./.hunter`` — used when a surface never set ``options["state_dir"]``."""
+    import os
+
+    return Path(os.environ.get("HUNTER_STATE_DIR") or ".hunter")
+
+
+def _approval_root(options: dict[str, Any]) -> Path:
+    """Where the surface's approval requests live: ``<state>/approvals``."""
+    state_dir = options.get("state_dir")
+    return (Path(str(state_dir)) if state_dir else default_state_dir()) / "approvals"
 
 
 def _session_id(ctx: CommandContext) -> str | None:
@@ -790,6 +810,88 @@ def _exec_retro(ctx: CommandContext) -> CommandReply:
     )
 
 
+# -- approval commands (/approve, /deny — M8 F1) --------------------------------
+
+
+def _exec_approve(ctx: CommandContext) -> CommandReply:
+    from hunter.agent.approval import ApprovalStore  # noqa: PLC0415 — lazy, cycle-safe
+
+    request_id = (ctx.args or "").strip()
+    if not request_id:
+        return CommandReply("usage: /approve <request_id>")
+    store = ApprovalStore(_approval_root(ctx.options))
+    decided = store.decide(request_id, "approved")
+    if decided is None:
+        return CommandReply(f"approval {request_id}: no pending request")
+    return CommandReply(
+        f"approval {decided.request_id} granted — the agent will be nudged to retry",
+        data={"approval_granted": decided.request_id},
+    )
+
+
+def _exec_deny(ctx: CommandContext) -> CommandReply:
+    from hunter.agent.approval import ApprovalStore  # noqa: PLC0415 — lazy, cycle-safe
+
+    request_id = (ctx.args or "").strip()
+    if not request_id:
+        return CommandReply("usage: /deny <request_id>")
+    store = ApprovalStore(_approval_root(ctx.options))
+    decided = store.decide(request_id, "denied")
+    if decided is None:
+        return CommandReply(f"approval {request_id}: no pending request")
+    return CommandReply(
+        f"approval {decided.request_id} denied",
+        data={"approval_denied": decided.request_id},
+    )
+
+
+# -- session compression (/compress — M8 F8) -------------------------------------
+
+
+def _exec_compress(ctx: CommandContext) -> CommandReply:
+    from hunter.chat.compression import COMPACT_MARKER, compact_history  # noqa: PLC0415
+
+    sid = _session_id(ctx)
+    if not sid:
+        return CommandReply("no active session — say something first")
+    rows = ctx.store.messages(sid)
+    history = [
+        {"role": str(m["role"]), "content": str(m["content"])}
+        for m in rows
+        if m["role"] in ("user", "assistant")
+    ]
+    compacted, stats = compact_history(history)
+    block = next(
+        (
+            str(m["content"])
+            for m in compacted
+            if m["role"] == "system" and COMPACT_MARKER in str(m["content"])
+        ),
+        "",
+    )
+    summary_line = (
+        f"compacted: {stats['messages_in']} messages / {stats['chars_in']} chars -> "
+        f"{stats['chars_out']} chars (store untouched)"
+    )
+    _positionals, opts = _split_options(_tokenize(ctx.args), value_options=set(), flags={"--report"})
+    if opts.get("report"):
+        # --report: show the extractive summary WITHOUT applying anything.
+        body = f"{summary_line}\n\n{block}" if block else summary_line
+        return CommandReply(body, data={"applied": False, "report": True})
+    if not block:
+        return CommandReply(summary_line, data={"applied": False})
+    max_seq = max((int(m["seq"]) for m in rows), default=0)
+    ctx.options["compact_from_seq"] = max_seq
+    # Append-only: the marker is a normal hash-chained row, so the compacted
+    # view stays reproducible after a restart (the ChatStore is untouched
+    # otherwise — no rewrites, no tombstones).
+    ctx.store.append_message(sid, "assistant", block)
+    return CommandReply(
+        summary_line,
+        data={"applied": True, "compact_from_seq": max_seq},
+    )
+
+
 # -- stretch: interactive governed audit (/audit) -----------------------------
 
 
@@ -883,6 +985,7 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "undo": _exec_undo,
     "clear": _exec_clear,
     "usage": _exec_usage,
+    "compress": _exec_compress,
     "quit": _exec_quit,
     "scan": _exec_scan,
     "findings": _exec_findings,
@@ -893,6 +996,8 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "skills": _exec_skills,
     "audit": _exec_audit,
     "hunt": _exec_hunt,
+    "approve": _exec_approve,
+    "deny": _exec_deny,
     "retro": _exec_retro,
     "curate": _exec_curate,
 }

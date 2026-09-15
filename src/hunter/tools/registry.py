@@ -69,9 +69,16 @@ def _default_llm_provider(config: HunterConfig | None = None) -> Any | None:
 
 
 def get_engine(
-    name: str, *, provider: Any | None = None, config: HunterConfig | None = None
+    name: str,
+    *,
+    provider: Any | None = None,
+    config: HunterConfig | None = None,
+    budget: Any | None = None,
 ) -> EngineDriver:
     """Instantiate the engine registered under ``name``.
+
+    ``budget`` (M8 shared plumbing) is forwarded to the LLM engine's loop
+    governor; ``None`` keeps the pre-v0.5 behavior exactly.
 
     Raises:
         ValueError: when ``name`` is not a registered engine; the message
@@ -89,7 +96,8 @@ def get_engine(
         from hunter.engine.llm import LLMEngine
 
         return LLMEngine(
-            provider if provider is not None else _default_llm_provider(config)
+            provider if provider is not None else _default_llm_provider(config),
+            budget=budget,
         )
     available = ", ".join(available_engines())
     raise ValueError(f"unknown engine {name!r}; available engines: {available}")

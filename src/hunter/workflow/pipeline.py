@@ -52,6 +52,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable
 
     from hunter.engine.base import CandidateFinding, EngineDriver, EngineResult, ScanPlan
+    from hunter.llm.base import RunBudget
     from hunter.tools.scope import ScopeSet
 
 __all__ = ["RunSummary", "run_scan"]
@@ -120,6 +121,7 @@ def run_scan(
     scope: ScopeSet,
     state_dir: str | Path | None = None,
     config: dict[str, Any] | None = None,
+    budget: RunBudget | None = None,
 ) -> RunSummary:
     """Run one full scan against ``target_url`` and persist it in the ledger.
 
@@ -147,9 +149,12 @@ def run_scan(
         state_dir: Directory for ``ledger.db``; ``None`` keeps the Ledger
             default convention (env HUNTER_STATE_DIR or CWD/.hunter).
         config: Forwarded verbatim to :class:`EngineContext.config`.
+        budget: Optional :class:`hunter.llm.base.RunBudget` handed to the
+            engine (M8 shared plumbing — the LLM engine's loop governor).
+            ``None`` keeps the pre-v0.5 behavior exactly.
     """
     run_id = f"R-{uuid.uuid4().hex[:12]}"
-    engine: EngineDriver = get_engine(engine_name)  # ValueError before anything is written
+    engine: EngineDriver = get_engine(engine_name, budget=budget)  # ValueError before any write
     ledger = Ledger(_ledger_db_path(state_dir))
     t0 = time.perf_counter()
     try:

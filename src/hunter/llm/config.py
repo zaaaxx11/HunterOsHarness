@@ -44,8 +44,13 @@ _TIER_KEYS: tuple[str, ...] = (
     "provider", "model", "base_url", "key_env", "timeout", "reasoning_effort",
 )
 _PROVIDER_KEYS: tuple[str, ...] = ("key_env", "api_key", "base_url", "endpoint")
-_BUDGET_KEYS: tuple[str, ...] = ("max_cost_usd", "max_iterations", "wall_seconds")
-_AGENT_KEYS: tuple[str, ...] = ("tier", "api_max_retries", "browser")
+_BUDGET_KEYS: tuple[str, ...] = (
+    "max_cost_usd",
+    "max_iterations",
+    "wall_seconds",
+    "min_wall_seconds",
+)
+_AGENT_KEYS: tuple[str, ...] = ("tier", "api_max_retries", "browser", "browser_cloak")
 _FALLBACK_KEYS: tuple[str, ...] = ("provider", "model", "base_url", "key_env")
 
 # M1: the endpoint SHAPE is stored ("" = unset) so M2 can branch to the
@@ -102,9 +107,14 @@ class FallbackEntry:
 
 @dataclass
 class BudgetConfig:
+    """Per-run governor. Every limit treats ``0`` as UNLIMITED (F4 —
+    unlimited hunting credit); negatives are refused. ``min_wall_seconds`` is
+    the F3 minimum-time FLOOR: the engine may not stop before it elapses."""
+
     max_cost_usd: float = 5.0
     max_iterations: int = 60
     wall_seconds: float = 1800.0
+    min_wall_seconds: float = 0.0
 
 
 @dataclass
@@ -112,11 +122,14 @@ class AgentConfig:
     """Agent-loop settings. ``tier`` selects the chat/scan model tier
     (AGENT_TIERS); ``api_max_retries`` is attempts per provider before
     failing over to the fallback chain. ``browser`` opts into web automation
-    (the optional [browser] extra) — enabled only for an authorized hunt."""
+    (the optional [browser] extra) — enabled only for an authorized hunt.
+    ``browser_cloak`` (F5) masks webdriver fingerprints; the default keeps
+    the v0.4 behavior (cloak on) byte-identical."""
 
     tier: str = "basic"
     api_max_retries: int = 3
     browser: bool = False
+    browser_cloak: bool = True
 
 
 @dataclass
@@ -461,8 +474,12 @@ def load_config(
     _reject_unknown(budget_raw, _BUDGET_KEYS, "budget", source_text=text or None)
     cfg.budget = BudgetConfig(
         max_cost_usd=_as_number(budget_raw.get("max_cost_usd", 5.0), "budget.max_cost_usd", minimum=0.0),
-        max_iterations=_as_int(budget_raw.get("max_iterations", 60), "budget.max_iterations", minimum=1),
+        # F4: 0 = unlimited, so the minimum is 0 — negatives stay refused.
+        max_iterations=_as_int(budget_raw.get("max_iterations", 60), "budget.max_iterations", minimum=0),
         wall_seconds=_as_number(budget_raw.get("wall_seconds", 1800.0), "budget.wall_seconds", minimum=0.0),
+        min_wall_seconds=_as_number(
+            budget_raw.get("min_wall_seconds", 0.0), "budget.min_wall_seconds", minimum=0.0
+        ),
     )
 
     # --- agent -------------------------------------------------------------
@@ -492,6 +509,7 @@ def load_config(
         tier=tier,
         api_max_retries=_as_int(agent_raw.get("api_max_retries", 3), "agent.api_max_retries", minimum=1),
         browser=_as_bool(agent_raw.get("browser", False), "agent.browser"),
+        browser_cloak=_as_bool(agent_raw.get("browser_cloak", True), "agent.browser_cloak"),
     )
 
     # --- env overrides (WIN over YAML) -------------------------------------
@@ -548,11 +566,11 @@ def _apply_env_overrides(
                 f"$HUNTEROS_MAX_ITERATIONS must be an integer — got '{iter_env}'",
                 "e.g. export HUNTEROS_MAX_ITERATIONS=100",
             ) from exc
-        if value < 1:
+        if value < 0:  # F4: 0 = unlimited; negatives stay refused
             raise _config_error(
                 "config.value",
-                f"$HUNTEROS_MAX_ITERATIONS must be >= 1 — got '{iter_env}'",
-                "e.g. export HUNTEROS_MAX_ITERATIONS=100",
+                f"$HUNTEROS_MAX_ITERATIONS must be >= 0 — got '{iter_env}'",
+                "e.g. export HUNTEROS_MAX_ITERATIONS=100 (0 means unlimited)",
             )
         cfg.budget.max_iterations = value
 
@@ -689,6 +707,10 @@ budget:                        # per-run governor (RunBudget)
   max_cost_usd: 5.0            # hard spend cap; warnings at 70/85/95%
   max_iterations: 60           # agent tool-loop turns
   wall_seconds: 1800           # 30 minute wall clock
+  min_wall_seconds: 0          # minimum-time floor: the engine keeps hunting
+                               # until at least this much wall time elapsed
+# 0 = unlimited (unlimited hunting credit) — applies to max_cost_usd,
+# max_iterations, wall_seconds, and min_wall_seconds alike.
 
 agent:
   tier: basic                  # basic | advanced | orchestrator | hunter | verifier | utility

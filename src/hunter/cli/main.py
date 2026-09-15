@@ -173,8 +173,49 @@ def hunt(
     state: Path | None = typer.Option(None, "--state", help="State directory."),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Assume yes for proposed scope."),
+    daemon_target: str | None = typer.Option(
+        None, "--target", help="Daemon verb: hunt target for `hunt start`."
+    ),
+    time_opt: str | None = typer.Option(
+        None, "--time", help="Daemon verb: max wall time [Nh][Nm][Ns] (ignored for plain hunts)."
+    ),
+    min_time_opt: str | None = typer.Option(
+        None, "--min-time", help="Daemon verb: minimum wall time floor (ignored for plain hunts)."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Daemon verb: force start/stop (ignored for plain hunts)."
+    ),
+    lines: int | None = typer.Option(
+        None, "--lines", help="Daemon verb: line count for `hunt logs` (ignored for plain hunts)."
+    ),
 ) -> None:
-    """One-command hunt with Strix exit codes: 0 clean, 1 error, 2 findings, 3 refused."""
+    """One-command hunt with Strix exit codes: 0 clean, 1 error, 2 findings, 3 refused.
+
+    Daemon verbs ride the same command: `hunt start --target URL --time 2h`,
+    `hunt stop`, `hunt status [--json]`, `hunt restart`, `hunt logs --lines N`.
+    """
+    # F2 verb interception: click turns `hunt start --target URL` into THIS
+    # command (the verb becomes the positional target) — delegate before the
+    # plain-hunt path can touch it. A plain `hunter hunt <URL>` is never
+    # misrouted: normalize_hunt_target rejects those tokens as targets.
+    if target in {"start", "stop", "status", "restart", "logs"}:
+        from hunter.cli.daemon import dispatch_hunt_alias
+
+        raise typer.Exit(
+            dispatch_hunt_alias(
+                target,
+                target=daemon_target,
+                scope=scope,
+                engine=engine,
+                state=state,
+                json_out=json_out,
+                yes=yes,
+                time_text=time_opt,
+                min_time_text=min_time_opt,
+                force=force,
+                lines=lines,
+            )
+        )
     import json
 
     from hunter.hunt import (
@@ -1177,6 +1218,15 @@ def main() -> None:
     # Non-standalone: the backstop (handle.py) owns interrupts and escapes;
     # argument errors keep typer's own rendering and exit codes.
     run_app(get_command(app))
+
+
+# --------------------------------------------------------------------- daemon ---
+# The daemon CLI (M8 F2) lives in cli/daemon.py and registers the `daemon`
+# sub-app plus the top-level start/stop/status aliases on THIS app. The
+# import sits at the bottom because it needs the fully-built app object.
+from hunter.cli.daemon import register_daemon_commands  # noqa: E402
+
+register_daemon_commands(app)
 
 
 if __name__ == "__main__":

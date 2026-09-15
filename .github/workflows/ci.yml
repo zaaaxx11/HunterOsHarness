@@ -17,5 +17,23 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[dev]"
-      - run: python -m ruff check src tests
-      - run: python -m pytest
+      # tests/ is untracked by design in v0.5 (owner directive): fresh clones
+      # ship without tests, so every check degrades gracefully when the
+      # directory is absent. shell: bash keeps one syntax across the
+      # ubuntu/windows runners (the windows default is pwsh).
+      - name: Ruff
+        shell: bash
+        run: |
+          if [ -d tests ]; then
+            python -m ruff check src scripts tests
+          else
+            python -m ruff check src scripts
+          fi
+      - name: Pytest
+        shell: bash
+        run: |
+          if [ -d tests ]; then
+            python -m pytest
+          else
+            echo "tests/ untracked by design; skipping"
+          fi

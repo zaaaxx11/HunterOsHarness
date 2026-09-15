@@ -7,8 +7,11 @@ IterationBudget semantics + Strix-style staged cost warnings, merged):
   turns call ``refund_iteration()`` for work that must not eat the budget.
 - ``add_cost()`` / ``cost_breakpoint()`` → staged ONE-TIME warnings at
   70 / 85 / 95 % of ``max_cost_usd`` ("wind down" advisories).
-- ``exhausted()`` → a human reason when cost, iterations, or wall clock (via
-  ``time.monotonic`` since ``start()``) says the run must stop — else None.
+- ``exhausted()`` → a human reason when the stop file is present, or cost,
+  iterations, or wall clock (via ``time.monotonic`` since ``start()``) says
+  the run must stop — else None. The stop file outranks everything.
+- ``remaining_seconds()`` → seconds left in the ``min_wall_seconds`` floor
+  (F3); the floor never causes a stop, it only holds lifecycle tools.
 
 All checks treat a non-positive limit as "off", and every public method takes
 the lock, so the single-threaded agent loop stays correct even if a tool
@@ -20,6 +23,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from hunter.llm.base import RunBudget as RunBudgetContract
 
@@ -85,10 +89,14 @@ class RunBudget(RunBudgetContract):
             return None
 
     def exhausted(self) -> str | None:
-        """Human reason when the run must wind down (cost, iterations, or
-        wall clock), else None. Cost is checked first: money is the hardest
-        limit. Wall clock only counts once ``start()`` armed it."""
+        """Human reason when the run must wind down (stop file, cost,
+        iterations, or wall clock), else None. The stop file is checked
+        FIRST: a user-issued kill outranks every automatic limit. Cost is
+        the hardest *automatic* limit. ``min_wall_seconds`` is a FLOOR and
+        never appears here. Wall clock only counts once ``start()`` armed it."""
         with self._lock:
+            if self.stop_file and Path(self.stop_file).is_file():
+                return "stop file present"
             if self.max_cost_usd > 0 and self.spent_usd >= self.max_cost_usd:
                 return (
                     f"cost budget exhausted: ${self.spent_usd:.2f} of "
@@ -107,6 +115,14 @@ class RunBudget(RunBudgetContract):
                     f"{self.wall_seconds:.0f}s"
                 )
             return None
+
+    def remaining_seconds(self) -> float:
+        """Seconds left in the ``min_wall_seconds`` floor; 0.0 when the floor
+        is off (<= 0) or the clock was never armed, never negative."""
+        with self._lock:
+            if self.min_wall_seconds <= 0 or self.started_monotonic <= 0.0:
+                return 0.0
+            return max(0.0, self.min_wall_seconds - self._elapsed_locked())
 
     # -- internals ----------------------------------------------------------
 

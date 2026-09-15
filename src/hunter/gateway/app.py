@@ -160,6 +160,11 @@ def transports_from_env(env: dict[str, str] | None = None) -> list[ChatTransport
       (comma/whitespace-separated ids) start the Telegram long-poll adapter;
       a token WITHOUT an allowlist raises HunterError — an open Telegram bot
       is never an accident.
+    - ``HUNTEROS_DISCORD_TOKEN`` + ``HUNTEROS_DISCORD_ALLOWED_USERS`` start
+      the Discord event adapter; the same default-deny rule applies.
+    - ``HUNTEROS_WHATSAPP_TOKEN`` + ``HUNTEROS_WHATSAPP_PHONE_NUMBER_ID`` +
+      ``HUNTEROS_WHATSAPP_ALLOWED_USERS`` start the WhatsApp Cloud adapter;
+      the same default-deny rule applies (see gateway/whatsapp.py).
     - ``HUNTEROS_WEBHOOK_SECRET`` starts the webhook adapter on
       ``HUNTEROS_WEBHOOK_HOST`` (default 127.0.0.1) / ``..._PORT``
       (default 8807) / ``..._PATH`` (default /hunter).
@@ -173,19 +178,66 @@ def transports_from_env(env: dict[str, str] | None = None) -> list[ChatTransport
     env = os.environ if env is None else env
     transports: list[ChatTransport] = []
 
+    def _allowlist(raw: str | None, *, code: str, message: str, hint: str) -> set[str]:
+        """Parse a comma/whitespace-separated allowlist; refuse to run open."""
+        if not (raw or "").strip():
+            raise HunterError(code=code, layer="config", message=message, hint=hint)
+        return {part.strip() for part in raw.replace(";", ",").split(",") if part.strip()}
+
     token = (env.get("HUNTEROS_TELEGRAM_TOKEN") or "").strip()
     if token:
-        allowed_raw = (env.get("HUNTEROS_TELEGRAM_ALLOWED_USERS") or "").strip()
-        if not allowed_raw:
-            raise HunterError(
-                code="gateway.telegram_allowlist",
-                layer="config",
-                message="HUNTEROS_TELEGRAM_TOKEN is set but no allowlist is configured",
-                hint="set HUNTEROS_TELEGRAM_ALLOWED_USERS to a comma-separated list "
-                "of authorized Telegram user ids",
-            )
-        allowed = {part.strip() for part in allowed_raw.replace(";", ",").split(",") if part.strip()}
+        allowed = _allowlist(
+            env.get("HUNTEROS_TELEGRAM_ALLOWED_USERS"),
+            code="gateway.telegram_allowlist",
+            message="HUNTEROS_TELEGRAM_TOKEN is set but no allowlist is configured",
+            hint="set HUNTEROS_TELEGRAM_ALLOWED_USERS to a comma-separated list "
+            "of authorized Telegram user ids",
+        )
         transports.append(TelegramAdapter(token, allowed))
+
+    discord_token = (env.get("HUNTEROS_DISCORD_TOKEN") or "").strip()
+    if discord_token:
+        from hunter.gateway.discord import DiscordAdapter
+
+        allowed = _allowlist(
+            env.get("HUNTEROS_DISCORD_ALLOWED_USERS"),
+            code="gateway.discord_allowlist",
+            message="HUNTEROS_DISCORD_TOKEN is set but no allowlist is configured",
+            hint="set HUNTEROS_DISCORD_ALLOWED_USERS to a comma-separated list "
+            "of authorized Discord user ids",
+        )
+        transports.append(DiscordAdapter(discord_token, allowed))
+
+    whatsapp_token = (env.get("HUNTEROS_WHATSAPP_TOKEN") or "").strip()
+    if whatsapp_token:
+        from hunter.gateway.whatsapp import DEFAULT_WEBHOOK_PORT, WhatsAppAdapter
+
+        phone_number_id = (env.get("HUNTEROS_WHATSAPP_PHONE_NUMBER_ID") or "").strip()
+        allowed = _allowlist(
+            env.get("HUNTEROS_WHATSAPP_ALLOWED_USERS"),
+            code="gateway.whatsapp_allowlist",
+            message="HUNTEROS_WHATSAPP_TOKEN is set but no allowlist is configured",
+            hint="set HUNTEROS_WHATSAPP_ALLOWED_USERS to a comma-separated list "
+            "of authorized WhatsApp sender numbers",
+        )
+        kwargs: dict[str, Any] = {}
+        if env.get("HUNTEROS_WHATSAPP_APP_SECRET"):
+            kwargs["app_secret"] = env["HUNTEROS_WHATSAPP_APP_SECRET"].strip()
+        if env.get("HUNTEROS_WHATSAPP_VERIFY_TOKEN"):
+            kwargs["verify_token"] = env["HUNTEROS_WHATSAPP_VERIFY_TOKEN"].strip()
+        if env.get("HUNTEROS_WHATSAPP_PORT"):
+            # A non-integer port is a config error (exit 8), not a traceback.
+            try:
+                kwargs["port"] = int(env["HUNTEROS_WHATSAPP_PORT"])
+            except ValueError as exc:
+                raise HunterError(
+                    code="gateway.port_invalid",
+                    layer="config",
+                    message="HUNTEROS_WHATSAPP_PORT must be an integer — "
+                    f"got {env['HUNTEROS_WHATSAPP_PORT']!r}",
+                    hint=f"e.g. export HUNTEROS_WHATSAPP_PORT={DEFAULT_WEBHOOK_PORT}",
+                ) from exc
+        transports.append(WhatsAppAdapter(whatsapp_token, phone_number_id, allowed, **kwargs))
 
     secret = (env.get("HUNTEROS_WEBHOOK_SECRET") or "").strip()
     if secret:

@@ -48,6 +48,10 @@ budget:                        # per-run governor (RunBudget)
   max_cost_usd: 5.0            # hard spend cap; warnings at 70/85/95%
   max_iterations: 60           # agent tool-loop turns
   wall_seconds: 1800           # 30 minute wall clock
+  min_wall_seconds: 0          # minimum-time floor: the engine keeps hunting
+                               # until at least this much wall time elapsed
+# 0 = unlimited (unlimited hunting credit) — applies to max_cost_usd,
+# max_iterations, wall_seconds, and min_wall_seconds alike.
 
 agent:
   tier: basic                  # basic | advanced | orchestrator | hunter | verifier | utility

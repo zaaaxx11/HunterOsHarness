@@ -151,11 +151,23 @@ Invariants that make the loop trustworthy:
 
 ### Chat, sessions, gateway
 
-`chat/` (REPL + sessions + slash commands) and `gateway/` (Telegram +
-HMAC-signed webhook, turn-leased) are front-ends over the same agent loop.
-Slash commands work identically in the REPL and over the gateway; a denied
-Telegram sender gets one terse refusal and nothing is recorded. See
-[docs/GATEWAY.md](GATEWAY.md) and [docs/LLM.md](LLM.md).
+`chat/` (REPL + sessions + slash commands) and `gateway/` (Telegram,
+Discord, WhatsApp, and HMAC-signed webhook, turn-leased) are front-ends over
+the same agent loop. Slash commands work identically in the REPL and over
+the gateway; a denied sender gets one terse refusal and nothing is recorded.
+See [docs/GATEWAY.md](GATEWAY.md) and [docs/LLM.md](LLM.md).
+
+### Daemon — hunts that run 24/7
+
+`cli/daemon.py` drives `daemon.py`, which composes the gateway
+(`GatewayApp`) and `run_hunt` workers over a daemon queue: detached spawn
+with a PID-reuse guard, heartbeats with a staleness window, an atomic
+single-winner task claim (rename to `claimed-<id>` loses the race cleanly),
+and a stop-file estop that the in-flight `RunBudget` checks FIRST — a
+user-issued kill outranks cost. `hunt start --target ...` enqueues a
+governed task; the daemon claims it, runs `run_hunt` with
+`RunBudget(stop_file=...)`, and marks it done — the same phase pipeline,
+scope gate, and ledger as a foreground hunt.
 
 ## EngineDriver — the brain plug-point
 
@@ -250,5 +262,3 @@ retries. `detail` is for verbose logs and never contains secrets.
 | v0.2 | LLM brain + governance | LiteLLM tier router, 15-tool agent with R1–R6 evidence validation, debunk replay, chat REPL, gateway (Telegram/webhook), tier-advanced skills |
 | v0.4 | Release and maintenance | unified chat/hunt, update path, dynamic skills, curator, and optional browser tools |
 | v0.5+ | Operability and integration | dashboard, gateway hardening, provider catalog, skills growth, and distribution maturity |
-
-The v0.3 working backlog lives in [docs/ROADMAP-v0.3.md](ROADMAP-v0.3.md).

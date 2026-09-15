@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
@@ -32,10 +33,12 @@ from hunter import __version__
 from hunter.chat.commands import (
     CommandContext,
     CommandReply,
+    default_state_dir,
     resolve_command,
     safe_execute,
     scope_for_target,
 )
+from hunter.chat.compression import COMPACT_MARKER, compact_history, should_compact
 from hunter.chat.intent import HuntIntent, IntentRouter
 from hunter.chat.sessions import ChatStore
 from hunter.errors import HunterError
@@ -257,8 +260,56 @@ class ChatEngine:
                 reply.data["audit_refused"] = True
         if reply.data.get("audit_finish"):
             self._audit_finish("completed")
+        granted = reply.data.get("approval_granted")
+        if isinstance(granted, str) and self._audit is not None:
+            # M8 F1: the gateway/REPL rides this path too — the nudge reaches
+            # the audit agent as a user turn and it retries the blocked call.
+            self._audit_turn(
+                f"Approval {granted} granted — retry the exact tool call that required it."
+            )
+        denied = reply.data.get("approval_denied")
+        if isinstance(denied, str) and self._audit is not None:
+            self._audit_turn(
+                f"Approval {denied} denied by the user — continue without that tool."
+            )
 
     # -- conversational turns ------------------------------------------------------
+
+    def _build_history(self) -> list[dict[str, Any]]:
+        """The conversational view of the session (M8 F8):
+
+        1. rows with ``seq <= options["compact_from_seq"]`` are dropped —
+           EXCEPT the stored compaction marker row (so the model keeps the
+           extractive summary);
+        2. when the view crosses the compression threshold, ``compact_history``
+           folds the middle span into ONE extractive system block (head and
+           last 12 messages stay verbatim);
+        3. the soul persona (F7) is prepended as a system message when the
+           module is importable and non-empty — the guarded import means a
+           missing/broken soul module can never break chat startup.
+        """
+        cutoff = int(self.options.get("compact_from_seq", 0) or 0)
+        history: list[dict[str, Any]] = []
+        for row in self.store.messages(self.session_id):
+            if row["role"] not in ("user", "assistant"):
+                continue
+            if row["seq"] <= cutoff and COMPACT_MARKER not in str(row["content"]):
+                continue
+            history.append({"role": row["role"], "content": str(row["content"])})
+        if should_compact(history):
+            history, _stats = compact_history(history)
+        soul = ""
+        try:
+            from hunter.agent.soul import soul_block  # noqa: PLC0415 — optional module
+
+            soul = soul_block()
+        except ImportError:
+            soul = ""
+        if soul:
+            history.insert(
+                0, {"role": "system", "content": "You are the HunterOs chat agent. " + soul}
+            )
+        return history
 
     def _run_conversational(self, text: str, *, stream_cb: StreamCb | None) -> TurnOutput:
         self._autotitle(text)
@@ -272,11 +323,7 @@ class ChatEngine:
         if self.provider is None:
             return TurnOutput(self._no_provider_text(), kind="error")
         self.store.append_message(self.session_id, "user", text)
-        history = [
-            {"role": m["role"], "content": m["content"]}
-            for m in self.store.messages(self.session_id)
-            if m["role"] in ("user", "assistant")
-        ]
+        history = self._build_history()
         self._stream_buffer = []
         wrapped_cb = self._wrap_stream(stream_cb)
         try:
@@ -504,9 +551,27 @@ class ChatEngine:
         )
         http = ScopedHttpClient(scope)
         budget = self._build_budget()
+        # The audit tier follows the configured agent.tier (M3 invariant: free
+        # text can never escalate it) — an operator must explicitly opt into
+        # "advanced" for approval-danger tools. When they are in tier, the
+        # approval gate below mediates every call; they are reachable exactly
+        # through that gate, never around it.
         tier = self._agent_tier()
+        from hunter.agent.approval import ApprovalStore, make_approval_gate
         from hunter.agent.tools_base import ToolContext
 
+        # Same resolution the Ledger default convention uses (M8 F1): an
+        # explicit state_dir wins; otherwise env HUNTER_STATE_DIR or ./.hunter.
+        resolved_state_dir = str(state_dir) if state_dir else str(default_state_dir())
+        approval_store = ApprovalStore(Path(resolved_state_dir) / "approvals")
+        gate_kwargs: dict[str, Any] = {"auto_allow": bool(self.options.get("hunt_mode"))}
+        if self.confirm_fn is not None:
+            confirm = self.confirm_fn
+
+            def _confirm_request(request: Any) -> bool:
+                return bool(confirm(f"approve {request.tool}: {request.summary} [y/N] "))
+
+            gate_kwargs["confirm_fn"] = _confirm_request
         tool_ctx = ToolContext(
             run_id=run_id,
             ledger=ledger,
@@ -517,9 +582,23 @@ class ChatEngine:
             config={
                 "tier": tier,
                 "browser_enabled": bool(getattr(getattr(self.config, "agent", None), "browser", False)),
+                "browser_cloak": bool(
+                    getattr(getattr(self.config, "agent", None), "browser_cloak", True)
+                ),
                 "hunt_permission": True,
+                "state_dir": resolved_state_dir,
+                "approval_gate": make_approval_gate(
+                    approval_store,
+                    ledger=ledger,
+                    run_id=run_id,
+                    surface=str(self.session_id or ""),
+                    **gate_kwargs,
+                ),
             },
         )
+        seed = self.options.get("browser_cloak_seed")
+        if seed is not None:
+            tool_ctx.config["browser_cloak_seed"] = seed
         phase_machine = _open_phase_machine(ledger, run_id)
         if phase_machine is not None:
             tool_ctx.config["phase_machine"] = phase_machine  # B9: tools observe phases
@@ -663,6 +742,7 @@ class ChatEngine:
                 max_cost_usd=cfg.budget.max_cost_usd,
                 max_iterations=cfg.budget.max_iterations,
                 wall_seconds=cfg.budget.wall_seconds,
+                min_wall_seconds=getattr(cfg.budget, "min_wall_seconds", 0.0),
             )
         return RunBudget()
 

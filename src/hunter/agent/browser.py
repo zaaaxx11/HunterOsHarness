@@ -4,12 +4,22 @@ Playwright is deliberately imported only when a browser-enabled registry is
 built, and a driver is started only on the first successful browser action.
 The adapter exposes bounded data and never exposes the page/context objects or
 an arbitrary page-code execution surface.
+
+The browser cloak (F5) is a LIGHT fingerprint embarrassment reduction, not
+anonymity: when ``cloak`` is on (the default), the session pins a plausible
+user agent / viewport / locale / timezone from fixed pools, adds a handful of
+non-stealth launch arguments, and installs ONE init script that masks the
+loudest automation tells. ``cloak=False`` restores the exact stock behavior
+byte-for-byte. The cloak NEVER touches the scope gate: the ``**/*`` route
+interceptor, the redirect/subrequest aborts, and every redaction pass are
+installed and enforced identically with the cloak on or off.
 """
 
 from __future__ import annotations
 
 import contextlib
 import importlib
+import random
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -44,6 +54,50 @@ _SECRET_FIELD_RE = re.compile(
     r"secret|token)\b\s*[:=]\s*(?:bearer\s+)?[^\s,;]+"
 )
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
+
+# --- browser cloak (F5) ---------------------------------------------------------
+# Pinned pools, chosen once per context via cloak_rng. Small, fixed, plausible:
+# the goal is to not look like the default automation fingerprint, never to
+# imitate a specific person.
+CLOAK_USER_AGENTS: tuple[str, ...] = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0",
+)
+CLOAK_VIEWPORT_POOL: tuple[tuple[int, int], ...] = (
+    (1280, 720),
+    (1366, 768),
+    (1440, 900),
+    (1536, 864),
+    (1920, 1080),
+)
+CLOAK_LOCALE_POOL: tuple[str, ...] = ("en-US", "en-GB")
+CLOAK_TIMEZONE_POOL: tuple[str, ...] = ("UTC", "America/New_York", "Europe/London")
+
+CLOAK_LAUNCH_ARGS: tuple[str, ...] = (
+    "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-infobars",
+)
+
+# ONE init script masking the loudest automation tells: navigator.webdriver
+# (undefined via defineProperty), navigator.plugins (a length-3 stub), and
+# navigator.languages (the locale-consistent pair).
+CLOAK_INIT_SCRIPT = """
+/* Mask the automation tells: navigator.webdriver, navigator.plugins, navigator.languages. */
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'plugins', {
+  get: () => [{ name: 'Chrome PDF Viewer' }, { name: 'PDF Viewer' }, { name: 'Native Client' }],
+});
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+"""
 
 
 class BrowserUnavailable(RuntimeError):
@@ -127,10 +181,14 @@ class BrowserSession:
         *,
         playwright_module: Any = _AUTO,
         max_snapshot_chars: int = MAX_SNAPSHOT_CHARS,
+        cloak: bool = True,
+        cloak_rng: random.Random | None = None,
     ) -> None:
         self.scope = scope
         self.playwright_module = playwright_module
         self.max_snapshot_chars = max_snapshot_chars
+        self.cloak = bool(cloak)
+        self.cloak_rng = cloak_rng
         self._driver: Any = None
         self._browser: Any = None
         self._context: Any = None
@@ -138,6 +196,22 @@ class BrowserSession:
         self._started = False
         self._closed = False
         self._blocked_request: str | None = None
+
+    def _cloak_context_kwargs(self) -> dict[str, Any]:
+        """One fingerprint per context, drawn from the pinned pools.
+
+        The viewport is a ``(width, height)`` pair per the pinned cloak
+        contract; pools are chosen in a fixed order so a seeded
+        ``cloak_rng`` reproduces the same fingerprint exactly.
+        """
+        rng = self.cloak_rng if self.cloak_rng is not None else random.Random()
+        viewport = rng.choice(CLOAK_VIEWPORT_POOL)
+        return {
+            "user_agent": rng.choice(CLOAK_USER_AGENTS),
+            "viewport": viewport,
+            "locale": rng.choice(CLOAK_LOCALE_POOL),
+            "timezone_id": rng.choice(CLOAK_TIMEZONE_POOL),
+        }
 
     def _start(self) -> None:
         if self._started:
@@ -150,9 +224,25 @@ class BrowserSession:
         try:
             starter = module.sync_playwright()
             self._driver = starter.start()
-            self._browser = self._driver.chromium.launch(headless=True)
-            self._context = self._browser.new_context()
+            if self.cloak:
+                self._browser = self._driver.chromium.launch(
+                    headless=True, args=list(CLOAK_LAUNCH_ARGS)
+                )
+                self._context = self._browser.new_context(**self._cloak_context_kwargs())
+                # The masking script is a stealth aid, installed at most once.
+                # It is capability-guarded: a context without add_init_script
+                # support (minimal fakes) simply ships without it — the scope
+                # interceptor below is the safety gate, never this script.
+                add_init_script = getattr(self._context, "add_init_script", None)
+                if callable(add_init_script):
+                    add_init_script(CLOAK_INIT_SCRIPT)
+            else:
+                # Stock behavior, byte-identical to pre-cloak releases.
+                self._browser = self._driver.chromium.launch(headless=True)
+                self._context = self._browser.new_context()
             self._page = self._context.new_page()
+            # The scope interceptor is installed in BOTH modes — the cloak
+            # never weakens the scope gate.
             self._context.route("**/*", self._route_handler)
             self._started = True
         except Exception as exc:
@@ -304,6 +394,12 @@ __all__ = [
     "BrowserInputError",
     "BrowserSession",
     "BrowserUnavailable",
+    "CLOAK_INIT_SCRIPT",
+    "CLOAK_LAUNCH_ARGS",
+    "CLOAK_LOCALE_POOL",
+    "CLOAK_TIMEZONE_POOL",
+    "CLOAK_USER_AGENTS",
+    "CLOAK_VIEWPORT_POOL",
     "MAX_SELECTOR_CHARS",
     "MAX_SNAPSHOT_CHARS",
     "MAX_TYPED_CHARS",

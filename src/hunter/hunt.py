@@ -154,11 +154,31 @@ def _finding_row(finding) -> dict:
     }
 
 
-def run_hunt(target, *, scope: ScopeSet, engine_name: str, state_dir=None) -> HuntOutcome:
-    """Run the existing governed pipeline and map it to Strix exit codes."""
+def run_hunt(
+    target,
+    *,
+    scope: ScopeSet,
+    engine_name: str,
+    state_dir=None,
+    budget=None,
+    config: dict | None = None,
+) -> HuntOutcome:
+    """Run the existing governed pipeline and map it to Strix exit codes.
+
+    ``budget`` (M8 shared plumbing) and ``config`` forward to
+    :func:`hunter.workflow.pipeline.run_scan`; the daemon passes
+    ``config={"state_dir": ..., "approval_auto_allow": True}`` so daemon
+    hunts run with the auto-allow approval gate (plain hunts keep today's
+    behavior with ``None``).
+    """
     try:
         summary: RunSummary = run_scan(
-            target, engine_name=engine_name, scope=scope, state_dir=state_dir
+            target,
+            engine_name=engine_name,
+            scope=scope,
+            state_dir=state_dir,
+            budget=budget,
+            config=config,
         )
         report = write_hunt_report(summary.run_id, state_dir=state_dir)
         count = len(summary.findings)

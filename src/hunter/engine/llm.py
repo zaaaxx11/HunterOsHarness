@@ -121,6 +121,23 @@ class LLMEngine:
                 "hunt_permission": True,
             },
         )
+        # M8 F1: daemon/hunter-mode hunts auto-allow approval-danger tools
+        # (shell_exec) through the ledgered gate — the catastrophic denylist
+        # still refuses first, in every mode. Without the flag the gate stays
+        # unconfigured and dispatch fails closed (approval.unavailable).
+        if ctx.config.get("approval_auto_allow"):
+            from pathlib import Path
+
+            from hunter.agent.approval import ApprovalStore, make_approval_gate
+
+            state_dir = ctx.config.get("state_dir")
+            if state_dir:
+                tool_ctx.config["approval_gate"] = make_approval_gate(
+                    ApprovalStore(Path(str(state_dir)) / "approvals"),
+                    ledger=ctx.ledger,
+                    run_id=run_id,
+                    auto_allow=True,
+                )
         try:
             goal = build_goal(target, self.tier)
             loop = AgentLoop(
