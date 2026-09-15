@@ -45,12 +45,13 @@ Compare releases: `v0.3.1...v0.4.0`.
 
 ### Soul — the operating character
 
-- Added `SOUL.md`: the general operating character (silent, precise,
+- Added `SOUL.md`: the user-editable operating character (silent, precise,
   patient, evidence-or-nothing, scope discipline, no drama, hard-won
   brevity — no levels, no scoring). It ships bundled byte-equal, binds
-  every prompt turn, and is overridden by the gitignored
-  `~/.hunteros/SOUL.local.md`. Override text is sanitize-not-refuse:
-  injection markers are neutralized and length is capped at 4000 chars.
+  every prompt turn, and is always preceded by the engine-hardcoded core
+  identity (`hunter/agent/soul.py` `CORE_IDENTITY`). Persona text is
+  sanitize-not-refuse: injection markers are neutralized and length is
+  capped at 4000 chars.
 
 ### Context compression
 
@@ -73,10 +74,10 @@ Compare releases: `v0.3.1...v0.4.0`.
   `compress_session.py`, `quick_recon.py`, `report_pack.py` — stdlib +
   httpx + hunter imports only, scope-gated, Windows-safe, exit codes
   0/1/3.
-- Owner directive: roadmaps, plans, tests, and ALL testing products are
-  gitignored from v0.5 (fresh clones ship without tests; the canonical QA
-  path is the owner's local checkout). README, QUICKSTART, ARCHITECTURE,
-  GATEWAY, and LLM docs updated for every surface above.
+- Release posture: roadmaps, plans, tests, and ALL testing products are
+  untracked from v0.5 and stay out of the release package. README,
+  QUICKSTART, ARCHITECTURE, GATEWAY, and LLM docs updated for every
+  surface above.
 
 ## [0.4.0] - 2026-09-14
 

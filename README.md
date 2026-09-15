@@ -211,11 +211,11 @@ Full layer diagram, governance flow, invariants, and the L1–L5 framing:
   user-agent/viewport/locale/timezone pools, non-automation launch args,
   and one masking init script. The scope interceptor and redaction are
   untouched; `cloak: false` restores stock behavior exactly.
-- **Soul** — `SOUL.md` is the general operating character (silent,
+- **Soul** — `SOUL.md` is the user-editable operating character (silent,
   precise, patient, evidence-or-nothing; no levels, no scoring). It binds
-  every turn; a private override lives at `~/.hunteros/SOUL.local.md`
-  (gitignored by design) and is sanitized and capped before it reaches a
-  prompt.
+  every turn; the engine-hardcoded core identity (`You are Hunter, the
+  HunterOS audit agent built by zaaaxx.`) is always prepended before it
+  reaches a prompt. Persona text is sanitized and capped before render.
 - **Session compression** — `/compress` and automatic 24k-char compaction
   keep head and tail verbatim and summarize the middle extractively;
   evidence ids are never dropped or invented; the store stays append-only.
@@ -225,10 +225,10 @@ Full layer diagram, governance flow, invariants, and the L1–L5 framing:
   `HUNTEROS_WHATSAPP_ALLOWED_USERS` trio. WhatsApp inbound payloads are
   HMAC-verified against the Meta app secret or refused with 403.
   See [docs/GATEWAY.md](docs/GATEWAY.md).
-- **Testing products stay local (owner directive)** — roadmaps, plans,
-  tests, and all testing products are gitignored from v0.5: fresh clones
-  ship WITHOUT tests, and the canonical QA path is the owner's local
-  checkout, where `tests/` exists on disk.
+- **Development notes** — roadmaps, plans, tests, and testing products
+  stay untracked from v0.5 and are not part of the release package.
+  Install the package, then edit your own `SOUL.md` copy to tune the
+  operating character.
 
 ## Status
 
