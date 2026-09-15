@@ -22,7 +22,7 @@ from typing import Any
 
 from rich import box
 from rich.console import Console
-from rich.markup import escape
+from rich.markup import escape as escape_markup
 from rich.table import Table as RichTable
 from rich.text import Text
 from textual import on, work
@@ -43,6 +43,7 @@ from hunter import __version__
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
 from hunter.kernel.ledger import Ledger
+from hunter.palette import PALETTE, palette_css, rich_style
 from hunter.phases import current_phase
 
 TAIL_WINDOW = 100  # events shown in the live tail
@@ -50,50 +51,50 @@ PAYLOAD_WIDTH = 64  # characters of payload preview in the tail
 EVIDENCE_EXCERPT_CHARS = 280
 
 SEVERITY_STYLES = {
-    "critical": "bold white on red",
-    "high": "bold red",
-    "medium": "yellow",
-    "low": "cyan",
-    "info": "dim",
+    "critical": rich_style("critical", bold=True),
+    "high": rich_style("high", bold=True),
+    "medium": rich_style("medium"),
+    "low": rich_style("low"),
+    "info": rich_style("info", dim=True),
 }
 STATUS_STYLES = {
-    "verified": "bold green",
-    "candidate": "yellow",
-    "ruled_out": "dim",
+    "verified": rich_style("success", bold=True),
+    "candidate": rich_style("warning"),
+    "ruled_out": rich_style("muted", dim=True),
 }
 RUN_STATUS_STYLES = {
-    "running": "yellow",
-    "completed": "green",
-    "failed": "red",
-    "error": "red",
+    "running": rich_style("warning"),
+    "completed": rich_style("success"),
+    "failed": rich_style("error", bold=True),
+    "error": rich_style("error", bold=True),
 }
 KIND_STYLES = {
-    "run_started": "bold magenta",
-    "run_ended": "magenta",
-    "phase_started": "cyan",
-    "phase_ended": "cyan",
-    "http_request": "blue",
-    "http_response": "bright_blue",
-    "probe_started": "green",
-    "probe_result": "bright_green",
-    "evidence_stored": "yellow",
-    "finding_created": "bold yellow",
-    "finding_status_changed": "bright_yellow",
-    "scope_check": "grey50",
-    "engine_event": "grey50",
-    "error": "bold red",
+    "run_started": rich_style("heading", bold=True),
+    "run_ended": rich_style("heading"),
+    "phase_started": rich_style("base"),
+    "phase_ended": rich_style("base"),
+    "http_request": rich_style("deep"),
+    "http_response": rich_style("bright1"),
+    "probe_started": rich_style("success"),
+    "probe_result": rich_style("bright3"),
+    "evidence_stored": rich_style("warning"),
+    "finding_created": rich_style("bright2", bold=True),
+    "finding_status_changed": rich_style("bright3"),
+    "scope_check": rich_style("muted"),
+    "engine_event": rich_style("muted"),
+    "error": rich_style("error", bold=True),
     # v0.3 phase-machine kinds
-    "classification_recorded": "bright_cyan",
-    "report_rendered": "bold blue",
-    "retro_recorded": "bold magenta",
+    "classification_recorded": rich_style("bright1"),
+    "report_rendered": rich_style("bright2", bold=True),
+    "retro_recorded": rich_style("bright3", bold=True),
 }
 
-CSS = """
+CSS = palette_css() + """
 #dashboard-empty, #findings-empty {
     display: none;
     height: 1fr;
     content-align: center middle;
-    color: $text-muted;
+    color: $hunter-dim;
     text-style: italic;
 }
 #runs-table {
@@ -104,7 +105,7 @@ CSS = """
 }
 #finding-detail {
     height: 42%;
-    border-top: heavy $primary 30%;
+    border-top: heavy $hunter-base 30%;
     padding: 0 1;
     overflow-y: auto;
 }
@@ -252,8 +253,8 @@ class HunterTui(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        with contextlib.suppress(Exception):  # theme names are cosmetic — never fatal
-            self.theme = "tokyo-night"
+        # Palette colors come from Rich styles and CSS variables; avoid an
+        # external theme so the TUI has the same visual language as the CLI.
         runs_table = self.query_one("#runs-table", DataTable)
         runs_table.add_columns("run", "target", "engine", "status", "v/c", "ended", "phase")
         findings_table = self.query_one("#findings-table", DataTable)
@@ -390,7 +391,7 @@ class HunterTui(App[None]):
         table.clear()
         for finding in shown:
             table.add_row(
-                Text(finding.id, style="cyan"),
+                Text(finding.id, style=PALETTE["base"]),
                 _severity_cell(finding.severity),
                 _status_cell(finding.status),
                 finding.title,
@@ -495,7 +496,7 @@ class HunterTui(App[None]):
             payload = payload[: PAYLOAD_WIDTH - 1] + "…"
         kind = event.kind_value()
         style = KIND_STYLES.get(kind, "white")
-        return f"[dim]#{event.seq:>4}[/] [{style}]{escape(kind):<24}[/] {escape(payload)}"
+        return f"[dim]#{event.seq:>4}[/] [{style}]{escape_markup(kind):<24}[/] {escape_markup(payload)}"
 
     def _write_new_events(self, events: list[Event]) -> None:
         log = self.query_one("#events-log", RichLog)
@@ -529,9 +530,9 @@ class HunterTui(App[None]):
 
         table.add_row(
             "python",
-            Text(f"{platform.python_version()}  ({sys.executable})", style="cyan"),
+            Text(f"{platform.python_version()}  ({sys.executable})", style=PALETTE["base"]),
         )
-        table.add_row("hunteros", Text(_package_version(), style="cyan"))
+        table.add_row("hunteros", Text(_package_version(), style=PALETTE["base"]))
 
         for dep in ("textual", "rich", "httpx", "typer"):
             try:

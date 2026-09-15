@@ -47,7 +47,7 @@ from hunter.kernel.redaction import redact_text
 from hunter.tools.http_client import Exchange
 from hunter.tools.scope import ScopeViolation
 
-from .approval import is_catastrophic
+from .approval import classify_shell_command
 from .browser import (
     BROWSER_TOOL_NAMES,
     PLAYWRIGHT_INSTALL_HINT,
@@ -807,6 +807,7 @@ def _shell_event(
         {
             "tool": "shell_exec",
             "command": redact_text(str(command))[:500],
+            "command_class": classify_shell_command(command),
             "exit_code": exit_code,
             "timed_out": timed_out,
             "duration_ms": round(float(duration_ms), 2),
@@ -821,17 +822,19 @@ def _shell_exec(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     started = time.perf_counter()
     cwd, cwd_error = _shell_cwd(args, ctx)
 
-    # Denylist first (defense-in-depth; the approval gate already refused).
-    reason = is_catastrophic(command)
-    if reason is not None:
+    # Defense in depth: the gate is authoritative. A direct handler call must
+    # not release a catastrophic command, and an approved retry must carry the
+    # transient class marker set by the gate.
+    command_class = classify_shell_command(command)
+    if command_class == "catastrophic" and ctx.config.get("approval_class") != "catastrophic":
         _shell_event(
             ctx, command=command, exit_code=None, timed_out=False,
             duration_ms=(time.perf_counter() - started) * 1000.0,
             cwd=cwd or "",
         )
         return _blocked(
-            "shell.denylist",
-            f"command refused — {reason}. Catastrophic commands never run, in any mode.",
+            "approval.unavailable",
+            "command requires the configured approval gate before execution.",
         )
     if cwd_error is not None or cwd is None:
         _shell_event(

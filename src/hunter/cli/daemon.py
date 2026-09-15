@@ -27,14 +27,15 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from rich.console import Console
 
 from hunter.daemon import (
+    daemon_running,
     daemon_status,
     log_path,
     start_daemon,
     stop_daemon,
 )
+from hunter.palette import make_console
 
 __all__ = [
     "HUNT_VERBS",
@@ -45,8 +46,8 @@ __all__ = [
 
 HUNT_VERBS = ("start", "stop", "status", "restart", "logs")
 
-console = Console()
-err_console = Console(stderr=True)
+console = make_console()
+err_console = make_console(stderr=True)
 
 _DEFAULT_MAX_WALL_SECONDS = 7200.0  # 2h when neither --time nor config says otherwise
 
@@ -84,7 +85,7 @@ def _resolve_engine(explicit: str | None) -> tuple[str, int]:
     if explicit is not None:
         if explicit not in {"deterministic", "mock", "llm"}:
             err_console.print(
-                "[red]BLOCKED:[/red] unknown engine; engines: deterministic, mock, llm"
+                "[hunter.error]BLOCKED:[/hunter.error] unknown engine; engines: deterministic, mock, llm"
             )
             return "", 3
         return explicit, 0
@@ -113,7 +114,7 @@ def _scope_gate(target: str, scope: Path | None, *, yes: bool) -> tuple[Any | No
     try:
         host = (urlparse(target).hostname or "").lower()
     except ValueError:
-        err_console.print(f"[red]BLOCKED:[/red] target {target!r} is not a valid URL.")
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] target {target!r} is not a valid URL.")
         return None, 3
     if host in LOCAL_HOSTS:
         return localhost_scope(), 0
@@ -121,12 +122,12 @@ def _scope_gate(target: str, scope: Path | None, *, yes: bool) -> tuple[Any | No
         try:
             return scope_from_manifest(scope), 0
         except (ValueError, OSError) as exc:
-            err_console.print(f"[red]BLOCKED:[/red] invalid scope manifest: {exc}")
+            err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
             return None, 3
     if yes:
         return ScopeSet(frozenset({host}), False, name=host), 0
     err_console.print(
-        f"[red]BLOCKED:[/red] target '{host}' is not localhost. Pass "
+        f"[hunter.error]BLOCKED:[/hunter.error] target '{host}' is not localhost. Pass "
         "[bold]--scope scope.json[/bold] with an authorized scope manifest, "
         f"or --yes to authorize the proposed minimal scope for '{host}'."
     )
@@ -142,7 +143,7 @@ def _parse_duration_or_exit(text: str | None, *, option: str) -> float | None:
     try:
         return parse_duration(text)
     except HunterError as exc:
-        err_console.print(f"[red]config error:[/red] {exc.message}\nHint: {exc.hint}")
+        err_console.print(f"[hunter.error]config error:[/hunter.error] {exc.message}\nHint: {exc.hint}")
         raise typer.Exit(8) from exc
 
 
@@ -153,65 +154,90 @@ def _cmd_start(
     engine: str | None,
     time_text: str | None,
     min_time_text: str | None,
+    budget_text: str | None = None,
     yes: bool,
     force: bool,
     state: Path | None,
 ) -> int:
-    """Validate and start the daemon + enqueue one hunt task (exit code)."""
-    if not target:
-        err_console.print(
-            "[red]BLOCKED:[/red] start requires [bold]--target URL[/bold] "
-            "(e.g. `hunter daemon start --target https://... --scope scope.json`)."
-        )
-        return 3
+    """Validate and start the persistent engine, optionally with one task."""
+    state_dir = _resolve_state(state)
+    already_running, _ = daemon_running(state_dir)
+    if already_running and not force:
+        typer.echo("engine already on — 24/7 engine is on")
+        return 0
     from hunter.hunt import normalize_hunt_target
 
-    normalized, kind = normalize_hunt_target(target)
-    if kind == "invalid":
-        err_console.print("[red]BLOCKED:[/red] invalid hunt target")
-        return 3
+    normalized = None
+    chosen_scope = None
+    if target:
+        normalized, kind = normalize_hunt_target(target)
+        if kind == "invalid":
+            err_console.print("[hunter.error]BLOCKED:[/hunter.error] invalid hunt target")
+            return 3
+        chosen_scope, code = _scope_gate(normalized, scope, yes=yes)
+        if code:
+            return code
     engine_name, code = _resolve_engine(engine)
-    if code:
-        return code
-    chosen_scope, code = _scope_gate(normalized, scope, yes=yes)
     if code:
         return code
     max_wall = _parse_duration_or_exit(time_text, option="--time")
     min_wall = _parse_duration_or_exit(min_time_text, option="--min-time")
+    if budget_text is None:
+        max_cost = 0.0
+    else:
+        try:
+            import math
+            max_cost = float(budget_text)
+            if not math.isfinite(max_cost) or max_cost < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            err_console.print(
+                "[hunter.error]config error:[/hunter.error] --budget must be a finite non-negative"
+                " USD value"
+            )
+            return 8
     cfg, code = _load_budget_config()
     if code:
         return code
     budget = getattr(cfg, "budget", None)
-    if max_wall is None:
-        max_wall = float(getattr(budget, "wall_seconds", 0.0) or 0.0) or _DEFAULT_MAX_WALL_SECONDS
-    if min_wall is None:
-        min_wall = float(getattr(budget, "min_wall_seconds", 0.0) or 0.0)
-    max_cost = float(getattr(budget, "max_cost_usd", 0.0) or 0.0)
-    state_dir = _resolve_state(state)
+    if target:
+        if max_wall is None:
+            max_wall = float(getattr(budget, "wall_seconds", 0.0) or 0.0) or _DEFAULT_MAX_WALL_SECONDS
+        if min_wall is None:
+            min_wall = float(getattr(budget, "min_wall_seconds", 0.0) or 0.0)
+        if budget_text is None:
+            max_cost = float(getattr(budget, "max_cost_usd", 0.0) or 0.0)
+    else:
+        max_wall = float(max_wall or 0.0)
+        min_wall = float(min_wall or 0.0)
     code = start_daemon(
         state_dir,
         target=normalized,
         scope=chosen_scope,
         engine=engine_name,
-        min_wall_seconds=min_wall,
-        max_wall_seconds=max_wall,
+        min_wall_seconds=min_wall or 0.0,
+        max_wall_seconds=max_wall or 0.0,
         max_cost_usd=max_cost,
         force=force,
     )
     if code == 0:
-        typer.echo(
-            f"daemon started against {normalized} — state: {state_dir}\n"
-            f"budget: min {min_wall:.0f}s / max {max_wall:.0f}s / ${max_cost:.2f} "
-            f"· stop with: [bold]hunter stop[/bold]"
-        )
+        if not target:
+            typer.echo("engine started — 24/7 engine is on")
+        else:
+            typer.echo(
+                f"engine started — 24/7 engine is on\n"
+                f"daemon started against {normalized} — state: {state_dir}\n"
+                f"budget: min {min_wall:.0f}s / max {max_wall:.0f}s / ${max_cost:.2f} "
+                f"· stop with: hunter stop"
+            )
         return 0
     if code == 3:
         err_console.print(
-            "[red]BLOCKED:[/red] daemon is already running (pass --force to replace it)."
+            "[hunter.error]BLOCKED:[/hunter.error] daemon is already running (pass --force to replace it)."
         )
     else:
         err_console.print(
-            "[red]daemon failed to start[/red] — see the log: " + str(log_path(state_dir))
+            "[hunter.error]daemon failed to start[/hunter.error] — see the log: " + str(log_path(state_dir))
         )
     return code
 
@@ -244,15 +270,16 @@ def _render_status(status: dict[str, Any], *, state_dir: Path) -> None:
         heartbeat = status.get("heartbeat_age_seconds")
         heartbeat_text = "heartbeat n/a" if heartbeat is None else f"heartbeat {heartbeat:.0f}s ago"
         console.print(
-            f"daemon: [green]running[/green] (pid {status.get('pid')}, "
+            f"daemon: [hunter.success]running[/hunter.success] (pid {status.get('pid')}, "
             f"up {_human_uptime(status.get('uptime_seconds'))}, {heartbeat_text})"
         )
     elif status.get("stale"):
         console.print(
-            f"daemon: [red]stale[/red] (pid {status.get('pid')} — heartbeat too old, presumed dead)"
+            f"daemon: [hunter.error]stale[/hunter.error] (pid {status.get('pid')} — heartbeat too"
+            " old, presumed dead)"
         )
     else:
-        console.print("daemon: [yellow]stopped[/yellow]")
+        console.print("daemon: [hunter.warning]stopped[/hunter.warning]")
     typer.echo(f"state: {state_dir}")
     transports = status.get("transports") or []
     typer.echo("transports: " + (", ".join(transports) if transports else "(none)"))
@@ -308,9 +335,10 @@ def _cmd_restart(
     engine: str | None,
     time_text: str | None,
     min_time_text: str | None,
-    yes: bool,
-    force: bool,
-    state: Path | None,
+    budget_text: str | None = None,
+    yes: bool = False,
+    force: bool = False,
+    state: Path | None = None,
 ) -> int:
     """Stop (force on stale) then start; stop's code on failure, else start's."""
     from hunter.daemon import read_pid
@@ -351,6 +379,7 @@ def dispatch_hunt_alias(
     yes: bool = False,
     time_text: str | None = None,
     min_time_text: str | None = None,
+    budget_text: str | None = None,
     force: bool = False,
     lines: int | None = None,
 ) -> int:
@@ -358,7 +387,7 @@ def dispatch_hunt_alias(
     line. Validates verb/option compatibility (start requires --target, the
     other verbs reject it) and returns the process exit code."""
     if verb not in HUNT_VERBS:  # pragma: no cover — guarded by the caller
-        err_console.print(f"[red]BLOCKED:[/red] unknown hunt verb {verb!r}")
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] unknown hunt verb {verb!r}")
         return 3
     if verb == "start":
         return _cmd_start(
@@ -367,13 +396,14 @@ def dispatch_hunt_alias(
             engine=engine,
             time_text=time_text,
             min_time_text=min_time_text,
+            budget_text=budget_text,
             yes=yes,
             force=force,
             state=state,
         )
     if target is not None:
         err_console.print(
-            f"[red]BLOCKED:[/red] `hunt {verb}` does not take --target "
+            f"[hunter.error]BLOCKED:[/hunter.error] `hunt {verb}` does not take --target "
             "(pass it to `hunt start`)."
         )
         return 3
@@ -408,6 +438,9 @@ def daemon_start(
         str | None,
         typer.Option("--time", help="Max wall time [Nh][Nm][Ns] (default: budget config / 2h)."),
     ] = None,
+    budget_opt: Annotated[
+        str | None, typer.Option("--budget", help="Maximum hunt budget in USD (0 is unlimited).")
+    ] = None,
     min_time_opt: Annotated[
         str | None, typer.Option("--min-time", help="Minimum wall time floor [Nh][Nm][Ns].")
     ] = None,
@@ -425,6 +458,7 @@ def daemon_start(
             engine=engine,
             time_text=time_opt,
             min_time_text=min_time_opt,
+            budget_text=budget_opt,
             yes=yes,
             force=force,
             state=state,
@@ -458,6 +492,7 @@ def daemon_restart(
     ] = None,
     engine: Annotated[str | None, typer.Option("--engine", help="deterministic | mock | llm.")] = None,
     time_opt: Annotated[str | None, typer.Option("--time", help="Max wall time [Nh][Nm][Ns].")] = None,
+    budget_opt: Annotated[str | None, typer.Option("--budget", help="Maximum hunt budget in USD.")] = None,
     min_time_opt: Annotated[
         str | None, typer.Option("--min-time", help="Minimum wall time floor [Nh][Nm][Ns].")
     ] = None,
@@ -475,6 +510,7 @@ def daemon_restart(
             engine=engine,
             time_text=time_opt,
             min_time_text=min_time_opt,
+            budget_text=budget_opt,
             yes=yes,
             force=force,
             state=state,

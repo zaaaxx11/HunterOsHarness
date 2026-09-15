@@ -44,6 +44,7 @@ from hunter.chat.sessions import ChatStore
 from hunter.errors import HunterError
 from hunter.llm.base import StreamCb, TurnResult
 from hunter.llm.config import default_model, load_config
+from hunter.palette import PALETTE
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from hunter.llm.base import ChatProvider
@@ -771,7 +772,7 @@ def banner(engine: ChatEngine) -> Panel:
         mode="hunt" if engine.options.get("hunt_mode") else "chat",
     )
     body = Text("\n".join(lines))
-    return Panel(body, title="hunter chat", border_style="cyan", subtitle="Evidence or Nothing")
+    return Panel(body, title="hunter chat", border_style=PALETTE["base"], subtitle="Evidence or Nothing")
 
 
 def _print_output(console: Console, out: TurnOutput) -> None:

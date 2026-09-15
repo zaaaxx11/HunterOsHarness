@@ -31,6 +31,7 @@ from typing import Any
 import click
 from rich.console import Console
 
+from hunter.branding import make_console
 from hunter.errors import EXIT_ERROR, EXIT_INTERRUPT, HunterError
 
 __all__ = ["handle_cli_error", "is_verbose", "run_app", "set_verbose"]
@@ -56,7 +57,7 @@ def is_verbose() -> bool:
 
 
 def _err_console() -> Console:
-    return Console(stderr=True)
+    return make_console(stderr=True)
 
 
 def _hunter_location(exc: BaseException) -> str:

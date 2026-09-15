@@ -213,8 +213,9 @@ hunter> approval A-1a2b3c4d granted — the agent will be nudged to retry
 
 Approvals are single-use (one decision = one retry) and expire after 300
 seconds; `/deny <id>` records the refusal and the agent moves on.
-Catastrophic commands are refused in every mode — an approval never
-overrides the denylist or the scope gate.
+Anything that modifies the local system — including catastrophic commands —
+requires explicit approval in every mode; an approval never overrides the
+scope gate.
 
 ---
 

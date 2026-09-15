@@ -21,7 +21,6 @@ from urllib.parse import urlparse
 
 import typer
 import yaml
-from rich.console import Console
 from rich.markdown import Markdown as RichMarkdown
 from rich.panel import Panel
 from rich.table import Table
@@ -30,6 +29,7 @@ from rich.text import Text
 from hunter.cli.handle import handle_cli_error, is_verbose, set_verbose
 from hunter.kernel.findings import SEVERITY_ORDER
 from hunter.kernel.ledger import Ledger
+from hunter.palette import PALETTE, make_console
 from hunter.tools.scope import (
     LOCAL_HOSTS,
     ScopeSet,
@@ -43,8 +43,8 @@ app = typer.Typer(
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-console = Console()
-err_console = Console(stderr=True)
+console = make_console()
+err_console = make_console(stderr=True)
 
 
 def _version() -> str:
@@ -91,7 +91,7 @@ def _root_callback(
 
         body = Text("\n".join(welcome_lines(_version())))
         console.print(
-            Panel(body, title="hunter", border_style="cyan", subtitle="Evidence or Nothing")
+            Panel(body, title="hunter", border_style=PALETTE["base"], subtitle="Evidence or Nothing")
         )
         # First-run offer: fires only when no config exists anywhere; a
         # decline sets $HUNTEROS_ONBOARD_DECLINED so it never re-prompts
@@ -109,14 +109,14 @@ def _open_ledger(state: Path | None) -> Ledger:
 
 def _ledger_guard(exc: Exception) -> typer.Exit:
     """A corrupt/unreadable ledger is a diagnosis, not a traceback."""
-    err_console.print(f"[red]ledger error:[/red] {type(exc).__name__}: {exc}")
+    err_console.print(f"[hunter.error]ledger error:[/hunter.error] {type(exc).__name__}: {exc}")
     return typer.Exit(1)
 
 
 def _latest_run_id(ledger: Ledger) -> str:
     runs = ledger.runs()
     if not runs:
-        err_console.print("[red]No runs in the ledger yet — run `hunter demo` or `hunter scan` first.[/red]")
+        err_console.print("[hunter.error]No runs in the ledger yet — run `hunter demo` or `hunter scan` first.[/hunter.error]")
         raise typer.Exit(1)
     return str(runs[-1]["run_id"])
 
@@ -126,7 +126,7 @@ def _scope_for_target(target: str, scope_file: Path | None) -> ScopeSet:
     try:
         host = (urlparse(target).hostname or "").lower()
     except ValueError:  # malformed IPv6 literal etc. — fail closed, exit 2
-        err_console.print(f"[red]BLOCKED:[/red] target {target!r} is not a valid URL.")
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] target {target!r} is not a valid URL.")
         raise typer.Exit(2) from None
     if host in LOCAL_HOSTS:
         # stderr on purpose: with --json this line must never touch stdout.
@@ -135,7 +135,7 @@ def _scope_for_target(target: str, scope_file: Path | None) -> ScopeSet:
         return localhost_scope()
     if scope_file is None:
         err_console.print(
-            f"[red]BLOCKED:[/red] target '{host}' is not localhost. "
+            f"[hunter.error]BLOCKED:[/hunter.error] target '{host}' is not localhost. "
             "Pass [bold]--scope scope.json[/bold] with an authorized scope manifest "
             '(e.g. {"name": "client-x", "hosts": ["example.com"]}).'
         )
@@ -143,7 +143,7 @@ def _scope_for_target(target: str, scope_file: Path | None) -> ScopeSet:
     try:
         return scope_from_manifest(scope_file)
     except ValueError as exc:  # invalid/empty manifest — usage error, exit 2
-        err_console.print(f"[red]BLOCKED:[/red] invalid scope manifest: {exc}")
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
         raise typer.Exit(2) from exc
 
 
@@ -167,7 +167,7 @@ def version() -> None:
 
 @app.command()
 def hunt(
-    target: str = typer.Argument(..., help="URL, host[:port], or local directory."),
+    target: str = typer.Argument("", help="URL, host[:port], or local directory."),
     scope: Path | None = typer.Option(None, "--scope", help="Scope manifest JSON."),
     engine: str | None = typer.Option(None, "--engine", help="deterministic | mock | llm."),
     state: Path | None = typer.Option(None, "--state", help="State directory."),
@@ -175,6 +175,9 @@ def hunt(
     yes: bool = typer.Option(False, "--yes", "-y", help="Assume yes for proposed scope."),
     daemon_target: str | None = typer.Option(
         None, "--target", help="Daemon verb: hunt target for `hunt start`."
+    ),
+    budget_opt: str | None = typer.Option(
+        None, "--budget", help="Daemon verb: maximum hunt budget in USD (0 is unlimited)."
     ),
     time_opt: str | None = typer.Option(
         None, "--time", help="Daemon verb: max wall time [Nh][Nm][Ns] (ignored for plain hunts)."
@@ -212,6 +215,7 @@ def hunt(
                 yes=yes,
                 time_text=time_opt,
                 min_time_text=min_time_opt,
+                budget_text=budget_opt,
                 force=force,
                 lines=lines,
             )
@@ -229,11 +233,11 @@ def hunt(
 
     normalized, kind = normalize_hunt_target(target)
     if kind == "invalid":
-        err_console.print("[red]BLOCKED:[/red] invalid hunt target")
+        err_console.print("[hunter.error]BLOCKED:[/hunter.error] invalid hunt target")
         raise typer.Exit(3)
     selected_engine = engine
     if selected_engine is not None and selected_engine not in {"deterministic", "mock", "llm"}:
-        err_console.print("[red]BLOCKED:[/red] unknown engine; engines: deterministic, mock, llm")
+        err_console.print("[hunter.error]BLOCKED:[/hunter.error] unknown engine; engines: deterministic, mock, llm")
         raise typer.Exit(3)
     chosen_scope = None
     if kind == "dir":
@@ -262,7 +266,7 @@ def hunt(
         try:
             chosen_scope = scope_from_manifest(scope)
         except (ValueError, OSError) as exc:
-            err_console.print(f"[red]BLOCKED:[/red] invalid scope manifest: {exc}")
+            err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
             raise typer.Exit(3) from exc
     else:
         proposed = propose_manifest(host)
@@ -308,7 +312,7 @@ def _render_hunt_outcome(outcome, *, json_out: bool) -> None:
         }))
         return
     if outcome.status != "completed":
-        err_console.print(f"[red]run failed[/red] {outcome.stats.get('error', '') if outcome.stats else ''}")
+        err_console.print(f"[hunter.error]run failed[/hunter.error] {outcome.stats.get('error', '') if outcome.stats else ''}")
         return
     typer.echo(f"{outcome.verified} verified / {outcome.candidates} candidates — {outcome.findings} findings")
     if outcome.report_path:
@@ -385,11 +389,11 @@ def doctor(
         console.print_json(json.dumps({"checks": [asdict(c) for c in checks], "ok": ok}))
     else:
         console.print(f"[bold]HunterOs Harness doctor[/bold] — hunter {_version()}")
-        marks = {"ok": "[green]OK[/green]", "fail": "[red]FAIL[/red]", "note": "[yellow]OK[/yellow]"}
+        marks = {"ok": "[hunter.success]OK[/hunter.success]", "fail": "[hunter.error]FAIL[/hunter.error]", "note": "[hunter.warning]OK[/hunter.warning]"}
         for check in checks:
             console.print(f"  {marks[check.status]}  [bold]{check.label}[/bold] {check.detail}")
         if ok:
-            console.print("[green]All checks passed.[/green]")
+            console.print("[hunter.success]All checks passed.[/hunter.success]")
     if not ok:
         raise typer.Exit(1)
 
@@ -409,7 +413,7 @@ def demo(
     try:
         result = run_demo(state_dir=state, port=port, engine_name=engine)
     except Exception as exc:
-        err_console.print(f"[red]demo failed:[/red] {exc}")
+        err_console.print(f"[hunter.error]demo failed:[/hunter.error] {exc}")
         raise typer.Exit(1) from exc
 
     phase_line = getattr(result.summary, "phase_line", "")
@@ -475,13 +479,13 @@ def scan(
     try:
         chosen_scope = _scope_for_target(target, scope)
     except ScopeViolation as exc:
-        err_console.print(f"[red]{exc}[/red]")
+        err_console.print(f"[hunter.error]{exc}[/hunter.error]")
         raise typer.Exit(2) from exc
 
     try:
         summary = run_scan(target, engine_name=engine, scope=chosen_scope, state_dir=state)
     except ValueError as exc:  # unknown engine — usage error, not a scan outcome
-        err_console.print(f"[red]BLOCKED:[/red] {exc}")
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
         raise typer.Exit(2) from exc
     except HunterError as exc:  # classified pipeline failure
         raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
@@ -513,7 +517,7 @@ def scan(
     else:
         if summary.status != "completed":
             err_console.print(
-                f"[red]scan {summary.run_id} failed[/red] — see events: hunter report --run {summary.run_id}"
+                f"[hunter.error]scan {summary.run_id} failed[/hunter.error] — see events: hunter report --run {summary.run_id}"
             )
             raise typer.Exit(1)
         table = Table(title=f"Scan {summary.run_id} — {summary.target}")
@@ -556,15 +560,15 @@ def report(
             try:
                 text = render_markdown(ledger, rid)
             except KeyError as exc:
-                err_console.print(f"[red]unknown run:[/red] {rid}")
+                err_console.print(f"[hunter.error]unknown run:[/hunter.error] {rid}")
                 raise typer.Exit(1) from exc
             if out is not None:
                 try:
                     out.write_text(text, encoding="utf-8")
                 except OSError as exc:
-                    err_console.print(f"[red]could not write {out}:[/red] {exc}")
+                    err_console.print(f"[hunter.error]could not write {out}:[/hunter.error] {exc}")
                     raise typer.Exit(1) from exc
-                console.print(f"[green]wrote[/green] {out}")
+                console.print(f"[hunter.success]wrote[/hunter.success] {out}")
             else:
                 console.print(RichMarkdown(text))
             _mark_report_rendered(ledger, rid, text=text, out=out)
@@ -575,23 +579,23 @@ def report(
 
             if out is not None:
                 path = write_sarif(ledger, rid, out)
-                console.print(f"[green]wrote[/green] {path}")
+                console.print(f"[hunter.success]wrote[/hunter.success] {path}")
             else:
                 console.print_json(json.dumps(to_sarif(ledger, rid)))
         else:
-            err_console.print(f"[red]unknown format:[/red] {fmt} (use markdown | sarif)")
+            err_console.print(f"[hunter.error]unknown format:[/hunter.error] {fmt} (use markdown | sarif)")
             raise typer.Exit(2)
     except ReportBlocked as exc:
         # Both renderers refuse a broken chain — the ledger may be tampered.
-        err_console.print(f"[red]{exc}[/red]")
+        err_console.print(f"[hunter.error]{exc}[/hunter.error]")
         raise typer.Exit(2) from exc
     except KeyError as exc:
-        err_console.print(f"[red]unknown run:[/red] {run_id or '(latest)'}")
+        err_console.print(f"[hunter.error]unknown run:[/hunter.error] {run_id or '(latest)'}")
         raise typer.Exit(1) from exc
     except sqlite3.DatabaseError as exc:
         raise _ledger_guard(exc) from exc
     except OSError as exc:
-        err_console.print(f"[red]state error:[/red] {type(exc).__name__}: {exc}")
+        err_console.print(f"[hunter.error]state error:[/hunter.error] {type(exc).__name__}: {exc}")
         raise typer.Exit(1) from exc
     finally:
         ledger.close()
@@ -638,7 +642,7 @@ def runs(state: Path | None = typer.Option(None, "--state", help="State director
     except sqlite3.DatabaseError as exc:
         raise _ledger_guard(exc) from exc
     except OSError as exc:
-        err_console.print(f"[red]state error:[/red] {type(exc).__name__}: {exc}")
+        err_console.print(f"[hunter.error]state error:[/hunter.error] {type(exc).__name__}: {exc}")
         raise typer.Exit(1) from exc
     finally:
         ledger.close()
@@ -667,7 +671,7 @@ def findings(
     except sqlite3.DatabaseError as exc:
         raise _ledger_guard(exc) from exc
     except OSError as exc:
-        err_console.print(f"[red]state error:[/red] {type(exc).__name__}: {exc}")
+        err_console.print(f"[hunter.error]state error:[/hunter.error] {type(exc).__name__}: {exc}")
         raise typer.Exit(1) from exc
     finally:
         ledger.close()
@@ -689,7 +693,7 @@ def retro(
         if not rid:
             rid = _latest_run_id(ledger)
         elif not any(row["run_id"] == rid for row in ledger.runs()):
-            err_console.print(f"[red]unknown run:[/red] {rid}")
+            err_console.print(f"[hunter.error]unknown run:[/hunter.error] {rid}")
             raise typer.Exit(1)
         lines = _phase_retro_lines(ledger, rid, record=record)
         if record and lines is not None:
@@ -764,7 +768,7 @@ def skills(
     if view is not None:
         skill = next((item for item in corpus.skills if item.name == view), None)
         if skill is None:
-            err_console.print(f"[red]unknown skill or unreadable file:[/red] {view}")
+            err_console.print(f"[hunter.error]unknown skill or unreadable file:[/hunter.error] {view}")
             raise typer.Exit(1)
         for note in corpus.notes:
             if view in note and "shadows the bundled" in note:
@@ -797,7 +801,7 @@ def tui(
         from hunter.tui.app import run as run_tui
     except ImportError as exc:  # textual missing — clean failure, no traceback
         err_console.print(
-            "[red]TUI unavailable:[/red] the 'textual' package is missing — "
+            "[hunter.error]TUI unavailable:[/hunter.error] the 'textual' package is missing — "
             "reinstall with: pip install -e ."
         )
         raise typer.Exit(1) from exc
@@ -827,7 +831,7 @@ def chat(
         from hunter.chat.repl import run_repl
     except ImportError as exc:
         err_console.print(
-            "[red]chat unavailable:[/red] the chat surface failed to import "
+            "[hunter.error]chat unavailable:[/hunter.error] the chat surface failed to import "
             f"({type(exc).__name__}) — reinstall with: pip install -e ."
         )
         raise typer.Exit(1) from exc
@@ -860,11 +864,11 @@ def gateway_start(
     except (HunterError, ValueError) as exc:
         if isinstance(exc, HunterError):
             raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
-        err_console.print(f"[red]config error:[/red] {exc}")
+        err_console.print(f"[hunter.error]config error:[/hunter.error] {exc}")
         raise typer.Exit(8) from exc
     if not transports:
         err_console.print(
-            "[yellow]no transports configured.[/yellow]\n"
+            "[hunter.warning]no transports configured.[/hunter.warning]\n"
             "Hint: set HUNTEROS_TELEGRAM_TOKEN + HUNTEROS_TELEGRAM_ALLOWED_USERS, or "
             "HUNTEROS_WEBHOOK_SECRET — see docs/GATEWAY.md."
         )
@@ -948,7 +952,7 @@ def _raw_config_or_exit(path: Path) -> dict:
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
-        err_console.print(f"[red]config error:[/red] {path} is not readable YAML: {exc}")
+        err_console.print(f"[hunter.error]config error:[/hunter.error] {path} is not readable YAML: {exc}")
         raise typer.Exit(8) from exc
     return loaded if isinstance(loaded, dict) else {}
 
@@ -990,7 +994,7 @@ def provider_add(
 
     if not PROVIDER_NAME_RE.match(name):
         err_console.print(
-            f"[red]invalid provider name:[/red] {name!r} — lowercase letters/digits/'-'/'_', "
+            f"[hunter.error]invalid provider name:[/hunter.error] {name!r} — lowercase letters/digits/'-'/'_', "
             "starting with a letter"
         )
         raise typer.Exit(2)
@@ -999,7 +1003,7 @@ def provider_add(
         base_url = known.base_url
     if not base_url and known is None:
         err_console.print(
-            f"[red]missing --base-url:[/red] '{name}' is not a known provider — pass --base-url "
+            f"[hunter.error]missing --base-url:[/hunter.error] '{name}' is not a known provider — pass --base-url "
             "(any OpenAI-compatible endpoint), or pick a known name: "
             f"{', '.join(known_provider_names())}"
         )
@@ -1013,7 +1017,7 @@ def provider_add(
         sys.stdout.flush()
         api_key = sys.stdin.readline().rstrip("\r\n").strip()
         err_console.print(
-            "[yellow]note:[/yellow] inline api_key written to the config file — --key-env is preferred"
+            "[hunter.warning]note:[/hunter.warning] inline api_key written to the config file — --key-env is preferred"
         )
     if key_env and api_key:
         err_console.print(
@@ -1025,7 +1029,7 @@ def provider_add(
     existing = (raw.get("providers") or {}).get(name)
     if isinstance(existing, dict) and existing and not force:
         err_console.print(
-            f"[red]provider '{name}' already exists in {target}[/red] — pass --force to replace it"
+            f"[hunter.error]provider '{name}' already exists in {target}[/hunter.error] — pass --force to replace it"
         )
         raise typer.Exit(2)
 
@@ -1044,7 +1048,7 @@ def provider_add(
     if default_model:
         updates["model_tiers"] = {"orchestrator": {"model": default_model}}
     write_config(updates, target)
-    console.print(f"[green]added provider '{name}'[/green] → {target}")
+    console.print(f"[hunter.success]added provider '{name}'[/hunter.success] → {target}")
     console.print("next: [bold]hunter config provider test " + name + "[/bold] · provider list")
 
 
@@ -1095,7 +1099,7 @@ def provider_remove(
     target = resolve_config_target()
     raw = _raw_config_or_exit(target)
     if name not in (raw.get("providers") or {}):
-        err_console.print(f"[red]unknown provider:[/red] '{name}' is not in {target}")
+        err_console.print(f"[hunter.error]unknown provider:[/hunter.error] '{name}' is not in {target}")
         raise typer.Exit(1)
     referenced: list[str] = []
     for tier_name, block in sorted((raw.get("model_tiers") or {}).items()):
@@ -1106,13 +1110,13 @@ def provider_remove(
             referenced.append(f"fallback_providers[{index}].provider")
     if referenced and not force:
         err_console.print(
-            f"[red]provider '{name}' is still referenced by:[/red] {', '.join(referenced)}\n"
+            f"[hunter.error]provider '{name}' is still referenced by:[/hunter.error] {', '.join(referenced)}\n"
             "point those tiers/fallbacks elsewhere first, or pass --force"
         )
         raise typer.Exit(2)
     write_config({"providers": {name: None}}, target)  # None deletes the block
     dangling = " (references left dangling by --force)" if referenced else ""
-    console.print(f"[green]removed[/green] provider '{name}' from {target}{dangling}")
+    console.print(f"[hunter.success]removed[/hunter.success] provider '{name}' from {target}{dangling}")
 
 
 @provider_app.command("test")
@@ -1140,12 +1144,12 @@ def provider_test(
         try:
             api_key = resolve_key(name, cfg)
         except HunterError as exc:
-            err_console.print(f"[red]key missing[/red] ({prov.key_env or name}) — {exc.hint}")
+            err_console.print(f"[hunter.error]key missing[/hunter.error] ({prov.key_env or name}) — {exc.hint}")
             raise typer.Exit(EXIT_AUTH) from exc
     elif known is not None and known.key_env:
         api_key = os.environ.get(known.key_env, "").strip()
         if not api_key:
-            err_console.print(f"[red]key missing[/red] ({known.key_env}) — set it and re-run")
+            err_console.print(f"[hunter.error]key missing[/hunter.error] ({known.key_env}) — set it and re-run")
             raise typer.Exit(EXIT_AUTH)
 
     model_id = model
@@ -1158,7 +1162,7 @@ def provider_test(
     if not model_id and known is not None:
         model_id = known.default_model
     if not model_id:
-        err_console.print(f"[red]no model to test:[/red] pass --model <model-id> for '{name}'")
+        err_console.print(f"[hunter.error]no model to test:[/hunter.error] pass --model <model-id> for '{name}'")
         raise typer.Exit(2)
 
     try:
@@ -1169,7 +1173,7 @@ def provider_test(
     except HunterError as exc:
         raise typer.Exit(handle_cli_error(exc, verbose=is_verbose())) from exc
     if result.ok:
-        console.print(f"{name}: [green]{result.message}[/green]")
+        console.print(f"{name}: [hunter.success]{result.message}[/hunter.success]")
         raise typer.Exit(0)
     err_console.print(result.message)
     raise typer.Exit(result.exit_code or 1)
@@ -1191,20 +1195,20 @@ def verify(
         # vacuous "chain OK — 0 events verified" (a security tool never
         # claims success over nothing).
         if run_id is not None and not any(r["run_id"] == run_id for r in ledger.runs()):
-            err_console.print(f"[red]unknown run:[/red] {run_id}")
+            err_console.print(f"[hunter.error]unknown run:[/hunter.error] {run_id}")
             raise typer.Exit(1)
         result = ledger.verify_chain(run_id)
     except sqlite3.DatabaseError as exc:
         raise _ledger_guard(exc) from exc
     except OSError as exc:
-        err_console.print(f"[red]state error:[/red] {type(exc).__name__}: {exc}")
+        err_console.print(f"[hunter.error]state error:[/hunter.error] {type(exc).__name__}: {exc}")
         raise typer.Exit(1) from exc
     finally:
         ledger.close()
     if result.ok:
-        console.print(f"[green]chain OK[/green] — {result.checked} events verified.")
+        console.print(f"[hunter.success]chain OK[/hunter.success] — {result.checked} events verified.")
         raise typer.Exit(0)
-    console.print(f"[red]CHAIN BROKEN[/red] at seq {result.broken_at_seq}")
+    console.print(f"[hunter.error]CHAIN BROKEN[/hunter.error] at seq {result.broken_at_seq}")
     for line in result.details[:5]:
         console.print(f"  - {line}")
     raise typer.Exit(7)
