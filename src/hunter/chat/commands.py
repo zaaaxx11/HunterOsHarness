@@ -14,6 +14,7 @@ CLI — localhost is always allowed, anything else REQUIRES a scope manifest.
 
 from __future__ import annotations
 
+import math
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from hunter.daemon import daemon_running, enqueue_hunts
 from hunter.errors import HunterError
 from hunter.kernel.findings import SEVERITY_ORDER
 from hunter.kernel.ledger import Ledger
@@ -934,8 +936,14 @@ def _exec_audit(ctx: CommandContext) -> CommandReply:
     return _audit_target_reply(ctx, "audit")
 
 
+def _normalize_queue_target(raw: str) -> tuple[str, str]:
+    from hunter.hunt import normalize_hunt_target
+
+    return normalize_hunt_target(raw)
+
+
 def _exec_hunt(ctx: CommandContext) -> CommandReply:
-    """Toggle process-local hunt mode or start an explicit one-shot hunt."""
+    """Toggle local hunt posture, run legacy one-shots, or queue timed hunts."""
     arg = (ctx.args or "").strip()
     status = bool(ctx.options.get("hunt_mode"))
     status_text = (
@@ -961,9 +969,76 @@ def _exec_hunt(ctx: CommandContext) -> CommandReply:
             "hunt mode: off — hunt-intent text asks for permission again",
             data={"hunt_mode": False},
         )
+    # New queue grammar is selected only by --time/--budget. Parse options in
+    # any position, validate all targets before touching the queue.
+    candidate = _tokenize(arg)
+    if "--time" in candidate or "--budget" in candidate or any(
+        token.startswith("--time=") or token.startswith("--budget=") for token in candidate
+    ):
+        positionals, opts = _split_options(
+            candidate, value_options={"--time", "--budget", "--scope", "--engine"}, flags=set()
+        )
+        if not positionals or "time" not in opts:
+            return CommandReply(
+                "usage: /hunt <target> [<target> ...] --time <duration> [--budget <usd>]",
+                data={"hunt": {"action": "usage"}},
+            )
+        from hunter.duration import parse_duration
+        try:
+            seconds = parse_duration(opts["time"])
+            if seconds <= 0:
+                raise ValueError("time must be positive")
+            budget = float(opts.get("budget", 0.0))
+            if not math.isfinite(budget) or budget < 0:
+                raise ValueError("budget must be finite and non-negative")
+        except (HunterError, TypeError, ValueError) as exc:
+            return CommandReply(f"usage: invalid hunt time/budget ({exc})", data={"hunt": {"action": "invalid"}})
+        normalized_targets: list[str] = []
+        scopes: list[ScopeSet] = []
+        try:
+            for raw_target in positionals:
+                normalized, kind = _normalize_queue_target(raw_target)
+                if kind == "invalid":
+                    raise HunterError(
+                        code="scope.target_invalid", layer="scope",
+                        message=f"target {raw_target!r} is invalid", hint="use an authorized HTTP URL",
+                    )
+                normalized_targets.append(normalized)
+                scopes.append(scope_for_target(normalized, opts.get("scope")))
+        except HunterError as exc:
+            return CommandReply(exc.user_message(), data={"hunt": {"action": "invalid"}})
+        state_dir = ctx.options.get("state_dir") or default_state_dir()
+        running, _ = daemon_running(state_dir)
+        if not running:
+            return CommandReply(
+                "engine is off — run `hunt start` to boot the 24/7 engine",
+                data={"hunt": {"action": "engine_off"}},
+            )
+        engine_name = str(opts.get("engine", "deterministic"))
+        tasks = [
+            {
+                "target": target,
+                "scope": scope.summary(),
+                "engine": engine_name,
+                "min_wall_seconds": 0.0,
+                "max_wall_seconds": seconds,
+                "max_cost_usd": budget,
+            }
+            for target, scope in zip(normalized_targets, scopes, strict=True)
+        ]
+        count = enqueue_hunts(state_dir, tasks)
+        minutes = max(1, math.ceil(seconds / 60.0))
+        return CommandReply(
+            f"queued {count} hunt(s) — time {minutes}m budget ${budget:.2f} — `hunt status` to watch",
+            data={
+                "hunt": {
+                    "action": "queued", "count": count, "time_seconds": seconds,
+                    "budget_usd": budget, "targets": normalized_targets,
+                }
+            },
+        )
     # Keep malformed/non-target arguments on the status/usage line; explicit
     # target handling otherwise shares /audit's scope gate and one-shot contract.
-    candidate = _tokenize(arg)
     if (
         not candidate
         or (

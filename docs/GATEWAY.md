@@ -124,9 +124,12 @@ You — an allowlisted operator — reply like any other message:
 ```
 
 Approvals are **single-use** (one decision = one retry), **expire** after
-300 seconds, and are always bounded by the denylist: catastrophic commands
-(`rm -rf`, disk formatting, fork bombs, …) are refused in every mode, and
-an approval never widens the scope gate.
+300 seconds, and never widen the scope gate. Every local-system change —
+including catastrophic commands (`rm -rf`, disk formatting, fork bombs, …) —
+requires explicit approval in every mode: the gate files a pending request
+(`approval.catastrophic`) and only an explicit `/approve` permits exactly one
+execution. Read-only recon commands auto-allow in hunter mode; interpreters
+and everything unknown count as mutating.
 
 ---
 

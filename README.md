@@ -192,16 +192,21 @@ Full layer diagram, governance flow, invariants, and the L1–L5 framing:
 
 ## v0.5.0 additions
 
-- **24/7 daemon** — `hunt start --target URL --time 2h --min-time 30m`
-  spawns a detached daemon that claims governed tasks from an atomic queue;
-  `hunt status`, `hunt logs`, `hunt stop` manage it. The time you give a
-  hunt is a minimum: the engine will not stop before `--min-time` and may
-  run up to `--time`. `0 = unlimited` for every budget key (cost,
-  iterations, wall clock, min wall).
-- **Shell approval** — `shell_exec` requires an explicit `/approve <id>`
-  (single-use, expires after 300 seconds); catastrophic commands are
-  refused in every mode, output is redacted and capped at 16k, the cwd is
-  locked inside the state directory, and every run is ledgered.
+- **24/7 engine** — `hunt start` boots the persistent engine once (no target
+  needed; it stays on for ordinary chat); `hunt status`, `hunt logs`,
+  `hunt stop` manage it. Queue hunts from any surface with
+  `/hunt <target> [<target> ...] --time 30m [--budget 2]` (or
+  `hunt start --target URL --time 2h --min-time 30m` for a legacy one-shot):
+  time is a minimum per target, `0 = unlimited` for every budget key.
+- **Shell approval** — `shell_exec` classifies every command as readonly /
+  mutating / catastrophic; anything that modifies the local system needs an
+  explicit `/approve <id>` (single-use, expires after 300 seconds) in every
+  mode, auto-allow covers read-only recon in hunter mode only. Output is
+  redacted and capped at 16k, the cwd is locked inside the state directory,
+  and every run is ledgered.
+- **Brand palette** — `#00FFE5` base with a brighter gradient (`#4DFFF0` →
+  `#80FFF6` → `#B3FFFC` → `#E6FFFE`), deep/dim companions, one `hunter.palette`
+  source of truth for CLI, REPL, TUI, and daemon output.
 - **Browser cloak** — on by default (`agent.browser_cloak`): plausible
   user-agent/viewport/locale/timezone pools, non-automation launch args,
   and one masking init script. The scope interceptor and redaction are

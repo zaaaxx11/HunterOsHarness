@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -45,6 +46,8 @@ __all__ = [
     "daemon_main",
     "daemon_running",
     "daemon_status",
+    "enqueue_hunt",
+    "enqueue_hunts",
     "enqueue_task",
     "heartbeat_path",
     "hunt_worker",
@@ -344,6 +347,58 @@ def enqueue_task(state_dir: str | Path, task: dict[str, Any]) -> Path:
     return path
 
 
+def _validate_hunt_task(task: dict[str, Any]) -> None:
+    from hunter.hunt import normalize_hunt_target
+
+    target = str(task.get("target", ""))
+    normalized, kind = normalize_hunt_target(target)
+    if kind == "invalid" or normalized != target:
+        raise ValueError(f"invalid hunt target: {target!r}")
+    try:
+        max_wall = float(task.get("max_wall_seconds", 0.0) or 0.0)
+        min_wall = float(task.get("min_wall_seconds", 0.0) or 0.0)
+        budget = float(task.get("max_cost_usd", 0.0) or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("hunt limits must be finite numbers") from exc
+    if any(not math.isfinite(value) or value < 0 for value in (max_wall, min_wall, budget)):
+        raise ValueError("hunt limits must be finite and non-negative")
+
+
+def enqueue_hunt(
+    state_dir: str | Path,
+    *,
+    target: str,
+    scope: Any,
+    engine: str,
+    max_wall_seconds: float,
+    max_cost_usd: float = 0.0,
+    min_wall_seconds: float = 0.0,
+) -> Path:
+    """Validate and enqueue one independent hunt task."""
+    task = {
+        "target": str(target),
+        "scope": _scope_payload(scope),
+        "engine": str(engine),
+        "max_wall_seconds": float(max_wall_seconds),
+        "max_cost_usd": float(max_cost_usd),
+        "min_wall_seconds": float(min_wall_seconds),
+    }
+    _validate_hunt_task(task)
+    return enqueue_task(state_dir, task)
+
+
+def enqueue_hunts(state_dir: str | Path, tasks: list[dict[str, Any]]) -> int:
+    """Validate every task before writing any file, then enqueue atomically."""
+    normalized: list[dict[str, Any]] = []
+    for item in tasks:
+        task = dict(item)
+        _validate_hunt_task(task)
+        normalized.append(task)
+    for task in normalized:
+        enqueue_task(state_dir, task)
+    return len(normalized)
+
+
 def _claim(source: Path, destination: Path, *, payload: dict[str, Any]) -> None:
     """Atomically claim ``source`` as ``destination`` — exactly one winner.
 
@@ -415,18 +470,19 @@ def _scope_payload(scope: Any) -> dict[str, Any]:
 def start_daemon(
     state_dir: str | Path,
     *,
-    target: str,
-    scope: Any,
-    engine: str,
-    min_wall_seconds: float,
-    max_wall_seconds: float,
-    max_cost_usd: float,
+    target: str | None = None,
+    scope: Any | None = None,
+    engine: str = "deterministic",
+    min_wall_seconds: float = 0.0,
+    max_wall_seconds: float = 0.0,
+    max_cost_usd: float = 0.0,
     force: bool = False,
 ) -> int:
-    """Enqueue one hunt task and spawn the detached daemon; exit code.
+    """Start the persistent engine, optionally enqueueing one initial hunt.
 
     0 started · 3 refused (already running without ``--force``) · 1 the child
-    failed to self-register within 10s.
+    failed to self-register within 10s. A target-free boot intentionally leaves
+    the queue empty so later chat requests can enqueue independently.
     """
     state = Path(state_dir)
     if not force:
@@ -440,19 +496,20 @@ def start_daemon(
     # A fresh start must not inherit a stale kill switch.
     with contextlib.suppress(OSError):
         stop_flag_path(state).unlink(missing_ok=True)
-    task = {
-        "task_id": f"T-{int(time.time())}-{uuid.uuid4().hex[:6]}",
-        "target": str(target),
-        "scope": _scope_payload(scope),
-        "engine": str(engine),
-        "min_wall_seconds": float(min_wall_seconds),
-        "max_wall_seconds": float(max_wall_seconds),
-        "max_cost_usd": float(max_cost_usd),
-        "created_ts": time.time(),
-        "claimed_by": None,
-        "claimed_ts": None,
-    }
-    enqueue_task(state, task)
+    if target is not None:
+        task = {
+            "task_id": f"T-{int(time.time())}-{uuid.uuid4().hex[:6]}",
+            "target": str(target),
+            "scope": _scope_payload(scope),
+            "engine": str(engine),
+            "min_wall_seconds": float(min_wall_seconds),
+            "max_wall_seconds": float(max_wall_seconds),
+            "max_cost_usd": float(max_cost_usd),
+            "created_ts": time.time(),
+            "claimed_by": None,
+            "claimed_ts": None,
+        }
+        enqueue_task(state, task)
     # The old registration is provably dead (daemon_running said so) — drop it
     # so the wait below observes the CHILD's fresh self-registration.
     with contextlib.suppress(OSError):

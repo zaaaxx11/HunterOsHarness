@@ -18,13 +18,14 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import threading
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from hunter.kernel.events import canonical_json, sha256_hex
 from hunter.kernel.redaction import redact_text
@@ -39,11 +40,40 @@ __all__ = [
     "ApprovalRequest",
     "ApprovalStore",
     "CATASTROPHIC_PATTERNS_SOURCE",
+    "CommandClass",
     "GateCallback",
+    "READONLY_EXECUTABLES",
+    "READONLY_GIT_SUBCOMMANDS",
+    "classify_command",
+    "classify_shell_command",
     "effective_status",
     "is_catastrophic",
     "make_approval_gate",
 ]
+
+CommandClass = Literal["readonly", "mutating", "catastrophic"]
+
+# This tuple is a public policy contract. Keep its order stable; additions to
+# the effective allowlist below are deliberately separate for compatibility
+# with the original M8 constants.
+READONLY_EXECUTABLES: tuple[str, ...] = (
+    "cat", "cd", "dir", "echo", "find", "grep", "head", "hostname",
+    "id", "ls", "pwd", "rg", "stat", "tail", "type", "uname", "ver",
+    "where", "which", "whoami", "git",
+)
+READONLY_GIT_SUBCOMMANDS: tuple[str, ...] = (
+    "status", "diff", "log", "show", "branch", "rev-parse", "ls-files",
+)
+# Recon utilities are read-only from the local-system perspective. Network
+# access and scope remain governed by their individual tools and the scope gate.
+_READONLY_RECON_EXECUTABLES = {
+    "curl", "wget", "nmap", "sqlmap", "nuclei", "ffuf", "dig", "nslookup",
+    "whois", "whatweb", "gobuster", "masscan", "testssl", "openssl", "http",
+}
+_WRITE_FLAGS = {
+    "-o", "--output", "--write", "--upload", "--delete", "--remove", "--append",
+    "--in-place", "/a", "/s", "/q", "/f",
+}
 
 # (regex, reason) — matched against the RAW command and a normalized form
 # (lowercased, "^"/"\" replaced by space, quotes removed, whitespace
@@ -89,6 +119,52 @@ def is_catastrophic(command: str) -> str | None:
         if pattern.search(raw) or pattern.search(normalized):
             return reason
     return None
+
+
+def _has_write_flag(argv: list[str]) -> bool:
+    for token in argv[1:]:
+        lowered = token.lower()
+        if lowered in _WRITE_FLAGS:
+            return True
+        if any(lowered.startswith(flag + "=") for flag in ("-o", "--output", "--write")):
+            return True
+    return False
+
+
+def classify_shell_command(command: str) -> CommandClass:
+    """Classify a local command conservatively without granting execution.
+
+    Catastrophic patterns are checked before parsing so quoting and escape
+    variants cannot evade the safety boundary. Everything not in the small
+    explicit read-only policy is mutating, including malformed shell syntax.
+    """
+    raw = str(command or "")
+    if is_catastrophic(raw) is not None:
+        return "catastrophic"
+    if not raw.strip() or any(char in raw for char in ";|&<>"):
+        return "mutating"
+    try:
+        argv = shlex.split(raw, posix=True)
+    except ValueError:
+        return "mutating"
+    if not argv or any("=" in token for token in argv[:1]):
+        return "mutating"
+    executable = argv[0].lower()
+    # Do not treat arbitrary paths/interpreters as safe aliases.
+    if executable not in READONLY_EXECUTABLES and executable not in _READONLY_RECON_EXECUTABLES:
+        return "mutating"
+    if _has_write_flag(argv):
+        return "mutating"
+    if executable == "git":
+        subcommand = next((token.lower() for token in argv[1:] if not token.startswith("-")), "")
+        if subcommand not in READONLY_GIT_SUBCOMMANDS:
+            return "mutating"
+    return "readonly"
+
+
+# Short public spelling used by newer callers while preserving the pinned M8
+# name used by existing integrations and tests.
+classify_command = classify_shell_command
 
 
 APPROVAL_TTL_SECONDS = 300
@@ -330,68 +406,81 @@ def make_approval_gate(
     confirm_fn: Callable[[ApprovalRequest], bool] | None = None,
     surface: str = "",
 ) -> GateCallback:
-    """Build the pinned 5-step dispatch gate.
+    """Build the fail-closed, class-aware approval gate.
 
-    Order (``None`` = run the tool):
-    1. ``shell_exec`` + catastrophic → blocked ``shell.denylist`` (no file,
-       no ask — never runs, even in hunter mode);
-    2. ``find_approved(fingerprint)`` → consume + ledger event → None;
-    3. ``auto_allow`` → ledger event, no file → None;
-    4. ``confirm_fn`` (asked once per fingerprint) → create + ask; True →
-       decide approved + consume → None; False → decide denied → blocked
-       ``approval.denied``;
-    5. else → create → blocked ``approval.required`` (fail-closed when no
-       confirm_fn — the gateway; also the retry path after a confirm_fn
-       decision — a NEW pending request, never a replayed denial).
+    Shell commands are classified before any approval shortcut. An approval
+    decision is always fingerprinted and single-use; ``auto_allow`` applies to
+    readonly shell commands only (generic approval tools retain M8 behavior).
     """
 
     def gate(tool: str, args: dict[str, Any], ctx: ToolContext) -> ToolOutcome | None:
+        command_class: CommandClass | None = None
+        reason: str | None = None
         if tool == "shell_exec":
-            reason = is_catastrophic(str(args.get("command", "")))
-            if reason is not None:
-                return _blocked_outcome(
-                    "shell.denylist",
-                    f"BLOCKED [shell.denylist] command refused — {reason}. "
-                    "Catastrophic commands never run, in any mode.",
-                )
+            command = str(args.get("command", ""))
+            command_class = classify_shell_command(command)
+            reason = is_catastrophic(command)
         fingerprint = sha256_hex(canonical_json({"tool": str(tool), "args": args}))
         approved = store.find_approved(fingerprint)
         if approved is not None:
             store.consume(approved.request_id)
-            _gate_event(
-                ledger,
-                run_id,
-                {
-                    "tool": str(tool),
-                    "approval": f"consumed:{approved.request_id}",
-                    "fingerprint": fingerprint,
-                },
-            )
+            payload = {
+                "tool": str(tool),
+                "approval": f"consumed:{approved.request_id}",
+                "fingerprint": fingerprint,
+            }
+            if command_class is not None:
+                payload["command_class"] = command_class
+            _gate_event(ledger, run_id, payload)
             if ctx is not None:
                 ctx.config["approval_id"] = approved.request_id
+                if command_class is not None:
+                    ctx.config["approval_class"] = command_class
             return None
-        if auto_allow:
-            _gate_event(
-                ledger,
-                run_id,
-                {"tool": str(tool), "approval": "auto_allowed", "fingerprint": fingerprint},
-            )
-            return None
-        if confirm_fn is not None and store.find_decided(fingerprint) is None:
-            # The interactive ask happens ONCE per exact call (fingerprint):
-            # once a decision exists, a retry falls through to step 5 — a NEW
-            # pending request the user can approve asynchronously. The old
-            # denial is recorded but never replayed as a silent auto-deny.
+
+        # Catastrophic commands are not permanently denied, but they never
+        # consult either auto_allow or an interactive callback.
+        if command_class == "catastrophic":
             request = store.create(str(tool), args, surface=surface)
             _gate_event(
                 ledger,
                 run_id,
                 {
-                    "tool": str(tool),
-                    "approval": f"requested:{request.request_id}",
+                    "tool": "shell_exec",
+                    "command_class": "catastrophic",
+                    "approval": f"catastrophic:{request.request_id}",
                     "fingerprint": fingerprint,
+                    "reason": reason or "catastrophic command",
                 },
             )
+            return _blocked_outcome(
+                "approval.catastrophic",
+                "BLOCKED: catastrophic shell command requires explicit approval. "
+                f"Request id: {request.request_id} (expires in {APPROVAL_TTL_SECONDS}s). "
+                f"Reply /approve {request.request_id} to permit exactly one execution.",
+            )
+
+        # auto_allow is deliberately restricted to readonly shell commands.
+        can_auto_allow = auto_allow and (tool != "shell_exec" or command_class == "readonly")
+        if can_auto_allow:
+            payload = {"tool": str(tool), "approval": "auto_allowed", "fingerprint": fingerprint}
+            if command_class is not None:
+                payload["command_class"] = command_class
+                if ctx is not None:
+                    ctx.config["approval_class"] = command_class
+            _gate_event(ledger, run_id, payload)
+            return None
+
+        if confirm_fn is not None and store.find_decided(fingerprint) is None:
+            request = store.create(str(tool), args, surface=surface)
+            payload = {
+                "tool": str(tool),
+                "approval": f"requested:{request.request_id}",
+                "fingerprint": fingerprint,
+            }
+            if command_class is not None:
+                payload["command_class"] = command_class
+            _gate_event(ledger, run_id, payload)
             try:
                 allowed = bool(confirm_fn(request))
             except Exception:  # noqa: BLE001 — a broken confirm is a denial
@@ -399,48 +488,51 @@ def make_approval_gate(
             if allowed:
                 store.decide(request.request_id, "approved")
                 store.consume(request.request_id)
-                _gate_event(
-                    ledger,
-                    run_id,
-                    {
-                        "tool": str(tool),
-                        "approval": f"granted:{request.request_id}",
-                        "fingerprint": fingerprint,
-                    },
-                )
+                payload = {
+                    "tool": str(tool),
+                    "approval": f"granted:{request.request_id}",
+                    "fingerprint": fingerprint,
+                }
+                if command_class is not None:
+                    payload["command_class"] = command_class
+                _gate_event(ledger, run_id, payload)
                 if ctx is not None:
                     ctx.config["approval_id"] = request.request_id
+                    if command_class is not None:
+                        ctx.config["approval_class"] = command_class
                 return None
             store.decide(request.request_id, "denied")
-            _gate_event(
-                ledger,
-                run_id,
-                {
-                    "tool": str(tool),
-                    "approval": f"denied:{request.request_id}",
-                    "fingerprint": fingerprint,
-                },
-            )
+            payload = {
+                "tool": str(tool),
+                "approval": f"denied:{request.request_id}",
+                "fingerprint": fingerprint,
+            }
+            if command_class is not None:
+                payload["command_class"] = command_class
+            _gate_event(ledger, run_id, payload)
             return _blocked_outcome(
                 "approval.denied",
                 f"BLOCKED: tool '{tool}' was denied by the user "
                 f"(request {request.request_id}). Do not retry the same call.",
             )
+
         request = store.create(str(tool), args, surface=surface)
-        _gate_event(
-            ledger,
-            run_id,
-            {
-                "tool": str(tool),
-                "approval": f"requested:{request.request_id}",
-                "fingerprint": fingerprint,
-            },
+        payload = {
+            "tool": str(tool),
+            "approval": f"requested:{request.request_id}",
+            "fingerprint": fingerprint,
+        }
+        if command_class is not None:
+            payload["command_class"] = command_class
+        _gate_event(ledger, run_id, payload)
+        class_text = (
+            f" shell command class '{command_class}'" if command_class is not None else ""
         )
         return _blocked_outcome(
             "approval.required",
-            f"BLOCKED: tool '{tool}' requires user approval. Request id: "
-            f"{request.request_id} (expires in {APPROVAL_TTL_SECONDS}s). Ask the user to "
-            f"reply /approve {request.request_id} — do not retry before approval.",
+            f"BLOCKED:{class_text} requires user approval. Request id: {request.request_id} "
+            f"(expires in {APPROVAL_TTL_SECONDS}s). Ask the user to reply /approve "
+            f"{request.request_id} — do not retry before approval.",
         )
 
     return gate

@@ -165,6 +165,10 @@ class ToolRegistry:
                 ),
             )
         if spec.danger == "approval":
+            # Approval metadata is valid for exactly one dispatch. Never let a
+            # prior approved shell call release a later direct/blocked call.
+            ctx.config.pop("approval_id", None)
+            ctx.config.pop("approval_class", None)
             gate = ctx.config.get("approval_gate")
             if gate is None:  # fail closed — no silent bypass on unaudited surfaces
                 return ToolOutcome(
