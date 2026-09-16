@@ -1,4 +1,4 @@
-# QUICKSTART — HunterOs Harness v0.5.0 in 60 seconds
+# QUICKSTART — HunterOs Harness v0.6.0 in 60 seconds
 
 **Evidence-first security auditing.** Every finding lives in a hash-chained
 ledger with bound evidence — a claim the harness cannot prove is a claim it

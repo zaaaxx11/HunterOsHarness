@@ -9,6 +9,30 @@ the claim gate vetoes any claim the ledger cannot prove. A vulnerability you
 cannot replay is a vulnerability you cannot bill, defend, or trust:
 **evidence or nothing**.
 
+## First run
+
+The first command opens a small, guided welcome surface and points to the next
+safe action. This preview was captured in a throwaway sandbox with no provider
+key and no external target:
+
+![HunterOS startup preview](docs/assets/hunteros-startup.svg)
+
+The shortest operator path is:
+
+```bash
+hunter                 # welcome panel and next steps
+hunter init            # configure a provider and model
+hunter chat            # interactive chat with saved sessions
+hunter chat "hello"   # one-shot chat
+hunter where           # show the unified ~/.hunter layout
+hunter config edit     # open the active YAML config
+hunter gateway status  # inspect the 24/7 engine
+```
+
+HunterOS keeps behavior in `~/.hunter/config.yaml`, secrets in
+`~/.hunter/keys.env`, and runtime state under `~/.hunter`. Existing legacy
+state under `~/.hunteros` is copied forward without deleting the originals.
+
 ## User skills and curator
 
 Local methodology cards live under `~/.hunter/skills/<name>/SKILL.md`. The merged bundled/user corpus shows `[bundled]`, `[user]`, and `[quarantined]` source markers; relevance matching selects at most five skills. `hunter skills` lists the merged corpus, while `hunter skills --view NAME` shows one card. The `/skills` and `hunter skills` surfaces mark each effective card with its source; `/curate` and `hunter curate` preview retro-derived cards before an explicit y/N save. Duplicate drafts are skipped, flagged drafts are saved with quarantined semantics, and quarantined cards remain inert until manually reviewed and are never mounted into a prompt.
@@ -192,7 +216,7 @@ irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 
 Full layer diagram, governance flow, invariants, and the L1–L5 framing:
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## v0.5.0 additions
+## v0.6.0 additions
 
 - **24/7 engine** — `hunt start` boots the persistent engine once (no target
   needed; it stays on for ordinary chat); `hunt status`, `hunt logs`,
@@ -234,7 +258,7 @@ Full layer diagram, governance flow, invariants, and the L1–L5 framing:
 
 ## Status
 
-**v0.5.0** — approval-gated shell, the 24/7 hunt daemon, minimum-time
+**v0.6.0** — operator workflow improvements, unified home/config, session-aware chat, provider/model setup, gateway lifecycle, pause/resume, and the target-plus-time hunt flow. v0.5.0 shipped the approval-gated shell, the 24/7 hunt daemon, minimum-time
 budgets with unlimited-credit semantics, the browser cloak, the operating
 character, session compression, Discord and WhatsApp gateways, and the
 `scripts/` toolkit are shipped. v0.4.0 shipped the phase pipeline, governed

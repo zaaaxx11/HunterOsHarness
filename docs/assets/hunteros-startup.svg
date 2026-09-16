@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="522" viewBox="0 0 1180 522">
+<rect width="1180" height="100%" rx="18" fill="#0b1220"/>
+<rect x="22" y="22" width="1136" height="52" rx="12" fill="#17243a"/>
+<circle cx="52" cy="48" r="8" fill="#ff6b6b"/><circle cx="78" cy="48" r="8" fill="#ffd166"/><circle cx="104" cy="48" r="8" fill="#06d6a0"/>
+<text x="140" y="55" fill="#b7c9e2" font-family="Segoe UI,Arial" font-size="20">HunterOS startup · sandbox preview</text>
+<text x="48" y="112" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">┌────────────────────────────────── hunter ───────────────────────────────────┐</text>
+<text x="48" y="140" fill="#8af5e5" font-family="Consolas,monospace" font-size="18">│ HunterOs Harness v0.6.0 — evidence-first security auditing                  │</text>
+<text x="48" y="168" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│                                                                             │</text>
+<text x="48" y="196" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│ every finding is proven by a hash-chained ledger, or it does not exist      │</text>
+<text x="48" y="224" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│                                                                             │</text>
+<text x="48" y="252" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│ next steps:                                                                 │</text>
+<text x="48" y="280" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│   hunter init    — configure a brain (LLM provider, key, model) in one      │</text>
+<text x="48" y="308" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│ wizard                                                                      │</text>
+<text x="48" y="336" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│   hunter demo    — first blood on a local practice target, no keys needed   │</text>
+<text x="48" y="364" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│   hunter doctor  — verify the environment end to end                        │</text>
+<text x="48" y="392" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│                                                                             │</text>
+<text x="48" y="420" fill="#e7eef8" font-family="Consolas,monospace" font-size="18">│ home: ~/.hunter · config: hunter config show · doctor: hunter doctor        │</text>
+<text x="48" y="448" fill="#8af5e5" font-family="Consolas,monospace" font-size="18">└──────────────────────────── Evidence or Nothing ────────────────────────────┘</text>
+<text x="48" y="476" fill="#ffd166" font-family="Consolas,monospace" font-size="18">no brain configured — run 'hunter init' anytime; skipped for this preview</text>
+</svg>

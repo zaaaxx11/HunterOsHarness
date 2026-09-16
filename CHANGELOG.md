@@ -8,7 +8,7 @@ Compare releases: `v0.3.1...v0.6.0`.
 
 ## 0.6.0 - 2026-09-16
 
-### Hermes-grade operator experience
+### Operator experience
 
 - Unified user state under `~/.hunter` with safe copy-only migration from `~/.hunteros`.
 - Added `hunter where`, `hunter config get/set/unset/path/edit/check`, session-aware one-shot chat, and provider/model helpers.
