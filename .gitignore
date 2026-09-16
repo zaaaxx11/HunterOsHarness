@@ -26,3 +26,8 @@ tests/
 *.log
 artifacts/
 reports/
+
+# Local working rules for the operator (describes the push/commit hygiene
+# above); stays on this machine and never reaches the public repo.
+rules.md
+backup/
