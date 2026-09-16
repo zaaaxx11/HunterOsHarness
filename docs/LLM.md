@@ -1,5 +1,15 @@
 # LLM — bring your own key (BYOK) guide
 
+## Fast path (Hermes-style)
+
+Use `hunter model` to pick a provider and model interactively, or set one directly:
+
+```powershell
+hunter model --set gpt-4o --provider openai
+```
+
+For a no-file setup, `HUNTEROS_MODEL` overrides the model at use time. Secrets belong in `~/.hunter/keys.env`, never in `config.yaml`.
+
 v0.2 gives HunterOs an LLM brain: agent chat, model-driven audit loops, and
 tier routing — mounted on the same evidence contract as the deterministic
 engine. You bring the key; the harness brings the governance.
@@ -22,7 +32,7 @@ That is the whole setup: the loader reads `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
 block is declared, and `HUNTEROS_MODEL` fills the top default model slot.
 
 Prefer a file? `hunter config example` prints a complete, loadable YAML —
-copy it to `~/.hunteros/config.yaml` and edit. (The same content ships as
+copy it to `~/.hunter/config.yaml` and edit. (The same content ships as
 [`examples/config.example.yaml`](../examples/config.example.yaml).)
 
 **No key? Everything still works.** The deterministic engine, the ledger,
@@ -39,7 +49,7 @@ Search order (first hit wins):
 
 1. explicit `--config`/path argument
 2. `$HUNTEROS_CONFIG`
-3. `~/.hunteros/config.yaml`
+3. `~/.hunter/config.yaml`
 4. none → pure defaults (deterministic behavior)
 
 Environment overrides **win** over YAML values (except `HUNTEROS_MODEL`,
@@ -129,7 +139,7 @@ silently mean nothing.
 ### OpenAI
 
 ```yaml
-# ~/.hunteros/config.yaml
+# ~/.hunter/config.yaml
 model_tiers:
   orchestrator: { provider: openai, model: gpt-4o }
   verifier: { provider: openai, model: gpt-4o-mini }  # cheap, careful

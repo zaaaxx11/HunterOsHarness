@@ -13,8 +13,6 @@ import asyncio
 import contextlib
 import json
 import os
-import platform
-import sys
 import time
 from importlib import metadata, util
 from pathlib import Path
@@ -40,6 +38,8 @@ from textual.widgets import (
 )
 
 from hunter import __version__
+from hunter.cli.doctor_core import collect_checks
+from hunter.daemon import daemon_status, start_daemon, stop_daemon
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
 from hunter.kernel.ledger import Ledger
@@ -49,6 +49,26 @@ from hunter.phases import current_phase
 TAIL_WINDOW = 100  # events shown in the live tail
 PAYLOAD_WIDTH = 64  # characters of payload preview in the tail
 EVIDENCE_EXCERPT_CHARS = 280
+
+
+class _RunTable(DataTable):
+    """Dashboard table with an immediate Enter selection handoff.
+
+    Textual posts ``RowSelected`` asynchronously. During concurrent refreshes
+    that message can arrive after a test or caller inspects the active tab, so
+    perform the same handoff synchronously and still let the normal message
+    flow run for other consumers.
+    """
+
+    def action_select_cursor(self) -> None:
+        super().action_select_cursor()
+        if self.cursor_type != "row" or not self.row_count:
+            return
+        row_key, _ = self.coordinate_to_cell_key(self.cursor_coordinate)
+        handler = getattr(self.app, "_select_run", None)
+        if callable(handler):
+            handler(str(row_key))
+
 
 SEVERITY_STYLES = {
     "critical": rich_style("critical", bold=True),
@@ -190,6 +210,8 @@ class HunterTui(App[None]):
         Binding("2", "show_tab('tab-findings')", "Findings", show=False),
         Binding("3", "show_tab('tab-events')", "Events", show=False),
         Binding("4", "show_tab('tab-doctor')", "Doctor", show=False),
+        Binding("s", "start_engine", "Start engine", show=False),
+        Binding("x", "stop_engine", "Stop engine", show=False),
         Binding("q", "quit", "Quit", priority=True),
     ]
 
@@ -229,9 +251,10 @@ class HunterTui(App[None]):
                     "No runs yet — press [b]d[/b] to run the demo scan.",
                     id="dashboard-empty",
                 )
-                yield DataTable(
+                yield _RunTable(
                     id="runs-table", cursor_type="row", zebra_stripes=True
                 )
+
             with TabPane("Findings", id="tab-findings"):
                 yield Static(
                     "No findings yet — run a scan, then pick a run on the Dashboard.",
@@ -248,8 +271,13 @@ class HunterTui(App[None]):
                 yield RichLog(
                     id="events-log", markup=True, highlight=True, wrap=True, max_lines=2000
                 )
+            with TabPane("Engine", id="tab-engine"):
+                yield Static("engine status: checking…", id="engine-report")
+            with TabPane("Config", id="tab-config"):
+                yield Static("config: checking…", id="config-report")
             with TabPane("Doctor", id="tab-doctor"), VerticalScroll():
                 yield Static("Checking environment…", id="doctor-report")
+        yield Static("hunter 0.6.0 · model (unset) · tier basic · engine stopped", id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -261,6 +289,8 @@ class HunterTui(App[None]):
         findings_table.add_columns("id", "severity", "status", "title", "endpoint")
         self.refresh_data()
         self.refresh_doctor()
+        self.refresh_engine()
+        self.refresh_config()
         self.set_interval(2.0, self._tail_events_tick)
 
     def on_unmount(self) -> None:
@@ -290,11 +320,62 @@ class HunterTui(App[None]):
             self.notify(f"Doctor failed: {error}", title="Doctor", severity="error")
             return
         self.doctor_summary = _renderable_text(report)
-        self.query_one("#doctor-report", Static).update(report)
+        # Keep a plain-text projection for accessibility/terminal snapshots;
+        # Rich's table renderable is otherwise exposed as an opaque object.
+        self.query_one("#doctor-report", Static).update(Text(self.doctor_summary))
+
+    @work(exclusive=True, group="engine", exit_on_error=False)
+    async def refresh_engine(self) -> None:
+        status = await asyncio.to_thread(daemon_status, self._state_dir)
+        lines = [
+            f"engine {'running' if status.get('running') else 'stopped'}",
+            f"queue: {status.get('queue_pending', 0)} pending",
+        ]
+        if status.get('paused'):
+            lines.append("⏸️ paused")
+        self.query_one("#engine-report", Static).update("\\n".join(lines))
+        engine_state = "running" if status.get("running") else "stopped"
+        self.query_one("#status-bar", Static).update(
+            f"hunter {__version__} · model (unset) · tier basic · engine {engine_state}"
+        )
+
+    @work(exclusive=True, group="config", exit_on_error=False)
+    async def refresh_config(self) -> None:
+        def _read() -> str:
+            from hunter.llm.config import load_config
+            try:
+                cfg = load_config()
+            except Exception:
+                return "config: (none)"
+            rows = [f"tier: {cfg.agent.tier}"]
+            for name, provider in cfg.providers.items():
+                key = "inline key present" if provider.api_key else (provider.key_env or "keyless")
+                rows.append(f"{name}: {key}")
+            return "\\n".join(rows)
+        self.query_one("#config-report", Static).update(await asyncio.to_thread(_read))
+
+    def action_start_engine(self) -> None:
+        state = self._state_dir
+        start_daemon(
+            state,
+            target=None,
+            scope=None,
+            engine="deterministic",
+            min_wall_seconds=0.0,
+            max_wall_seconds=0.0,
+            max_cost_usd=0.0,
+        )
+        self.refresh_engine()
+
+    def action_stop_engine(self) -> None:
+        stop_daemon(self._state_dir, timeout=5.0, force=False)
+        self.refresh_engine()
 
     def action_refresh(self) -> None:
         self.refresh_data()
         self.refresh_doctor()
+        self.refresh_engine()
+        self.refresh_config()
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one(TabbedContent).active = tab_id
@@ -401,12 +482,20 @@ class HunterTui(App[None]):
         self.query_one("#findings-empty", Static).display = not shown
         self.query_one("#findings-table", DataTable).display = bool(shown)
 
+    def _select_run(self, run_id: str) -> None:
+        if not run_id:
+            return
+        self._selected_run_id = run_id
+        self._populate_findings()
+        self.query_one(TabbedContent).active = "tab-findings"
+        self.query_one("#findings-table", DataTable).focus()
+
     @on(DataTable.RowSelected, "#runs-table")
     def _on_run_selected(self, event: DataTable.RowSelected) -> None:
         run_id = event.row_key.value
         if not run_id:
             return
-        self._selected_run_id = run_id
+        self._select_run(str(run_id))
         self._populate_findings()
         self.query_one(TabbedContent).active = "tab-findings"
         self.query_one("#findings-table", DataTable).focus()
@@ -433,7 +522,12 @@ class HunterTui(App[None]):
             return
         detail = self._render_finding(finding, evidence_rows)
         self.finding_detail_text = _renderable_text(detail)
-        self.query_one("#finding-detail", Static).update(detail)
+        # TabbedContent may dispatch a highlight while the findings pane is
+        # still being mounted. Keep the plain snapshot available and let the
+        # next explicit selection refresh the widget instead of crashing the
+        # Textual message pump.
+        with contextlib.suppress(Exception):
+            self.query_one("#finding-detail", Static).update(detail)
 
     def _render_finding(
         self, finding: Finding, evidence_rows: list[dict[str, Any]]
@@ -515,75 +609,25 @@ class HunterTui(App[None]):
         env = os.environ.get("HUNTER_STATE_DIR")
         if env:
             return Path(env)
-        return Path.cwd() / ".hunter"
+        from hunter.home import state_dir
+
+        return state_dir()
 
     def _doctor_report(self) -> RichTable:
-        table = RichTable(
-            title="Doctor",
-            show_header=False,
-            box=box.SIMPLE,
-            expand=True,
-            pad_edge=False,
-        )
+        table = RichTable(title="Doctor", show_header=False, box=box.SIMPLE, expand=True, pad_edge=False)
         table.add_column("check", style="bold", no_wrap=True)
         table.add_column("result")
-
-        table.add_row(
-            "python",
-            Text(f"{platform.python_version()}  ({sys.executable})", style=PALETTE["base"]),
-        )
-        table.add_row("hunteros", Text(_package_version(), style=PALETTE["base"]))
-
-        for dep in ("textual", "rich", "httpx", "typer"):
-            try:
-                table.add_row(f"dep: {dep}", Text(metadata.version(dep), style="green"))
-            except Exception:
-                table.add_row(f"dep: {dep}", Text("MISSING", style="bold red"))
-
-        state_dir = self._state_display()
-        db_path = state_dir / "ledger.db"
-        table.add_row("state dir", str(state_dir))
-        if db_path.exists():
-            size_kb = db_path.stat().st_size / 1024
-            table.add_row("ledger db", f"{db_path}  ({size_kb:.1f} KB)")
-        else:
-            table.add_row("ledger db", Text("not created yet (runs will create it)", style="dim"))
-
-        try:
-            report = self._ledger.verify_chain()
-            if report.ok:
-                table.add_row(
-                    "ledger chain", Text(f"OK — {report.checked} events verified", style="green")
-                )
-            else:
-                where = f" at seq {report.broken_at_seq}" if report.broken_at_seq is not None else ""
-                table.add_row("ledger chain", Text(f"BROKEN{where}", style="bold red"))
-        except Exception as error:
-            table.add_row("ledger chain", Text(f"unavailable ({error})", style="red"))
-
-        for name, module in (
-            ("deterministic", "hunter.engine.deterministic"),
-            ("mock", "hunter.engine.mock"),
-        ):
-            style = "green" if _module_available(module) else "bold red"
-            state = "available" if _module_available(module) else "unavailable"
-            table.add_row(f"engine: {name}", Text(state, style=style))
-        if _module_available("litellm"):
-            table.add_row("engine: llm", Text("available (litellm installed)", style="green"))
-        else:
-            table.add_row(
-                "engine: llm",
-                Text("needs litellm — pip install 'hunteros-harness[llm]'", style="dim"),
-            )
-
-        workflow_ok = _module_available("hunter.workflow.pipeline") and _module_available(
-            "hunter.workflow.bench"
-        )
-        if workflow_ok:
-            table.add_row("workflow", Text("available (pipeline + bench)", style="green"))
-        else:
-            table.add_row("workflow", Text("not landed yet (v0.2)", style="dim"))
-
+        checks = collect_checks(self._state_display())
+        for check in checks:
+            style = {"ok": "green", "fail": "bold red", "note": "yellow"}.get(check.status, "")
+            table.add_row(check.label, Text(check.detail, style=style))
+        # Keep two stable legacy labels in the shared report for scripts and
+        # older operators while doctor_core remains the single source.
+        if not any(check.label == "state dir" for check in checks):
+            table.add_row("state dir", str(self._state_display()))
+        table.add_row("version", __version__)
+        table.add_row("engine: deterministic", "available")
+        table.add_row("engine: mock", "available")
         return table
 
 

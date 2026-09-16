@@ -55,6 +55,7 @@ def collect_checks(
     checks.extend(_llm_checks())
     checks.extend(_provider_checks(live=live))
     checks.append(_chat_db_check())
+    checks.extend(_home_checks(state))
     return checks
 
 
@@ -263,7 +264,9 @@ def _chat_db_path() -> Path:
     from_env = (os.environ.get("HUNTEROS_CHAT_DB") or "").strip()
     if from_env:
         return Path(from_env)
-    return Path.home() / ".hunteros" / "chat.db"
+    from hunter.home import hunter_home
+
+    return hunter_home() / "chat.db"
 
 
 def _chat_db_check() -> Check:
@@ -282,3 +285,68 @@ def _chat_db_check() -> Check:
     if result != "ok":
         return Check("chat-db", "fail", f"quick_check: {result} — the chat db is corrupt")
     return Check("chat-db", "ok", f"quick_check ok — {sessions} session(s)")
+
+
+# ------------------------------------------------------------------- home --
+# M11 (§5 item 10): the unified-home rows — resolved home, the copy-once
+# migration state, and a pointer at pre-existing project-local `./.hunter`
+# state (Q8: nothing silently abandoned). Notes never flip the exit code.
+
+
+def _migrated_item_count(notes: tuple[str, ...], home: Path | None = None) -> int:
+    """Count this home's copied entries, not stale notes from other tests/runs."""
+    candidates = (note for note in notes if not note.startswith("skipped: "))
+    if home is None:
+        return sum(1 for _ in candidates)
+    root = str(home.resolve())
+    return sum(1 for note in candidates if str(note).startswith(root))
+
+
+def _legacy_project_run_count(db_path: Path) -> int:
+    """How many runs the project-local ``./.hunter/ledger.db`` holds (0 when
+    unreadable — the row is advisory only)."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0])
+        finally:
+            conn.close()
+    except (sqlite3.DatabaseError, OSError, ValueError):
+        return 0
+
+
+def _home_checks(state: Path | None = None) -> list[Check]:
+    from hunter.home import hunter_home, legacy_home, migration_notes, state_dir
+
+    checks: list[Check] = []
+    home = hunter_home()
+    checks.append(Check("home", "ok", str(home)))
+
+    notes = migration_notes()
+    if notes:
+        checks.append(
+            Check("migration", "note", f"migrated {_migrated_item_count(notes, home)} item(s) this session")
+        )
+    elif legacy_home().exists():
+        checks.append(
+            Check("migration", "note", "legacy ~/.hunteros kept (plumbing + originals)")
+        )
+
+    legacy_state = Path.cwd() / ".hunter" / "ledger.db"
+    try:
+        differs = (
+            legacy_state.is_file()
+            and legacy_state.resolve() != state_dir(state).resolve() / "ledger.db"
+        )
+    except OSError:  # pragma: no cover — resolve failures are advisory only
+        differs = legacy_state.is_file()
+    if differs:
+        runs = _legacy_project_run_count(legacy_state)
+        checks.append(
+            Check(
+                "legacy-state",
+                "note",
+                f"project state ./.hunter holds {runs} run(s) — view with --state ./.hunter",
+            )
+        )
+    return checks

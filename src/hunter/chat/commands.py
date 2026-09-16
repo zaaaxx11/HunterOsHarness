@@ -250,11 +250,12 @@ def _open_ledger(ctx: CommandContext) -> Ledger:
 
 
 def default_state_dir() -> Path:
-    """The Ledger default state-directory convention: ``$HUNTER_STATE_DIR``
-    or ``./.hunter`` — used when a surface never set ``options["state_dir"]``."""
-    import os
+    """The M11 state-directory convention: ``$HUNTER_STATE_DIR`` →
+    ``~/.hunter`` (cwd is never the default anymore). Used when a surface
+    never set ``options["state_dir"]``."""
+    from hunter.home import state_dir as resolve_state_dir
 
-    return Path(os.environ.get("HUNTER_STATE_DIR") or ".hunter")
+    return resolve_state_dir()
 
 
 def _approval_root(options: dict[str, Any]) -> Path:
@@ -954,10 +955,21 @@ def _exec_hunt(ctx: CommandContext) -> CommandReply:
         "/hunt <target> starts a one-shot hunt"
     )
     if not arg:
-        return CommandReply(status_text, data={"hunt_mode": status})
+        if ctx.options.get("ask_fn"):
+            ask = ctx.options["ask_fn"]
+            target = ask("Target URL:", "").strip()
+            if not target:
+                return CommandReply("⏸️ cancelled — nothing was started.", data={"hunt": {"action": "cancelled"}})
+            arg = target
+        else:
+            return CommandReply(status_text, data={"hunt_mode": status})
     lowered = arg.lower()
     if lowered == "on":
         ctx.options["hunt_mode"] = True
+        # An explicit /hunt on ON THIS SURFACE is the human consent that lets a
+        # headless surface execute hunt-intent text (options-carried mode still
+        # declines — see ChatEngine._handle_hunt_intent).
+        ctx.options["hunt_mode_explicit"] = True
         return CommandReply(
             "hunt mode: on (this session, process-local) — hunt-intent text starts "
             "audits without asking again",
@@ -965,13 +977,23 @@ def _exec_hunt(ctx: CommandContext) -> CommandReply:
         )
     if lowered == "off":
         ctx.options["hunt_mode"] = False
+        # The off copy promises "hunt-intent text asks for permission again" —
+        # arm the ONE-SHOT confirm for the next hunt-intent line (Q3 keeps
+        # plain free text prompt-free; this is the explicit opt-back-in).
+        ctx.options["hunt_rearm_prompt"] = True
         return CommandReply(
             "hunt mode: off — hunt-intent text asks for permission again",
             data={"hunt_mode": False},
         )
-    # New queue grammar is selected only by --time/--budget. Parse options in
-    # any position, validate all targets before touching the queue.
+    # Interactive chat surfaces mirror `hunt start`: target then time, with no
+    # confirmation. Explicit targets ask only the time; headless surfaces keep
+    # the old status/usage behavior.
     candidate = _tokenize(arg)
+    if ctx.options.get("ask_fn") and candidate and not any(
+        token == "--time" or token.startswith("--time=") for token in candidate
+    ):
+        answer = ctx.options["ask_fn"]("Time — how long may the hunt run? [2h]:", "2h").strip() or "2h"
+        candidate.extend(["--time", answer])
     if "--time" in candidate or "--budget" in candidate or any(
         token.startswith("--time=") or token.startswith("--budget=") for token in candidate
     ):

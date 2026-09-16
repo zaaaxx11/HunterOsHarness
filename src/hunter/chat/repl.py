@@ -42,6 +42,7 @@ from hunter.chat.compression import COMPACT_MARKER, compact_history, should_comp
 from hunter.chat.intent import HuntIntent, IntentRouter
 from hunter.chat.sessions import ChatStore
 from hunter.errors import HunterError
+from hunter.hospitality import no_provider_message, short_no_provider_line
 from hunter.llm.base import StreamCb, TurnResult
 from hunter.llm.config import default_model, load_config
 from hunter.palette import PALETTE
@@ -50,10 +51,39 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from hunter.llm.base import ChatProvider
     from hunter.llm.config import HunterConfig
 
-__all__ = ["ChatEngine", "TurnOutput", "banner", "run_repl"]
+__all__ = ["ChatEngine", "TurnOutput", "banner", "resolve_session_request", "run_repl"]
 
 PROMPT = "[bold cyan]hunter>[/bold cyan] "
 _SESSION_TITLE_MAX = 60
+
+# Q3: the free-text hunt hint — appended to a NORMAL conversational reply when
+# the text looked like a hunt. Free text never starts an audit and never
+# declines headlessly; only /audit, /hunt <target>, and explicit hunt_mode do.
+HUNT_HINT_TEMPLATE = (
+    "\n\n💡 to hunt this target explicitly: /audit {target} --scope <manifest>"
+    " — or from the shell: hunter hunt {target}"
+)
+
+
+def resolve_session_request(
+    store: ChatStore,
+    resume: str | None,
+    cont: bool = False,
+    session: str | None = None,
+) -> str | None:
+    """Resolve the CLI session flags to a session id (or None for a fresh one).
+
+    ``resume == "last"`` and ``--continue`` pick the most recently active
+    session; an explicit id is returned only when it exists (the CLI validates
+    BEFORE constructing the engine and reports unknown ids — the engine's own
+    lenient fallback stays for library/gateway callers)."""
+    requested = resume or session
+    if cont or (requested or "").strip().lower() == "last":
+        sessions = store.list_sessions()  # most recently active first
+        return str(sessions[0]["session_id"]) if sessions else None
+    if requested:
+        return requested.strip() if store.get_session(requested.strip()) is not None else None
+    return None
 
 
 def _open_phase_machine(ledger: Any, run_id: str) -> Any:
@@ -136,10 +166,17 @@ class ChatEngine:
                     self._provider_error = exc
             if self.config is not None:
                 try:
+                    from hunter.llm.config import resolve_model
                     from hunter.llm.router import provider_from_config
 
+                    # A syntactically valid config without a resolved model is
+                    # still not a usable chat brain. Treat it as provider-missing
+                    # so the operator gets the setup panel instead of a raw
+                    # per-request router error.
+                    resolve_model("orchestrator", self.config)
                     self.provider = provider_from_config(self.config)
                 except HunterError as exc:
+                    self.provider = None
                     self._provider_error = exc
         if session_id is not None and self.store.get_session(session_id) is None:
             session_id = None  # unknown id — fall through to a fresh session
@@ -154,6 +191,10 @@ class ChatEngine:
         self._ledger_factory = ledger_factory
         self._audit: Any | None = None
         self._stream_buffer: list[str] = []
+        # M11: the no-provider setup panel shows ONCE per engine; later
+        # provider-missing turns get the short line (kills the per-line spam
+        # on the REPL and gateway surfaces alike).
+        self._panel_shown = False
 
     # -- public API ------------------------------------------------------------
 
@@ -229,6 +270,7 @@ class ChatEngine:
             if self._audit is not None:
                 run_id = self._audit["run_id"]
                 reply.data["audit_start_run_id"] = run_id
+                report: Path | None = None
                 if reply.data.get("audit_auto"):
                     from hunter.agent.prompts import build_goal
                     from hunter.engine.base import TargetSpec
@@ -255,6 +297,16 @@ class ChatEngine:
                     )
                     reply.text = "\n\n".join(parts)
                     reply.data["report_path"] = str(report) if report else None
+                # Preserve the pre-M11 audit payload for library callers while
+                # retaining the explicit lifecycle fields above.  Older chat
+                # integrations use this compact alias to discover the run and
+                # report without knowing about ``audit_start_run_id``.
+                reply.data["hunt"] = {
+                    "target": spec.get("target", ""),
+                    "action": "closed" if report is not None or self._audit is None else "started",
+                    "run_id": run_id,
+                    "report_path": str(report) if report else None,
+                }
             else:
                 # Never leave the user with a false "audit armed" reply.
                 reply.text = self._no_provider_text()
@@ -317,12 +369,27 @@ class ChatEngine:
         if self._audit is not None:
             return TurnOutput(self._audit_turn(text, stream_cb=stream_cb), kind="message")
         intent = self._intent.classify(text)
+        hint = ""
         if intent.is_hunt:
-            handled = self._handle_hunt_intent(intent, text, stream_cb=stream_cb)
-            if handled is not None:
-                return handled
+            mode = bool(self.options.get("hunt_mode"))
+            rearm = bool(self.options.get("hunt_rearm_prompt"))
+            if intent.kind == "path" or mode or rearm:
+                if rearm and not mode:
+                    # /hunt off promises "hunt-intent text asks for permission
+                    # again" — a ONE-SHOT prompt for the next hunt-intent line.
+                    self.options.pop("hunt_rearm_prompt", None)
+                # Path guidance answers both routes; only an EXPLICIT hunt mode
+                # (or the /hunt-off re-arm promise) intercepts free text (Q3) —
+                # plain hunt-intent text falls through to the normal turn.
+                handled = self._handle_hunt_intent(intent, text, stream_cb=stream_cb)
+                if handled is not None:
+                    return handled
+                if intent.target:
+                    hint = HUNT_HINT_TEMPLATE.format(target=intent.target)
+            elif intent.target:
+                hint = HUNT_HINT_TEMPLATE.format(target=intent.target)
         if self.provider is None:
-            return TurnOutput(self._no_provider_text(), kind="error")
+            return self._no_provider_turn(hint=hint)
         self.store.append_message(self.session_id, "user", text)
         history = self._build_history()
         self._stream_buffer = []
@@ -333,7 +400,10 @@ class ChatEngine:
             return TurnOutput(exc.user_message(), kind="error")
         except KeyboardInterrupt:
             return self._interrupted_output()
-        return self._persist_assistant_turn(turn)
+        out = self._persist_assistant_turn(turn)
+        if hint and out.kind == "message":
+            out.text = f"{out.text}{hint}"
+        return out
 
     def _handle_hunt_intent(
         self, intent: HuntIntent, text: str, *, stream_cb: StreamCb | None
@@ -353,44 +423,19 @@ class ChatEngine:
                 },
             )
         if self.provider is None:
-            return TurnOutput(
-                self._no_provider_text(),
-                kind="error",
+            return self._no_provider_turn(
                 data={
                     "hunt": {
                         "target": target,
-                        "action": "headless_declined",
+                        "action": "provider_missing",
                         "run_id": None,
                         "report_path": None,
                     }
-                },
+                }
             )
 
-        mode = bool(self.options.get("hunt_mode"))
-        if not mode:
-            if self.confirm_fn is None:
-                return TurnOutput(
-                    self._headless_decline_text(target),
-                    data={
-                        "hunt": {
-                            "target": target,
-                            "action": "headless_declined",
-                            "run_id": None,
-                            "report_path": None,
-                        }
-                    },
-                )
-            try:
-                confirmed = bool(
-                    self.confirm_fn(
-                        f"start a governed hunt against {target}? [y/N] "
-                    )
-                )
-            except Exception:  # noqa: BLE001 — confirmation is fail-closed
-                confirmed = False
-            if not confirmed:
-                return None
-
+        # The scope gate comes FIRST: no posture (explicit mode included) can
+        # bypass it, and a refusal must happen before any arm/headless check.
         try:
             scope = scope_for_target(target, None)
         except HunterError as exc:
@@ -405,6 +450,29 @@ class ChatEngine:
                     }
                 },
             )
+
+        mode = bool(self.options.get("hunt_mode"))
+        if not mode:
+            # Q3: free text never arms an audit — this branch is unreachable
+            # from handle_text and stays fail-closed for direct callers.
+            if self.confirm_fn is None:
+                return self._headless_decline(target)
+            try:
+                confirmed = bool(
+                    self.confirm_fn(
+                        f"start a governed hunt against {target}? [y/N] "
+                    )
+                )
+            except Exception:  # noqa: BLE001 — confirmation is fail-closed
+                confirmed = False
+            if not confirmed:
+                return None
+        elif self.confirm_fn is None and not self.options.get("hunt_mode_explicit"):
+            # Hunt mode CARRIED IN OPTIONS (a constructed/gateway surface with
+            # no human behind it) still declines: an armed hunt needs a human
+            # somewhere. Mode armed by an explicit /hunt on ON THIS SURFACE is
+            # that human consent and proceeds headlessly.
+            return self._headless_decline(target)
         spec = {
             "target": target,
             "engine_name": "agent-chat",
@@ -412,18 +480,7 @@ class ChatEngine:
         }
         opening = self._audit_open(spec, marker=f"/audit {target}", goal_text=text)
         if self._audit is None:
-            return TurnOutput(
-                self._no_provider_text(),
-                kind="error",
-                data={
-                    "hunt": {
-                        "target": target,
-                        "action": "headless_declined",
-                        "run_id": None,
-                        "report_path": None,
-                    }
-                },
-            )
+            return self._headless_decline(target)
         run_id = self._audit["run_id"]
         out_text, result = self._audit_turn_result(text, stream_cb=stream_cb)
         action = "closed" if result.finished else "started"
@@ -448,6 +505,21 @@ class ChatEngine:
                     "action": action,
                     "run_id": run_id,
                     "report_path": str(report_path) if report_path else None,
+                }
+            },
+        )
+
+    def _headless_decline(self, target: str) -> TurnOutput:
+        """The headless decline — explicit-mode surfaces only (Q3): free text
+        is NEVER declined; an armed hunt on a surface without a human is."""
+        return TurnOutput(
+            self._headless_decline_text(target),
+            data={
+                "hunt": {
+                    "target": target,
+                    "action": "headless_declined",
+                    "run_id": None,
+                    "report_path": None,
                 }
             },
         )
@@ -504,16 +576,22 @@ class ChatEngine:
         return TurnOutput("[interrupted]", kind="interrupted")
 
     def _no_provider_text(self) -> str:
-        if self._provider_error is not None:
-            return (
-                f"{self._provider_error.user_message()}\n"
-                "(slash commands still work; only model replies are unavailable)"
-            )
-        return (
-            "[ERROR config] no provider configured\n"
-            "Hint: set HUNTEROS_MODEL or create ~/.hunteros/config.yaml "
-            "(`hunter config example` shows a full file)."
-        )
+        """The ONE setup panel on the first provider-missing turn, the short
+        line afterwards (M11 — kills the per-line no-provider spam)."""
+        if self._panel_shown:
+            return short_no_provider_line()
+        self._panel_shown = True
+        return no_provider_message(self._provider_error)
+
+    def _no_provider_turn(
+        self, hint: str = "", data: dict[str, Any] | None = None
+    ) -> TurnOutput:
+        """A provider-missing turn: panel-once/short-after text plus the
+        optional hunt hint, flagged so surfaces can map it to exit 8 (Q14)."""
+        payload = {"no_provider": True}
+        if data:
+            payload.update(data)
+        return TurnOutput(f"{self._no_provider_text()}{hint}", kind="error", data=payload)
 
     def _autotitle(self, first_line: str) -> None:
         session = self.store.get_session(self.session_id)

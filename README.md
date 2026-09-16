@@ -11,7 +11,7 @@ cannot replay is a vulnerability you cannot bill, defend, or trust:
 
 ## User skills and curator
 
-Local methodology cards live under `~/.hunteros/skills/<name>/SKILL.md`. The merged bundled/user corpus shows `[bundled]`, `[user]`, and `[quarantined]` source markers; relevance matching selects at most five skills. `hunter skills` lists the merged corpus, while `hunter skills --view NAME` shows one card. The `/skills` and `hunter skills` surfaces mark each effective card with its source; `/curate` and `hunter curate` preview retro-derived cards before an explicit y/N save. Duplicate drafts are skipped, flagged drafts are saved with quarantined semantics, and quarantined cards remain inert until manually reviewed and are never mounted into a prompt.
+Local methodology cards live under `~/.hunter/skills/<name>/SKILL.md`. The merged bundled/user corpus shows `[bundled]`, `[user]`, and `[quarantined]` source markers; relevance matching selects at most five skills. `hunter skills` lists the merged corpus, while `hunter skills --view NAME` shows one card. The `/skills` and `hunter skills` surfaces mark each effective card with its source; `/curate` and `hunter curate` preview retro-derived cards before an explicit y/N save. Duplicate drafts are skipped, flagged drafts are saved with quarantined semantics, and quarantined cards remain inert until manually reviewed and are never mounted into a prompt.
 
 ## Why it matters
 
@@ -36,7 +36,7 @@ the chat.
   OpenAI-compatible endpoint, with model-tier routing
   (orchestrator/hunter/verifier/utility), a budget governor with staged spend
   warnings, and a cross-provider fallback chain. The configured provider is
-  loaded consistently from `$HUNTEROS_CONFIG` or `~/.hunteros/config.yaml` for
+  loaded consistently from `$HUNTEROS_CONFIG` or `~/.hunter/config.yaml` for
   chat, `hunter hunt`, and the LLM engine; an implicit hunt falls back to
   deterministic when no config exists, while explicit `--engine llm` records a
   governed failed run instead of silently switching providers.
@@ -85,10 +85,12 @@ curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/insta
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 | iex"
 ```
 
-The installer registers `hunter` and `hunt` shims in `~/.hunteros/bin` and
-starts the onboarding wizard on an interactive first run. Run `hunter` for the
-welcome panel, or run `hunter init` explicitly at any time. The wizard writes
-`~/.hunteros/config.yaml`; a pasted key is stored in `~/.hunteros/keys.env`,
+The installer registers `hunter` and `hunt` shims (installer venv plumbing) in
+`~/.hunteros/bin` (installer venv shims) and starts the onboarding wizard on an
+interactive first run.
+Run `hunter` for the welcome panel, or run `hunter init` explicitly at any
+time. The wizard writes `~/.hunter/config.yaml`; a pasted key is stored in
+`~/.hunter/keys.env`,
 never echoed and never written to YAML. Auto mode assigns one model to the
 `orchestrator`, `hunter`, `verifier`, and `utility` roles; Advanced mode lets
 you choose each role. A key is optional for `hunter demo`, deterministic scans,
@@ -254,7 +256,7 @@ Ruff gates; see [CHANGELOG.md](CHANGELOG.md).
   loadable without the extra; browser actions require an explicitly authorized
   governed hunt, are scope-gated, normal chat is browser-free, and HunterOs
   never installs Chromium automatically.
-- Skills live at `~/.hunteros/skills/<name>/SKILL.md`; the merged corpus uses
+- Skills live at `~/.hunter/skills/<name>/SKILL.md`; the merged corpus uses
   `[bundled]`, `[user]`, and `[quarantined]` markers, matches at most five, and
   `/curate`/`hunter curate` require preview plus explicit confirmation to save.
   Quarantined cards are inert until review.

@@ -23,7 +23,7 @@ WELCOME_NEXT_STEPS = (
     "hunter demo    — first blood on a local practice target, no keys needed",
     "hunter doctor  — verify the environment end to end",
 )
-WELCOME_FOOTER = "help: hunter --help · scan only what you own"
+WELCOME_FOOTER = "home: ~/.hunter · config: hunter config show · doctor: hunter doctor"
 
 
 def welcome_lines(version: str) -> list[str]:

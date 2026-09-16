@@ -58,8 +58,11 @@ class Corpus:
 
 
 def user_skills_dir(home: Path | None = None) -> Path:
-    """Return the user skill root without creating it."""
-    return (Path.home() if home is None else Path(home)) / ".hunteros" / "skills"
+    """Return the user skill root without creating it (M11: ``~/.hunter/skills``)."""
+    from hunter.home import hunter_home
+
+    base = hunter_home(home=home)
+    return base / "skills"
 
 
 def _frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:

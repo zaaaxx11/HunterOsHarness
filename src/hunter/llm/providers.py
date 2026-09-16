@@ -6,14 +6,27 @@ a cheap sibling for the verifier tier. Anything NOT in this table is still
 fully supported — ``hunter config provider add <name> --base-url ...`` accepts
 any OpenAI-compatible endpoint, and LiteLLM dials hundreds more by model
 prefix.
+
+M11 adds the Hermes per-host key-variable helpers (:func:`key_env_for_endpoint`
+derives the keys.env name from the endpoint host, :func:`is_local_endpoint`
+drives the local-server auto-probe messaging) — pure functions, no I/O.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
-__all__ = ["CUSTOM_NAME", "PROVIDER_NAME_RE", "KnownProvider", "known_provider", "known_provider_names"]
+__all__ = [
+    "CUSTOM_NAME",
+    "PROVIDER_NAME_RE",
+    "KnownProvider",
+    "is_local_endpoint",
+    "key_env_for_endpoint",
+    "known_provider",
+    "known_provider_names",
+]
 
 CUSTOM_NAME = "custom"
 
@@ -85,3 +98,73 @@ def known_provider(name: str) -> KnownProvider | None:
 def known_provider_names() -> tuple[str, ...]:
     """Pick-list order: the table order, then ``custom`` last."""
     return (*_KNOWN_PROVIDERS.keys(), CUSTOM_NAME)
+
+
+# ------------------------------------------------------------- M11 helpers --
+
+
+_LOCAL_HOSTS = frozenset(
+    {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
+)
+
+
+def is_local_endpoint(base_url: str) -> bool:
+    """True for loopback/private-URL hosts (drives the local-server
+    auto-probe messaging — "is the server running?")."""
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except ValueError:
+        return False
+    if host in _LOCAL_HOSTS:
+        return True
+    # RFC1918 / link-local private ranges (the common LAN inference box).
+    parts = host.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        octets = [int(p) for p in parts]
+        if octets[0] in (10, 127) or (octets[0] == 192 and octets[1] == 168) or (
+            octets[0] == 172 and 16 <= octets[1] <= 31
+        ):
+            return True
+    return host.endswith(".local")
+
+
+def key_env_for_endpoint(base_url: str) -> str:
+    """Per-host(+port) keys.env variable name (the Hermes pattern).
+
+    host: dots/dashes → '_', upper; explicit non-default port appended;
+    a leading digit is prefixed ``K_`` —
+    https://api.atria-asi.ai/v1 → ``ATRIA_ASI_AI_API_KEY``;
+    http://127.0.0.1:8080/v1 → ``K_127_0_0_1_8080_API_KEY``;
+    https://api.example.com:443/v1 → ``API_EXAMPLE_COM_API_KEY`` (the default
+    port is dropped); http://api.example.com:8123/v1 →
+    ``API_EXAMPLE_COM_8123_API_KEY``."""
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        return "CUSTOM_API_KEY"
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return "CUSTOM_API_KEY"
+    labels = host.split(".")
+    # A leading "api." service label is dropped when the organization label
+    # is hyphenated (multi-word brands read better as one slug:
+    # api.atria-asi.ai → ATRIA_ASI_AI_API_KEY); single-word orgs keep it
+    # (api.example.com → API_EXAMPLE_COM_API_KEY).
+    if (
+        len(labels) > 2
+        and labels[0] == "api"
+        and any("-" in label for label in labels[1:-1])
+    ):
+        labels = labels[1:]
+        host = ".".join(labels)
+    port = parsed.port  # None when absent
+    scheme = (parsed.scheme or "").lower()
+    default_ports = {"https": 443, "http": 80}
+    if port is not None and default_ports.get(scheme) != port:
+        host = f"{host}_{port}"
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", host).strip("_").upper()
+    if not slug:
+        return "CUSTOM_API_KEY"
+    if slug[0].isdigit():
+        slug = f"K_{slug}"
+    return f"{slug}_API_KEY"

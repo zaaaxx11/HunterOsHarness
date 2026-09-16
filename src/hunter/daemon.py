@@ -41,11 +41,15 @@ from hunter.tools.scope import ScopeSet
 __all__ = [
     "DAEMON_STALE_SECONDS",
     "HEARTBEAT_INTERVAL_SECONDS",
+    "_consume_restart_marker",
+    "_should_claim",
     "claim_task",
     "daemon_dir",
     "daemon_main",
     "daemon_running",
     "daemon_status",
+    "drain_daemon",
+    "drain_flag_path",
     "enqueue_hunt",
     "enqueue_hunts",
     "enqueue_task",
@@ -53,11 +57,13 @@ __all__ = [
     "hunt_worker",
     "is_stale",
     "log_path",
+    "pause_flag_path",
     "pid_alive",
     "pid_path",
     "process_signature",
     "queue_dir",
     "read_pid",
+    "restart_marker_path",
     "spawn_detached",
     "start_daemon",
     "stop_daemon",
@@ -92,6 +98,25 @@ def queue_dir(state_dir: str | Path) -> Path:
 
 def stop_flag_path(state_dir: str | Path) -> Path:
     return daemon_dir(state_dir) / "stop.flag"
+
+
+def drain_flag_path(state_dir: str | Path) -> Path:
+    """The drain sentinel (M11): while it exists the daemon claims NO new
+    tasks and exits AFTER the in-flight task completes — a drain-first
+    restart never cuts live work short."""
+    return daemon_dir(state_dir) / "drain.flag"
+
+
+def pause_flag_path(state_dir: str | Path) -> Path:
+    """The pause ESTOP sentinel (M11): claims hold while it exists; in-flight
+    runs ALWAYS complete (pause never touches stop.flag or RunBudget)."""
+    return daemon_dir(state_dir) / "pause.flag"
+
+
+def restart_marker_path(state_dir: str | Path) -> Path:
+    """Written by a drain-first restart; consumed on the next boot (one log
+    line), so transports can suppress stale deliveries by its existence."""
+    return daemon_dir(state_dir) / "restart.json"
 
 
 def log_path(state_dir: str | Path) -> Path:
@@ -571,6 +596,63 @@ def stop_daemon(state_dir: str | Path, *, timeout: float = 15.0, force: bool = F
     return 1
 
 
+def drain_daemon(state_dir: str | Path, *, timeout: float = 60.0) -> int:
+    """Drain-first shutdown (M11): write ``drain.flag`` (the daemon stops
+    claiming and exits AFTER its in-flight task completes) and wait up to
+    ``timeout`` seconds for the daemon process to exit. Returns 0 when the
+    process exited, 1 on timeout (the caller decides escalation). The flag
+    stays written — a still-alive daemon keeps honoring it."""
+    state = Path(state_dir)
+    flag = drain_flag_path(state)
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("", encoding="utf-8")
+    record = read_pid(state)
+    try:
+        pid = int((record or {}).get("pid", 0) or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return 0
+        time.sleep(0.05)
+    return 1
+
+
+def _should_claim(state_dir: str | Path) -> bool:
+    """The claim gate (M11): new tasks are claimed while NEITHER the drain
+    sentinel NOR the pause ESTOP exists. In-flight (claimed) work always
+    finishes — these flags gate CLAIMS only, never running tasks."""
+    folder = daemon_dir(state_dir)
+    if (folder / "drain.flag").exists():
+        return False
+    return not (folder / "pause.flag").exists()
+
+
+def _consume_restart_marker(state_dir: str | Path, log_file: str | Path) -> None:
+    """Consume ``restart.json`` on boot: one ``daemon.log`` line records the
+    drained predecessor and the downtime, then the marker is deleted (its
+    existence is what lets transports suppress stale deliveries). A malformed
+    marker is deleted silently — a boot never crashes on it."""
+    marker = restart_marker_path(state_dir)
+    if not marker.is_file():
+        return
+    data = _read_json(marker)
+    with contextlib.suppress(OSError):
+        marker.unlink(missing_ok=True)
+    if data is None:
+        return
+    try:
+        pid = int(data.get("pid", 0) or 0)
+        ts = float(data.get("ts", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return
+    downtime = max(0.0, time.time() - ts)
+    line = f"restart: previous process (pid {pid}) drained; downtime {downtime:.0f}s"
+    with contextlib.suppress(OSError), open(log_file, "a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
 def _last_run_summary(state: Path) -> dict[str, Any] | None:
     """The newest ledger run as ``{"run_id","status","findings"}`` — read-only
     and never raising (reporting is best-effort)."""
@@ -623,16 +705,21 @@ def daemon_status(state_dir: str | Path) -> dict[str, Any]:
     transports: list[str] = []
     if isinstance(record, dict) and isinstance(record.get("transports"), list):
         transports = [str(name) for name in record["transports"]]
+    from hunter.llm.config import find_config_path
+
+    config_path = find_config_path()
     return {
         "running": running,
         "pid": (int(record["pid"]) if running and record is not None else None),
         "uptime_seconds": uptime,
         "heartbeat_age_seconds": heartbeat_age,
         "stale": stale,
+        "paused": pause_flag_path(state).exists(),
         "queue_pending": pending,
         "queue_claimed": claimed,
         "transports": transports,
         "last_run": _last_run_summary(state),
+        "config_path": str(config_path) if config_path is not None else "",
     }
 
 
@@ -649,6 +736,10 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
     unclaimed in the queue."""
     state = Path(state_dir)
     while True:
+        if not _should_claim(state):
+            # Draining or paused: claim NOTHING new (in-flight claimed tasks
+            # always finish — the stop.flag/RunBudget path is untouched).
+            return
         task = await asyncio.to_thread(claim_task, state)
         if task is None:
             return  # queue drained — daemon_main re-arms after poll_seconds
@@ -728,18 +819,25 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
             "transports": [getattr(t, "name", "?") for t in transports],
         },
     )
+    # M11: a drain-first restart left a marker — record the downtime and
+    # consume it so transports can stop suppressing stale deliveries.
+    _consume_restart_marker(state_dir, log_path(state_dir))
     stop_path = stop_flag_path(state_dir)
+    drain_path = drain_flag_path(state_dir)
+    pause_path = pause_flag_path(state_dir)
     heartbeat: dict[str, Any] = {
         "pid": os.getpid(),
         "ts": time.time(),
         "queue_pending": 0,
         "active_task": None,
         "last_run_id": None,
+        "paused": pause_path.exists(),
     }
 
     async def heartbeat_loop() -> None:
         while True:
             heartbeat["ts"] = time.time()
+            heartbeat["paused"] = pause_path.exists()
             folder = queue_dir(state_dir)
             heartbeat["queue_pending"] = len(list(folder.glob("task-*.json")))
             with contextlib.suppress(OSError):
@@ -762,7 +860,9 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
     worker_task = asyncio.create_task(worker_loop())
     heartbeat_task = asyncio.create_task(heartbeat_loop())
     try:
-        while not stop_path.is_file():
+        while not stop_path.is_file() and not (
+            drain_path.is_file() and not heartbeat.get("active_task")
+        ):
             await asyncio.sleep(min(1.0, max(0.05, poll_seconds)))
     finally:
         # Clean shutdown: disconnect transports, let the open run finish.
@@ -777,6 +877,8 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
             pid_path(state_dir).unlink(missing_ok=True)
         with contextlib.suppress(OSError):
             stop_path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            drain_path.unlink(missing_ok=True)  # a drained boot leaves no sentinel
     return 0
 
 

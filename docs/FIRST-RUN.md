@@ -2,7 +2,7 @@
 
 ## User skills and curator
 
-User-authored cards live at `~/.hunteros/skills/<name>/SKILL.md` and listings show their `[source]`. Run `/curate` for an always-on preview and y/N confirmation before saving. A flagged card carries `[quarantined]` semantics and is inert until manually reviewed.
+User-authored cards live at `~/.hunter/skills/<name>/SKILL.md` and listings show their `[source]`. Run `/curate` for an always-on preview and y/N confirmation before saving. A flagged card carries `[quarantined]` semantics and is inert until manually reviewed.
 
 Everything below is **actual rendered output** (captured from real runs in
 throwaway state directories; the one fake is the API key, which is never
@@ -20,7 +20,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 ```
 
 The installer prints its ASCII banner, registers `hunter` + `hunt` shims in
-`~/.hunteros/bin`, appends a tagged PATH block to your shell rc (idempotent —
+`~/.hunteros/bin` (installer venv plumbing), appends a tagged PATH block to your shell rc (idempotent —
 re-running never duplicates it), and on an interactive terminal launches the
 onboarding wizard. Real transcript (macOS/Linux, trimmed):
 
@@ -36,7 +36,7 @@ onboarding wizard. Real transcript (macOS/Linux, trimmed):
 ==> Upgrading pip (quiet)
 ==> Installing hunteros-harness from PyPI
 hunteros-harness 0.4.0 installed
-    shims written to /home/you/.hunteros/bin (hunter, hunt)
+    shims (installer venv plumbing) written to /home/you/.hunteros/bin (hunter, hunt)
     PATH registered in /home/you/.bashrc — open a NEW shell or: source /home/you/.bashrc
 ==> Launching the onboarding wizard
     ... (the `hunter init` wizard from section 4 runs here)
@@ -101,7 +101,7 @@ HunterOs Harness doctor — hunter 0.4.0
   OK  llm-tier basic — pin a brain with agent.tier or $HUNTEROS_TIER (basic,
 advanced, orchestrator, hunter, verifier, utility)
   OK  llm-model unset — set HUNTEROS_MODEL or model_tiers.orchestrator.model in
-~/.hunteros/config.yaml
+~/.hunter/config.yaml
   OK  llm-keys no providers configured
   OK  llm-litellm 1.100.1
   OK  chat-db quick_check ok — 68 session(s)
@@ -121,8 +121,8 @@ crashes; an empty reply always takes the default). Real transcript, trimmed
 ```
 $ hunter init
 hunter init — onboarding wizard
-config target: C:\Users\you\.hunteros\config.yaml
-About 60 seconds. Writes C:\Users\you\.hunteros\config.yaml (+ keys.env only if you paste a key).
+config target: C:\Users\you\.hunter\config.yaml
+About 60 seconds. Writes C:\Users\you\.hunter\config.yaml (+ keys.env only if you paste a key).
 Your key is sent nowhere except the provider you pick.
 How should models be assigned?
   1. Auto — one model for every role (fastest setup)
@@ -143,7 +143,7 @@ providers:
 provider [1]: 5
 step 2/7 provider: groq
 key source for groq:
-  1. Paste the key now — stored in C:\Users\you\.hunteros\keys.env, never echoed, never in the config
+  1. Paste the key now — stored in C:\Users\you\.hunter\keys.env, never echoed, never in the config
   2. Set the env var GROQ_API_KEY yourself (recommended for shared machines)
 key [1]: 1
 paste the GROQ_API_KEY key (input hidden): ********
@@ -153,13 +153,13 @@ step 5/7 browser: off
 step 6/7 tools:
   OK  python 3.13.7 on Windows
   OK  state-dir C:\Users\you\project\.hunter\ledger.db — 0 run(s)
-wrote C:\Users\you\.hunteros\keys.env
-wrote C:\Users\you\.hunteros\config.yaml
+wrote C:\Users\you\.hunter\keys.env
+wrote C:\Users\you\.hunter\config.yaml
 step 7/7 smoke test: dialing groq/llama-3.3-70b-versatile with a 1-token ping...
   smoke test: OK (742 ms)
 ╭────────────────────────────────────────── done ──────────────────────────────────────────╮
-│ config:  C:\Users\you\.hunteros\config.yaml                                              │
-│ keys:    C:\Users\you\.hunteros\keys.env (GROQ_API_KEY)                                  │
+│ config:  C:\Users\you\.hunter\config.yaml                                              │
+│ keys:    C:\Users\you\.hunter\keys.env (GROQ_API_KEY)                                  │
 │ brain:   groq / llama-3.3-70b-versatile                                                  │
 │ tier:    basic                                                                           │
 │ browser: off                                                                             │
@@ -171,7 +171,7 @@ step 7/7 smoke test: dialing groq/llama-3.3-70b-versatile with a 1-token ping...
 Scan only systems you own or are explicitly authorized to test.
 ```
 
-What happened: the pasted key went to `~/.hunteros/keys.env` (0600 POSIX,
+What happened: the pasted key went to `~/.hunter/keys.env` (0600 POSIX,
 loaded at CLI startup — real env vars win), and the config carries only the
 env-var NAME. Browser automation is optional, hunt-only, and scope-gated. If
 `agent.browser` is enabled, it remains usable without the `[browser]` extra;
@@ -295,7 +295,7 @@ scope.json with an authorized scope manifest (e.g. {"name": "client-x",
 
 ```
 $ hunter config show
-[ERROR config] config file C:\Users\you\.hunteros\config.yaml is not valid YAML:
+[ERROR config] config file C:\Users\you\.hunter\config.yaml is not valid YAML:
 ParserError (line 5, column 1)
 Hint: fix the YAML syntax — indent with spaces, quote strings with special chars
 where: hunter/llm/config.py:242
@@ -351,11 +351,11 @@ use a temporary loopback mount that shuts down when the command ends.
 
 | What | Where |
 | ---- | ----- |
-| Config | `~/.hunteros/config.yaml` (or `$HUNTEROS_CONFIG`) — `hunter config example` |
-| Keys | `~/.hunteros/keys.env` (0600; env vars win) — written by the wizard when a key is pasted |
-| Shims | `~/.hunteros/bin/hunter` + `hunt` (Windows: `%USERPROFILE%\.hunteros\bin\*.cmd`) |
+| Config | `~/.hunter/config.yaml` (or `$HUNTEROS_CONFIG`) — `hunter config example` |
+| Keys | `~/.hunter/keys.env` (0600; env vars win) — written by the wizard when a key is pasted |
+| Shims | `~/.hunteros/bin/hunter` + `hunt` (Windows: `%USERPROFILE%\.hunteros\bin\*.cmd`) — installer venv plumbing |
 | State / ledger | `./.hunter/ledger.db` (or `$HUNTER_STATE_DIR`) |
-| Chat sessions | `~/.hunteros/chat.db` (or `$HUNTEROS_CHAT_DB`) — hash-chained, undo-safe |
+| Chat sessions | `~/.hunter/chat.db` (or `$HUNTEROS_CHAT_DB`) — hash-chained, undo-safe |
 | Update check | `~/.hunteros/update-check.json` (24h cache; `HUNTEROS_NO_UPDATE_CHECK=1` disables) |
 | Report | `hunter report` — markdown from ledger rows only |
 

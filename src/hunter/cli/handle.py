@@ -112,6 +112,12 @@ def handle_cli_error(exc: BaseException, *, verbose: bool = False) -> int:
     if isinstance(exc, HunterError):
         err.print(exc.user_message(), markup=False, highlight=False)
         err.print(f"where: {_hunter_location(exc)}", markup=False, highlight=False)
+        if not exc.hint:
+            from hunter.hospitality import exit_hint
+
+            hint = exit_hint(exc.exit_code, blocked=exc.blocked)
+            if hint:
+                err.print(hint, markup=False, highlight=False)
         return exc.exit_code
     if isinstance(exc, KeyboardInterrupt):
         err.print("[interrupted]", markup=False, highlight=False)

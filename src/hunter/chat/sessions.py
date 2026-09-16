@@ -121,7 +121,9 @@ class ChatStore:
         from_env = (os.environ.get("HUNTEROS_CHAT_DB") or "").strip()
         if from_env:
             return Path(from_env)
-        return Path.home() / ".hunteros" / "chat.db"
+        from hunter.home import hunter_home  # deferred: home.py is stdlib-only
+
+        return hunter_home() / "chat.db"
 
     @property
     def path(self) -> Path:

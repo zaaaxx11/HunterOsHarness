@@ -1,7 +1,7 @@
 """HunterConfig — plug ANY LLM into HunterOs with one YAML file or env var.
 
 Search order (first hit wins): explicit ``path`` arg → ``$HUNTEROS_CONFIG`` →
-``~/.hunteros/config.yaml`` → none (pure defaults). Environment overrides win
+``~/.hunter/config.yaml`` → none (pure defaults). Environment overrides win
 over YAML values: ``HUNTEROS_MODEL`` (default model), ``HUNTEROS_TIER``
 (``agent.tier``), ``HUNTEROS_BUDGET_USD``, ``HUNTEROS_MAX_ITERATIONS``.
 
@@ -50,14 +50,23 @@ _BUDGET_KEYS: tuple[str, ...] = (
     "wall_seconds",
     "min_wall_seconds",
 )
-_AGENT_KEYS: tuple[str, ...] = ("tier", "api_max_retries", "browser", "browser_cloak")
+_AGENT_KEYS: tuple[str, ...] = (
+    "tier",
+    "api_max_retries",
+    "browser",
+    "browser_cloak",
+    "scope_confirm",
+    "approved_scopes",
+)
+# M11: one approved-scope entry of the auto-authorization audit trail
+# (`hunt start` records the minimal scope it granted; capped at 50 entries).
+_APPROVED_SCOPE_KEYS: tuple[str, ...] = ("host", "name", "allow_subdomains", "ts", "source")
 _FALLBACK_KEYS: tuple[str, ...] = ("provider", "model", "base_url", "key_env")
 
 # M1: the endpoint SHAPE is stored ("" = unset) so M2 can branch to the
 # responses API without another migration. Nothing reads it in M1.
 _ENDPOINTS: tuple[str, ...] = ("", "chat", "responses")
 
-_CONFIG_DIRNAME = ".hunteros"
 _CONFIG_FILENAME = "config.yaml"
 
 # Suffix of every legacy-rename note (model_tiers keys, agent.tier, $HUNTEROS_TIER).
@@ -117,6 +126,20 @@ class BudgetConfig:
     min_wall_seconds: float = 0.0
 
 
+@dataclass(frozen=True)
+class ApprovedScope:
+    """One entry of the ``agent.approved_scopes`` audit trail (M11): the
+    minimal scope ``hunt start`` auto-authorized, recorded with its host, a
+    display name, the subdomain flag, the authorization timestamp, and the
+    surface that granted it (``source="hunt-start"``)."""
+
+    host: str
+    name: str = ""
+    allow_subdomains: bool = False
+    ts: float = 0.0
+    source: str = ""
+
+
 @dataclass
 class AgentConfig:
     """Agent-loop settings. ``tier`` selects the chat/scan model tier
@@ -124,12 +147,17 @@ class AgentConfig:
     failing over to the fallback chain. ``browser`` opts into web automation
     (the optional [browser] extra) — enabled only for an authorized hunt.
     ``browser_cloak`` (F5) masks webdriver fingerprints; the default keeps
-    the v0.4 behavior (cloak on) byte-identical."""
+    the v0.4 behavior (cloak on) byte-identical. ``scope_confirm`` restores
+    the refuse-without-``--yes`` behavior for non-localhost ``hunt start``;
+    ``approved_scopes`` is the recorded audit trail of auto-authorized
+    minimal scopes (M11, capped at the last 50 entries)."""
 
     tier: str = "basic"
     api_max_retries: int = 3
     browser: bool = False
     browser_cloak: bool = True
+    scope_confirm: bool = False
+    approved_scopes: list[ApprovedScope] = field(default_factory=list)
 
 
 @dataclass
@@ -280,15 +308,19 @@ def find_config_path(
     path: str | Path | None = None, *, env: Mapping[str, str] | None = None, home: Path | None = None
 ) -> Path | None:
     """Where load_config would read from: explicit path → $HUNTEROS_CONFIG →
-    ~/.hunteros/config.yaml → None (defaults). Explicit paths must exist; the
-    home default is returned even when the file does not exist yet."""
+    ~/.hunter/config.yaml → None (defaults). Explicit and env paths are
+    returned as-is (missing explicit files error at load time); the home
+    default is returned only when the file exists, else None (pure
+    defaults)."""
     env = os.environ if env is None else env
     if path is not None:
         return Path(path)
     from_env = (env.get("HUNTEROS_CONFIG") or "").strip()
     if from_env:
         return Path(from_env)
-    base = (home or Path.home()) / _CONFIG_DIRNAME / _CONFIG_FILENAME
+    from hunter.home import HOME_DIRNAME
+
+    base = (home or Path.home()) / HOME_DIRNAME / _CONFIG_FILENAME
     return base if base.is_file() else None
 
 
@@ -338,10 +370,25 @@ def load_config(
                 "top level must look like:\nmodel_tiers:\n  orchestrator:\n    model: ...",
             )
 
+    cfg = validate_raw(raw, source_text=text or None)
+    if source is not None:
+        cfg.source_path = str(source)
+    notes = list(cfg.legacy_notes)
+    _apply_env_overrides(cfg, env, notes)
+    cfg.legacy_notes = tuple(notes)
+    return cfg
+
+
+def validate_raw(raw: Mapping[str, Any], *, source_text: str | None = None) -> HunterConfig:
+    """Validate a raw config tree into a :class:`HunterConfig` — pure (no file
+    I/O, no env overrides). Raises the SAME HunterErrors :func:`load_config`
+    raises for an identical tree; ``config set`` reuses it to pre-validate the
+    merged tree BEFORE any write (one source of truth). ``source_text`` is the
+    optional raw file text that lets unknown-key hints point at a line."""
+    text = source_text or ""
     _reject_unknown(raw, VALID_TOP_KEYS, "the config top level", source_text=text or None)
 
     cfg = default_config()
-    cfg.source_path = str(source) if source is not None else None
     notes: list[str] = []
 
     # --- model_tiers -------------------------------------------------------
@@ -510,12 +557,74 @@ def load_config(
         api_max_retries=_as_int(agent_raw.get("api_max_retries", 3), "agent.api_max_retries", minimum=1),
         browser=_as_bool(agent_raw.get("browser", False), "agent.browser"),
         browser_cloak=_as_bool(agent_raw.get("browser_cloak", True), "agent.browser_cloak"),
+        scope_confirm=_as_bool(agent_raw.get("scope_confirm", False), "agent.scope_confirm"),
+        approved_scopes=_validate_approved_scopes(agent_raw.get("approved_scopes", [])),
     )
-
-    # --- env overrides (WIN over YAML) -------------------------------------
-    _apply_env_overrides(cfg, env, notes)
     cfg.legacy_notes = tuple(notes)
     return cfg
+
+
+def _validate_approved_scopes(scopes_raw: Any) -> list[ApprovedScope]:
+    """The ``agent.approved_scopes`` audit trail (M11): a list of mappings
+    whose keys are a subset of ``_APPROVED_SCOPE_KEYS``, each with a non-empty
+    string ``host``. The entry index appears in every message; an unknown
+    entry key is ``config.unknown_key`` (exit 8) naming
+    ``agent.approved_scopes[i].<key>``."""
+    if scopes_raw is None:
+        return []
+    if not isinstance(scopes_raw, list):
+        raise _config_error(
+            "config.type",
+            f"agent.approved_scopes must be a list, got {type(scopes_raw).__name__}",
+            "each entry looks like: {host: client-x.com, name: client-x, "
+            "allow_subdomains: false, ts: 1700000000.0, source: hunt-start}",
+        )
+    approved: list[ApprovedScope] = []
+    for index, entry in enumerate(scopes_raw):
+        if not isinstance(entry, dict):
+            raise _config_error(
+                "config.type",
+                f"agent.approved_scopes[{index}] must be a mapping, got {type(entry).__name__}",
+                f"valid keys under agent.approved_scopes[{index}]: "
+                f"{', '.join(_APPROVED_SCOPE_KEYS)}",
+            )
+        unknown = sorted(set(entry) - set(_APPROVED_SCOPE_KEYS))
+        if unknown:
+            raise _config_error(
+                "config.unknown_key",
+                f"unknown key(s) under agent.approved_scopes[{index}]: {', '.join(unknown)}",
+                f"valid keys under agent.approved_scopes[{index}]: "
+                f"{', '.join(_APPROVED_SCOPE_KEYS)}",
+            )
+        host = _as_str(entry.get("host"), f"agent.approved_scopes[{index}].host")
+        if not host:
+            raise _config_error(
+                "config.value",
+                f"agent.approved_scopes[{index}].host must be a non-empty string",
+                f"set agent.approved_scopes[{index}].host to the authorized host, "
+                "e.g. client-x.com",
+            )
+        try:
+            ts = float(entry.get("ts", 0.0))
+        except (TypeError, ValueError) as exc:
+            raise _config_error(
+                "config.type",
+                f"agent.approved_scopes[{index}].ts must be a number, got {entry.get('ts')!r}",
+                "ts is the authorization epoch timestamp, e.g. 1700000000.0",
+            ) from exc
+        approved.append(
+            ApprovedScope(
+                host=host,
+                name=_as_str(entry.get("name", ""), f"agent.approved_scopes[{index}].name"),
+                allow_subdomains=_as_bool(
+                    entry.get("allow_subdomains", False),
+                    f"agent.approved_scopes[{index}].allow_subdomains",
+                ),
+                ts=ts,
+                source=_as_str(entry.get("source", ""), f"agent.approved_scopes[{index}].source"),
+            )
+        )
+    return approved
 
 
 def _apply_env_overrides(
@@ -610,7 +719,7 @@ def resolve_model(
     raise _config_error(
         "config.model_unresolved",
         f"no model resolved for tier '{tier}'",
-        "set model under model_tiers in ~/.hunteros/config.yaml or export HUNTEROS_MODEL",
+        "set model under model_tiers in ~/.hunter/config.yaml or export HUNTEROS_MODEL",
     )
 
 
@@ -648,7 +757,7 @@ def resolve_key(
             layer="auth",
             message=f"no API key for provider '{provider_name}'",
             hint=f"set {provider.key_env} "
-            "in the environment or ~/.hunteros/config.yaml",
+            "in the environment or ~/.hunter/config.yaml",
             exit_code=EXIT_AUTH,
         )
     return (provider.api_key or "").strip()
@@ -660,7 +769,7 @@ def resolve_key(
 def config_example_yaml() -> str:
     """A complete, commented, loadable example (docs + `hunter config example`)."""
     return """\
-# HunterOs LLM configuration — copy to ~/.hunteros/config.yaml
+# HunterOs LLM configuration — copy to ~/.hunter/config.yaml
 # Any provider reachable through LiteLLM works: set a key env var and a model.
 # Every value here can be overridden per-run with env vars:
 #   HUNTEROS_MODEL, HUNTEROS_TIER, HUNTEROS_BUDGET_USD, HUNTEROS_MAX_ITERATIONS

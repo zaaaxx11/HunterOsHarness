@@ -1,7 +1,7 @@
 """keys.env — API keys stored OUTSIDE config.yaml, loaded at CLI startup.
 
 Pasted keys never belong in ``config.yaml`` (it is a file users copy, share,
-and commit); they land in ``~/.hunteros/keys.env`` instead — a ``KEY="value"``
+and commit); they land in ``~/.hunter/keys.env`` instead — a ``KEY="value"``
 file that is parsed (never sourced/executed), written atomically, and loaded
 into the environment by the ``hunter`` CLI at startup with setdefault
 semantics (a real environment variable always wins).
@@ -28,6 +28,7 @@ from hunter.errors import HunterError
 __all__ = [
     "KEYS_ENV_FILENAME",
     "KEYS_ENV_ENVVAR",
+    "KEY_NAME_RE",
     "keys_env_path",
     "parse_keys_env",
     "load_keys_env",
@@ -38,8 +39,9 @@ __all__ = [
 KEYS_ENV_FILENAME = "keys.env"
 KEYS_ENV_ENVVAR = "HUNTEROS_KEYS_FILE"
 
-_DIRNAME = ".hunteros"
-_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Public alias (M11): `config key set` validates variable names against it.
+KEY_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_KEY_RE = KEY_NAME_RE  # internal name kept for the parser below
 # Characters the writer escapes inside double quotes (and the parser unescapes).
 _ESCAPABLE = ("\\", '"', "$", "`")
 
@@ -131,13 +133,15 @@ def parse_keys_env(text: str) -> dict[str, str]:
 
 def keys_env_path(*, env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
     """Where keys.env lives: ``$HUNTEROS_KEYS_FILE`` if set, else
-    ``<home>/.hunteros/keys.env``."""
+    ``<home>/.hunter/keys.env`` (the unified M11 home)."""
     env = os.environ if env is None else env
     from_env = (env.get(KEYS_ENV_ENVVAR) or "").strip()
     if from_env:
         return Path(from_env)
+    from hunter.home import HOME_DIRNAME
+
     base = Path.home() if home is None else Path(home)
-    return base / _DIRNAME / KEYS_ENV_FILENAME
+    return base / HOME_DIRNAME / KEYS_ENV_FILENAME
 
 
 # -------------------------------------------------------------------- write --

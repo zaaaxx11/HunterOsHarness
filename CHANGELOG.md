@@ -2,9 +2,18 @@
 
 All notable changes to HunterOs Harness are documented here.
 
-Compare releases: `v0.3.1...v0.4.0`.
+Compare releases: `v0.3.1...v0.6.0`.
 
 ## [Unreleased]
+
+## 0.6.0 - 2026-09-16
+
+### Hermes-grade operator experience
+
+- Unified user state under `~/.hunter` with safe copy-only migration from `~/.hunteros`.
+- Added `hunter where`, `hunter config get/set/unset/path/edit/check`, session-aware one-shot chat, and provider/model helpers.
+- Added gateway lifecycle verbs, drain-first restart, pause/resume, and the target-plus-time hunt-start flow.
+- Added hospitality hints, masked key handling, and a refreshed Textual operator surface.
 
 ## [0.5.0] - 2026-09-14
 

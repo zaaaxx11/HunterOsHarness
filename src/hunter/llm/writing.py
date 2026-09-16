@@ -33,7 +33,6 @@ from hunter.llm.base import LEGACY_TIER_ALIASES, TIERS, normalize_tier
 
 __all__ = ["render_config", "write_config"]
 
-_CONFIG_DIRNAME = ".hunteros"
 _CONFIG_FILENAME = "config.yaml"
 
 _HEADER = """\
@@ -275,13 +274,44 @@ def render_config(data: Mapping[str, Any] | None) -> str:
     lines.append("")
 
     # --- agent --------------------------------------------------------------
+    # M11 fix: EVERY agent key renders (browser_cloak used to be silently
+    # dropped on rewrite — a latent data-loss bug), plus the M11 scope keys.
     lines.append("agent:")
     lines.append(f"  tier: {_scalar(agent.get('tier', 'basic'))}"
                  "                  # basic | advanced | orchestrator | hunter | verifier | utility")
     lines.append(f"  api_max_retries: {_scalar(agent.get('api_max_retries', 3))}"
                  "           # attempts per provider before failing over")
-    lines.append(f"  browser: {_scalar(bool(agent.get('browser', False)))}")
+    lines.append(f"  browser: {_scalar(agent.get('browser', False))}")
+    if "browser_cloak" in agent:
+        lines.append(f"  browser_cloak: {_scalar(agent.get('browser_cloak', True))}")
+    if agent.get("scope_confirm"):
+        lines.append(f"  scope_confirm: {_scalar(agent.get('scope_confirm', False))}"
+                     "      # true restores refuse-without---yes for hunt start")
+    scopes = agent.get("approved_scopes")
+    if isinstance(scopes, list) and scopes:
+        lines.append("  approved_scopes:              # audit trail of auto-authorized minimal scopes")
+        for entry in scopes:
+            lines.extend(_render_scope_entry(entry))
     return "\n".join(lines) + "\n"
+
+
+_SCOPE_KEY_ORDER = ("host", "name", "allow_subdomains", "ts", "source")
+
+
+def _render_scope_entry(entry: Any) -> list[str]:
+    """YAML-render one ``approved_scopes`` entry (a mapping) as an indented
+    block item — the dump must parse back to the SAME mapping (the round-trip
+    is pinned: write → load → rewrite → identical ``agent:`` section)."""
+    if not isinstance(entry, Mapping):
+        rendered = _scalar(entry)
+        return [f"    - {rendered}"]
+    keys = [key for key in _SCOPE_KEY_ORDER if key in entry]
+    keys += [key for key in entry if key not in _SCOPE_KEY_ORDER]
+    lines: list[str] = []
+    for index, key in enumerate(keys):
+        prefix = "    - " if index == 0 else "      "
+        lines.append(f"{prefix}{key}: {_scalar(entry[key])}")
+    return lines or ["    - {}"]
 
 
 # ------------------------------------------------------------------- writer --
@@ -349,7 +379,9 @@ def resolve_config_target(
                 "or pass an explicit config path",
             )
         return target
-    return home / _CONFIG_DIRNAME / _CONFIG_FILENAME
+    from hunter.home import HOME_DIRNAME
+
+    return home / HOME_DIRNAME / _CONFIG_FILENAME
 
 
 def write_config(

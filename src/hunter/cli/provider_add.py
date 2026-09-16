@@ -3,20 +3,19 @@
 Triggered by OMITTING the NAME argument of ``hunter config provider add``
 (the flagged path keeps its exact scripted semantics — the wizard is
 name-omission only). Flow: provider pick → key capture (keys.env or env var)
-→ endpoint menu (chat | responses | auto-detect via
-:func:`hunter.llm.probe.detect_endpoint`) → model auto-add
-(:func:`hunter.llm.probe.list_models`, manual fallback) → role assignment
-(auto = one model for all four canonical tiers) → endpoint-aware smoke ping
-→ atomic :func:`hunter.llm.writing.write_config`.
+→ ADVISORY endpoint probe + model list → endpoint menu (chat | responses |
+auto-detect) → model pick (:mod:`hunter.cli.wizard_steps` — the SAME steps
+`hunter init` runs, so the wizards cannot drift) → role assignment
+→ endpoint-aware smoke ping → atomic :func:`hunter.llm.writing.write_config`.
 
 Every prompt goes through the injectable ``ask`` / ``secret`` callables and
 every probe/ping through injectable seams, so tests drive the wizard without
 a tty or a network. A failed step is a NOTE in the final summary — it never
-crashes the run (exit 0 on every normal terminal path); only the config
-write itself may raise :class:`hunter.errors.HunterError` (handle.py renders
-it). The pasted key goes to keys.env, NEVER into config.yaml, and is never
-echoed: prompts print key ENV NAMES only, probe/ping failures print the
-redacted classified message.
+crashes the run (exit 0 on every normal terminal path); only the config write
+itself may raise :class:`hunter.errors.HunterError` (handle.py renders it).
+The pasted key goes to keys.env, NEVER into config.yaml, and is never echoed:
+prompts print key ENV NAMES only, probe/ping failures print the redacted
+classified message.
 """
 
 from __future__ import annotations
@@ -30,10 +29,9 @@ from typing import Any
 from rich.console import Console
 
 from hunter.errors import HunterError
-from hunter.llm.base import TIERS
-from hunter.llm.keys import keys_env_path, write_keys_env
+from hunter.llm.keys import write_keys_env
 from hunter.llm.ping import ping_provider
-from hunter.llm.providers import CUSTOM_NAME, known_provider, known_provider_names
+from hunter.llm.providers import CUSTOM_NAME
 from hunter.llm.writing import resolve_config_target, write_config
 
 __all__ = ["ProviderAddAnswers", "provider_add_updates", "run_provider_add_wizard"]
@@ -76,7 +74,28 @@ def provider_add_updates(a: ProviderAddAnswers) -> dict[str, Any]:
     return updates
 
 
-# --------------------------------------------------------------------- flow --
+_NON_HTTP_REASK = "base URL must start with http:// or https:// — try again:"
+
+
+def _settle_custom_base_url(
+    url: str, ask: Callable[[str, str], str], notes: list[str], console: Console
+) -> str:
+    """Validate (or ask for) the custom base URL: non-http(s) RE-ASKS inline
+    (three strikes → note + skip, never a crash)."""
+    for _strike in range(3):
+        if url.startswith(("http://", "https://")):
+            return url
+        if url:
+            console.print(_NON_HTTP_REASK, markup=False, highlight=False)
+        prompt = _NON_HTTP_REASK if url else (
+            "base URL (OpenAI-compatible, e.g. https://llm.corp.example.com/v1)"
+        )
+        url = ask(prompt, "").strip()
+    if not url.startswith(("http://", "https://")):
+        if url:
+            notes.append(f"base URL {url!r} rejected — must start with http:// or https://")
+        return ""
+    return url
 
 
 def run_provider_add_wizard(
@@ -98,6 +117,14 @@ def run_provider_add_wizard(
     writes a valid config and exits 0 with notes, never a key it did not
     receive."""
     from hunter.cli.init_wizard import _default_ask, _default_secret, _print_export_lines
+    from hunter.cli.wizard_steps import (
+        assign_roles,
+        capture_key,
+        pick_model,
+        pick_provider,
+        print_key_saved,
+        probe_endpoint_and_models,
+    )
 
     console = console if console is not None else Console()
     ask = ask if ask is not None else _default_ask(console)
@@ -109,8 +136,6 @@ def run_provider_add_wizard(
         probe_fn = probe_fn if probe_fn is not None else detect_endpoint
         list_models_fn = list_models_fn if list_models_fn is not None else list_models
     env = dict(os.environ) if environ is None else dict(environ)
-    keys_path = keys_env_path(env=env, home=home)
-
     target = resolve_config_target(path, env=env, home=home)
     console.print("[bold]hunter config provider add[/bold] — wizard")
     console.print(f"config target: {target}", markup=False, highlight=False)
@@ -119,36 +144,13 @@ def run_provider_add_wizard(
     answers = ProviderAddAnswers()
     notes = answers.notes
 
-    # ---- step 1/6: provider (onboarding step-2 menu: table order, custom last) ---
-    names = known_provider_names()
-    console.print("providers:")
-    for index, entry in enumerate(names, start=1):
-        if entry == CUSTOM_NAME:
-            console.print(f"  {index}. {entry:12} — any OpenAI-compatible base URL")
-        else:
-            row = known_provider(entry)
-            console.print(f"  {index}. {entry:12} — {row.note if row else ''}")
-    reply = ask("provider [1]", "1")
-    name = ""
-    base_url = ""
-    if reply.isdigit() and 1 <= int(reply) <= len(names):
-        name = names[int(reply) - 1]
-    elif reply in names:
-        name = reply
-    else:
-        name = names[0]
-        notes.append(f"provider pick {reply!r} not recognized — using {name}")
-    known = known_provider(name) if name != CUSTOM_NAME else None
+    # ---- step 1/6: provider (shared numbered menu: table order, custom last) ---
+    name, base_url, known = pick_provider(console=console, ask=ask, notes=notes)
     if name == CUSTOM_NAME:
-        base_url = ask(
-            "base URL (OpenAI-compatible, e.g. https://llm.corp.example.com/v1)", ""
-        ).strip()
+        base_url = _settle_custom_base_url(base_url, ask, notes, console)
         if not base_url:
             notes.append("custom provider skipped — no base URL given")
-            console.print("notes:", markup=False, highlight=False)
-            for note in notes:
-                console.print(f"  - {note}", markup=False, highlight=False)
-            return 0
+            name = ""
     if name and known is not None and known.base_url:
         base_url = base_url or known.base_url
     answers.provider = name
@@ -160,65 +162,34 @@ def run_provider_add_wizard(
         console.print("step 1/6 provider: (skipped — no provider configured)",
                       markup=False, highlight=False)
 
-    # ---- step 2/6: key (onboarding step-3 logic and copy) --------------------------
+    # ---- step 2/6: key (shared masked capture: keys.env or env var) ------------
     key_env = ""
     key_inline = ""
     if not name:
         console.print("step 2/6 key: (skipped — no provider configured)",
                       markup=False, highlight=False)
     else:
-        table_key_env = known.key_env if known is not None else ""
-        if known is not None and not table_key_env:
+        key_env, key_inline = capture_key(
+            console=console, ask=ask, secret=secret, env=env, name=name, known=known,
+            notes=notes, base_url=base_url, export_lines=_print_export_lines,
+        )
+        if not key_env:
+            console.print("step 2/6 key: (skipped)", markup=False, highlight=False)
+        elif known is not None and not known.key_env:
             console.print("step 2/6 key: none needed — this provider is keyless",
                           markup=False, highlight=False)
-        else:
-            default_key_env = table_key_env or "CUSTOM_API_KEY"
-            if env.get(default_key_env, "").strip():
-                key_env = default_key_env
-                console.print(
-                    f"step 2/6 key: using ${key_env} from the environment — "
-                    "nothing is stored on disk",
-                    markup=False,
-                    highlight=False,
-                )
-            else:
-                console.print(f"key source for {name}:", markup=False, highlight=False)
-                console.print(
-                    f"  1. Paste the key now — stored in {keys_path}, "
-                    "never echoed, never in the config",
-                    markup=False,
-                    highlight=False,
-                )
-                console.print(
-                    f"  2. Set the env var {default_key_env} yourself "
-                    "(recommended for shared machines)",
-                    markup=False,
-                    highlight=False,
-                )
-                reply = ask("key", "1")
-                if reply.strip() == "2":
-                    key_env = ask("API key env var name", default_key_env).strip()
-                    if not key_env:
-                        notes.append(f"{name} stays keyless — no env var name given")
-                    else:
-                        _print_export_lines(console, key_env)
-                else:
-                    if name == CUSTOM_NAME:
-                        key_env = (
-                            ask("env var name for the key", default_key_env).strip()
-                            or default_key_env
-                        )
-                    else:
-                        key_env = default_key_env
-                    pasted = secret(f"paste the {key_env} key (input hidden)").strip()
-                    if pasted:
-                        key_inline = pasted
-                    else:
-                        notes.append(f"no key pasted — set ${key_env} before first use")
-                        _print_export_lines(console, key_env)
     answers.key_env = key_env
     answers.key_inline = key_inline
     key_value = env.get(key_env, "").strip() or key_inline
+
+    # ---- advisory probe + model list (M4 copy; the endpoint MENU below still
+    #      decides what is STORED — the probe itself is advisory only) ----------
+    models: list[str] = []
+    if name and base_url:
+        _endpoint_seen, models = probe_endpoint_and_models(
+            base_url=base_url, key_value=key_value, probe_fn=probe_fn,
+            list_models_fn=list_models_fn, console=console, notes=notes,
+        )
 
     # ---- step 3/6: endpoint -------------------------------------------------------
     if name:
@@ -253,63 +224,24 @@ def run_provider_add_wizard(
         else:
             console.print("step 3/6 endpoint: chat (default)", markup=False, highlight=False)
 
-    # ---- step 4/6: model ------------------------------------------------------------
+    # ---- step 4/6: model (shared pick: auto-detect / menu / manual) ---------------
     model = ""
-    if name and base_url:
-        models: list[str] = []
-        try:
-            models = list(list_models_fn(base_url, key_value, 10))
-        except Exception:  # noqa: BLE001 — an empty list falls back to manual entry
-            models = []
-        models = sorted({entry.strip() for entry in models if isinstance(entry, str) and entry.strip()})
-        if models:
-            console.print(f"available models (GET {base_url}/models):",
-                          markup=False, highlight=False)
-            for index, entry in enumerate(models, start=1):
-                console.print(f"  {index}. {entry}", markup=False, highlight=False)
-            console.print("  m. type a model id manually", markup=False, highlight=False)
-            reply = ask("model", "1")
-            if reply.strip().isdigit() and 1 <= int(reply) <= len(models):
-                model = models[int(reply) - 1]
-            else:
-                model = ask("model id", models[0]).strip() or models[0]
-        else:
-            notes.append("model list failed — enter it manually")
-            model = ask("model id", "").strip()
-    elif name and known is not None:
-        # Known provider without base_url: take the table default (custom never
-        # reaches here — it cannot pass step 1 without a base URL).
-        model = ask("orchestrator model", known.default_model or "").strip()
+    if name:
+        model = pick_model(
+            models=models, known=known, ask=ask, console=console, notes=notes,
+        )
     if model:
         console.print(f"step 4/6 model: orchestrator={model}", markup=False, highlight=False)
     else:
         notes.append("no model given — provider stored without a model")
 
-    # ---- step 5/6: role assignment -----------------------------------------------------
+    # ---- step 5/6: role assignment (shared auto/advanced) --------------------------
     if model:
-        console.print("How should this model be assigned?", markup=False, highlight=False)
-        console.print(
-            "  1. Auto — one model for every role (orchestrator / hunter / verifier / utility)",
-            markup=False,
-            highlight=False,
-        )
-        console.print("  2. Advanced — pick per role", markup=False, highlight=False)
         reply = ask("mode [1]", "")
+        answers.role_models = assign_roles(model=model, mode_reply=reply, known=known, ask=ask)
         if reply.strip().lower() in ("2", "advanced"):
-            orchestrator = ask("orchestrator model", model).strip() or model
-            hunter_model = ask("hunter model", orchestrator).strip() or orchestrator
-            cheap = (known.cheap_model if known is not None else "") or orchestrator
-            verifier_model = ask("verifier model", cheap).strip() or cheap
-            utility_model = ask("utility model", cheap).strip() or cheap
-            answers.role_models = {
-                "orchestrator": orchestrator,
-                "hunter": hunter_model,
-                "verifier": verifier_model,
-                "utility": utility_model,
-            }
             console.print("step 5/6 roles: advanced", markup=False, highlight=False)
         else:
-            answers.role_models = {tier: model for tier in TIERS}
             console.print("step 5/6 roles: auto (one model for all roles)",
                           markup=False, highlight=False)
 
@@ -318,6 +250,7 @@ def run_provider_add_wizard(
     if answers.key_inline and answers.key_env:
         written_keys = write_keys_env({answers.key_env: answers.key_inline}, env=env, home=home)
         console.print("[green]wrote[/green]", written_keys)
+        print_key_saved(console, answers.key_env)
     written = write_config(provider_add_updates(answers), target, env=env, home=home)
     console.print(f"[green]added provider '{name}'[/green] → {written}")
 

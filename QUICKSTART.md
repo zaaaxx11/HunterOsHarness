@@ -29,8 +29,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 ```
 
 Both installers create a dedicated venv at `~/.hunteros/venv` — they do not
-touch your system Python. They also register `hunter` and `hunt` shims in
-`~/.hunteros/bin` (Windows: `%USERPROFILE%\.hunteros\bin`) via a tagged,
+touch your system Python. They also register `hunter` and `hunt` shims (installer venv plumbing) in
+`~/.hunteros/bin` (Windows: `%USERPROFILE%\.hunteros\bin`) — installer venv shims — via a tagged,
 idempotent PATH block, and start the onboarding wizard on first run
 (`--skip-setup` / `-SkipSetup` skips it). From a checkout they install
 editable; otherwise from PyPI (git fallback).
@@ -46,8 +46,8 @@ pip install -e .                            # from a checkout
 ## 2. `hunter init` — configure a brain (~60s, optional)
 
 One wizard picks the provider, captures the key safely (a pasted key lands in
-`~/.hunteros/keys.env` — never echoed, never in the config), probes custom
-endpoints, runs a 1-token live test, and writes `~/.hunteros/config.yaml`:
+`~/.hunter/keys.env` — never echoed, never in the config), probes custom
+endpoints, runs a 1-token live test, and writes `~/.hunter/config.yaml`:
 
 ```bash
 hunter init                    # interactive wizard
@@ -277,7 +277,7 @@ loadable without the extra. Install explicitly with `pip install
 normal chat does not use browser tools and HunterOs never installs Chromium
 automatically.
 
-Skills live at `~/.hunteros/skills/<name>/SKILL.md` in a merged bundled/user
+Skills live at `~/.hunter/skills/<name>/SKILL.md` in a merged bundled/user
 corpus with `[bundled]`, `[user]`, and `[quarantined]` markers. Matching selects
 at most five skills. `/curate` and `hunter curate` preview cards and require
 explicit y/N confirmation before save; quarantined cards are inert until review.
@@ -288,8 +288,9 @@ explicit y/N confirmation before save; quarantined cards are inert until review.
 (`source ~/.hunteros/venv/bin/activate`, Windows:
 `~\.hunteros\venv\Scripts\Activate.ps1`) or call it via
 `~/.hunteros/venv/bin/hunter`, or use the shim path
-`~/.hunteros/bin/hunter` (Windows: `%USERPROFILE%\.hunteros\bin\hunter.cmd`),
-or re-run the installer which registers `~/.hunteros/bin` on your PATH.
+`~/.hunteros/bin/hunter` (Windows: `%USERPROFILE%\.hunteros\bin\hunter.cmd`) — installer venv plumbing —
+installer venv plumbing, or re-run the installer which registers those venv
+venv shims in `~/.hunteros/bin` on your PATH.
 
 **Windows PowerShell: "running scripts is disabled"** — run
 `powershell -ExecutionPolicy Bypass -File install.ps1` exactly as shown, or

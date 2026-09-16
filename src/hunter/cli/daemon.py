@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -31,9 +32,13 @@ import typer
 from hunter.daemon import (
     daemon_running,
     daemon_status,
+    drain_daemon,
     log_path,
+    pause_flag_path,
+    restart_marker_path,
     start_daemon,
     stop_daemon,
+    write_json_atomic,
 )
 from hunter.palette import make_console
 
@@ -56,13 +61,11 @@ _DEFAULT_MAX_WALL_SECONDS = 7200.0  # 2h when neither --time nor config says oth
 
 
 def _resolve_state(state: Path | None) -> Path:
-    """Explicit ``--state`` wins; else ``$HUNTER_STATE_DIR`` or ``./.hunter``
-    (the Ledger default convention)."""
-    if state is not None:
-        return Path(state)
-    import os
+    """Explicit ``--state`` wins; else ``$HUNTER_STATE_DIR`` or the M11 home
+    default ``~/.hunter`` (cwd is never the default anymore)."""
+    from hunter.home import state_dir
 
-    return Path(os.environ.get("HUNTER_STATE_DIR") or ".hunter")
+    return state_dir(state)
 
 
 def _load_budget_config() -> tuple[Any | None, int]:
@@ -103,10 +106,20 @@ def _resolve_engine(explicit: str | None) -> tuple[str, int]:
         return "deterministic", 0
 
 
-def _scope_gate(target: str, scope: Path | None, *, yes: bool) -> tuple[Any | None, int]:
-    """The SAME gate as ``hunt``: localhost is always allowed; anything else
-    needs an authorized scope manifest (``--scope``, or ``--yes`` accepts the
-    proposed minimal scope). Returns (ScopeSet | None, exit_code)."""
+def _scope_gate(
+    target: str,
+    scope: Path | None,
+    *,
+    yes: bool,
+    config: Any | None = None,
+) -> tuple[Any | None, int]:
+    """The daemon-start scope gate (M11 locked decision 3): localhost is
+    always allowed; off-localhost with ``--scope`` uses the manifest; WITHOUT
+    a manifest the minimal ``ScopeSet({host})`` is AUTO-AUTHORIZED and
+    recorded under ``agent.approved_scopes`` (audit trail, capped at 50) —
+    unless ``agent.scope_confirm`` is true, which restores the old
+    refuse-without-``--yes`` behavior verbatim (exit 3). A failed recording
+    never fails the start."""
     from urllib.parse import urlparse
 
     from hunter.tools.scope import LOCAL_HOSTS, ScopeSet, localhost_scope, scope_from_manifest
@@ -124,14 +137,125 @@ def _scope_gate(target: str, scope: Path | None, *, yes: bool) -> tuple[Any | No
         except (ValueError, OSError) as exc:
             err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
             return None, 3
-    if yes:
-        return ScopeSet(frozenset({host}), False, name=host), 0
-    err_console.print(
-        f"[hunter.error]BLOCKED:[/hunter.error] target '{host}' is not localhost. Pass "
-        "[bold]--scope scope.json[/bold] with an authorized scope manifest, "
-        f"or --yes to authorize the proposed minimal scope for '{host}'."
+
+    if cfg_scope_confirm(config):
+        err_console.print(
+            f"[hunter.error]BLOCKED:[/hunter.error] target '{host}' is not localhost. Pass "
+            "[bold]--scope scope.json[/bold] with an authorized scope manifest, "
+            f"or --yes to authorize the proposed minimal scope for '{host}'."
+        )
+        return None, 3
+    chosen = ScopeSet(frozenset({host}), False, name=host)
+    _record_approved_scope(host, config)
+    return chosen, 0
+
+
+def cfg_scope_confirm(config: Any | None) -> bool:
+    """``agent.scope_confirm`` from the given config (loaded on demand); a
+    broken config reads as False (the budget loader reports it separately)."""
+    from hunter.errors import HunterError
+    from hunter.llm.config import load_config
+
+    try:
+        cfg = config if config is not None else load_config()
+    except HunterError:
+        return False
+    return bool(getattr(getattr(cfg, "agent", None), "scope_confirm", False))
+
+
+def _record_approved_scope(host: str, config: Any | None) -> None:
+    """Append the auto-authorized minimal scope to ``agent.approved_scopes``
+    (audit trail; capped at the last 50 entries). Best-effort: a failed write
+    warns and continues — the hunt start itself must not fail over bookkeeping."""
+    import time as _time
+
+    from hunter.errors import HunterError
+    from hunter.llm.config import load_config
+    from hunter.llm.writing import write_config
+
+    try:
+        cfg = config if config is not None else load_config()
+    except HunterError:
+        cfg = None
+    entries: list[dict[str, Any]] = []
+    for item in (getattr(getattr(cfg, "agent", None), "approved_scopes", None) or []):
+        entries.append(
+            {
+                "host": item.host,
+                "name": item.name or item.host,
+                "allow_subdomains": item.allow_subdomains,
+                "ts": item.ts,
+                "source": item.source,
+            }
+        )
+    entries.append(
+        {
+            "host": host,
+            "name": host,
+            "allow_subdomains": False,
+            "ts": _time.time(),
+            "source": "hunt-start",
+        }
     )
-    return None, 3
+    try:
+        write_config({"agent": {"approved_scopes": entries[-50:]}})
+    except HunterError as exc:
+        err_console.print(
+            f"⚠️ could not record the approved scope in the config: {exc.message}",
+            markup=False,
+            highlight=False,
+        )
+
+
+def _configured_wall_seconds() -> float:
+    """``budget.wall_seconds`` when EXPLICITLY set in the config file (the
+    dataclass default 1800 does not count — the daemon default is 2h);
+    0.0 when unset/unreadable."""
+    import yaml as _yaml
+
+    from hunter.errors import HunterError
+    from hunter.llm.config import load_config
+
+    try:
+        cfg = load_config()
+    except HunterError:
+        return 0.0
+    source = getattr(cfg, "source_path", None)
+    if not source:
+        return 0.0
+    try:
+        raw = _yaml.safe_load(Path(source).read_text(encoding="utf-8")) or {}
+    except (OSError, _yaml.YAMLError, UnicodeDecodeError):
+        return 0.0
+    budget = raw.get("budget") if isinstance(raw, dict) else None
+    if isinstance(budget, dict) and "wall_seconds" in budget:
+        try:
+            return float(budget["wall_seconds"] or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _wall_label(seconds: float) -> str:
+    """Human ``[Nh][Nm][Ns]`` label for the interactive time prompt default."""
+    seconds = int(max(0, seconds))
+    if seconds >= 3600 and seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def _default_interactive_ask():
+    """The typer-echo ask used on a TTY when no seam is injected."""
+
+    def ask(prompt: str, default: str = "") -> str:
+        try:
+            return input(f"{prompt} ").strip() or default
+        except EOFError:
+            return default
+
+    return ask
 
 
 def _parse_duration_or_exit(text: str | None, *, option: str) -> float | None:
@@ -158,13 +282,67 @@ def _cmd_start(
     yes: bool,
     force: bool,
     state: Path | None,
+    interactive_ask: Callable[[str, str], str] | None = None,
+    idle_tip: bool = True,
 ) -> int:
-    """Validate and start the persistent engine, optionally with one task."""
+    """Validate and start the persistent engine, optionally with one task.
+
+    M11 two-question flow: with no target, no ``--yes`` and a TTY (or an
+    injected seam) the CLI asks EXACTLY ``Target URL:`` and
+    ``Time — how long may the hunt run? [2h]:`` — never a y/N. Blank target
+    cancels; garbage time re-asks twice then cancels; blank time takes the
+    default. After the answers the flow is the flag path with the minimal
+    scope auto-authorized and recorded.
+    """
+    import sys as _sys
+
+    from hunter.duration import parse_duration
+    from hunter.errors import HunterError
+
     state_dir = _resolve_state(state)
     already_running, _ = daemon_running(state_dir)
     if already_running and not force:
         typer.echo("engine already on — 24/7 engine is on")
         return 0
+
+    # ---- M7: the two-question interactive flow (no y/N exists on this path) --
+    if target is None and not yes and (
+        interactive_ask is not None or _sys.stdin.isatty()
+    ):
+        ask = interactive_ask if interactive_ask is not None else _default_interactive_ask()
+        default_wall = _configured_wall_seconds() or _DEFAULT_MAX_WALL_SECONDS
+        time_prompt = f"Time — how long may the hunt run? [{_wall_label(default_wall)}]:"
+        target = ask("Target URL:").strip()
+        if not target:
+            typer.echo("⏸️ cancelled — nothing was started.")
+            return 0
+        answer = ask(time_prompt).strip()
+        parsed_ok = False
+        for _retry in range(2):
+            if not answer:
+                # Materialize the resolved default so the later budget merge
+                # cannot replace the two-question answer with dataclass defaults.
+                time_text = _wall_label(default_wall)
+                parsed_ok = True
+                break
+            try:
+                parse_duration(answer)
+            except HunterError as exc:
+                err_console.print(
+                    f"[hunter.error]config error:[/hunter.error] {exc.message}\nHint: {exc.hint}",
+                    markup=False,
+                    highlight=False,
+                )
+                answer = ask(time_prompt).strip()
+                continue
+            time_text = answer
+            parsed_ok = True
+            break
+        if not parsed_ok:
+            typer.echo("⏸️ cancelled — nothing was started.")
+            return 0
+        yes = True  # the two-question flow auto-authorizes (recorded) — no y/N
+
     from hunter.hunt import normalize_hunt_target
 
     normalized = None
@@ -202,7 +380,12 @@ def _cmd_start(
     budget = getattr(cfg, "budget", None)
     if target:
         if max_wall is None:
-            max_wall = float(getattr(budget, "wall_seconds", 0.0) or 0.0) or _DEFAULT_MAX_WALL_SECONDS
+            # Interactive blank time is deliberately the daemon's 2h default;
+            # config.wall_seconds controls explicit hunt budgets, not the
+            # two-question onboarding flow.
+            max_wall = _DEFAULT_MAX_WALL_SECONDS if interactive_ask is not None else (
+                float(getattr(budget, "wall_seconds", 0.0) or 0.0) or _DEFAULT_MAX_WALL_SECONDS
+            )
         if min_wall is None:
             min_wall = float(getattr(budget, "min_wall_seconds", 0.0) or 0.0)
         if budget_text is None:
@@ -210,6 +393,12 @@ def _cmd_start(
     else:
         max_wall = float(max_wall or 0.0)
         min_wall = float(min_wall or 0.0)
+    if pause_flag_path(state_dir).exists():
+        # M8 ESTOP: the engine is paused — the task still ENQUEUES (work holds
+        # in the queue); the paused line leads the output.
+        from hunter.hospitality import paused_message
+
+        typer.echo(paused_message())
     code = start_daemon(
         state_dir,
         target=normalized,
@@ -223,6 +412,8 @@ def _cmd_start(
     if code == 0:
         if not target:
             typer.echo("engine started — 24/7 engine is on")
+            if idle_tip:
+                typer.echo("💡 tip: hunt start <url> --time 30m to queue a hunt immediately")
         else:
             typer.echo(
                 f"engine started — 24/7 engine is on\n"
@@ -266,29 +457,54 @@ def _human_uptime(seconds: float | None) -> str:
 
 
 def _render_status(status: dict[str, Any], *, state_dir: Path) -> None:
+    for line in status_lines(status, state_dir=state_dir):
+        if line.startswith("daemon:") or line.startswith("config:"):
+            console.print(line)
+        else:
+            typer.echo(line)
+
+
+def status_lines(status: dict[str, Any], *, state_dir: Path) -> list[str]:
+    """The human status render, line by line — the SINGLE source consumed by
+    the CLI and the TUI Engine pane (M11 M6), so the two cannot drift."""
+    lines: list[str] = []
+    paused = bool(status.get("paused"))
+    paused_suffix = "  ⏸️ paused" if paused else ""
     if status.get("running"):
         heartbeat = status.get("heartbeat_age_seconds")
         heartbeat_text = "heartbeat n/a" if heartbeat is None else f"heartbeat {heartbeat:.0f}s ago"
-        console.print(
+        lines.append(
             f"daemon: [hunter.success]running[/hunter.success] (pid {status.get('pid')}, "
             f"up {_human_uptime(status.get('uptime_seconds'))}, {heartbeat_text})"
+            f"{paused_suffix}"
         )
     elif status.get("stale"):
-        console.print(
+        lines.append(
             f"daemon: [hunter.error]stale[/hunter.error] (pid {status.get('pid')} — heartbeat too"
             " old, presumed dead)"
         )
     else:
-        console.print("daemon: [hunter.warning]stopped[/hunter.warning]")
-    typer.echo(f"state: {state_dir}")
+        lines.append(f"daemon: [hunter.warning]stopped[/hunter.warning]{paused_suffix}")
+    config_path = str(status.get("config_path") or "")
+    lines.append(f"config: {config_path or '(none)'}")
+    lines.append(f"state: {state_dir}")
     transports = status.get("transports") or []
-    typer.echo("transports: " + (", ".join(transports) if transports else "(none)"))
-    typer.echo(f"queue: {status.get('queue_pending', 0)} pending, {status.get('queue_claimed', 0)} claimed")
+    lines.append("transports: " + (", ".join(transports) if transports else "(none)"))
+    lines.append(f"queue: {status.get('queue_pending', 0)} pending, {status.get('queue_claimed', 0)} claimed")
     last = status.get("last_run")
     if last:
-        typer.echo(f"last run: {last.get('run_id')} {last.get('status')} ({last.get('findings')} findings)")
+        lines.append(f"last run: {last.get('run_id')} {last.get('status')} ({last.get('findings')} findings)")
     else:
-        typer.echo("last run: (none)")
+        lines.append("last run: (none)")
+    if status.get("running"):
+        lines.append(
+            "💡 logs: hunter logs --follow · stop: hunter stop · restart: hunter restart"
+        )
+    else:
+        lines.append(
+            "💡 start it: hunter start (foreground transports: hunter gateway start)"
+        )
+    return lines
 
 
 def _cmd_status(*, state: Path | None, json_out: bool) -> int:
@@ -328,6 +544,29 @@ def _cmd_logs(*, state: Path | None, lines: int | None, follow: bool) -> int:
         return 0
 
 
+def _resolve_drain_timeout(drain_timeout: float | None) -> float:
+    """``--drain-timeout`` (seconds) → ``$HUNTEROS_DRAIN_TIMEOUT`` (parsed via
+    parse_duration) → 60.0. Garbage env values die with the classified config
+    error and the duration grammar hint (exit 8)."""
+    import os
+
+    from hunter.duration import parse_duration
+    from hunter.errors import HunterError
+
+    if drain_timeout is not None:
+        return float(drain_timeout)
+    from_env = (os.environ.get("HUNTEROS_DRAIN_TIMEOUT") or "").strip()
+    if from_env:
+        try:
+            return parse_duration(from_env)
+        except HunterError as exc:
+            err_console.print(
+                f"[hunter.error]config error:[/hunter.error] {exc.message}\nHint: {exc.hint}"
+            )
+            raise typer.Exit(8) from exc
+    return 60.0
+
+
 def _cmd_restart(
     *,
     target: str | None,
@@ -339,20 +578,33 @@ def _cmd_restart(
     yes: bool = False,
     force: bool = False,
     state: Path | None = None,
+    drain_timeout: float | None = None,
 ) -> int:
-    """Stop (force on stale) then start; stop's code on failure, else start's."""
-    from hunter.daemon import read_pid
-
+    """Drain-first restart (M11): a running daemon gets the restart marker and
+    drains (in-flight work finishes); a drain timeout escalates to a forced
+    stop; a stale pid is force-cleaned; nothing running simply starts (Q4)."""
     state_dir = _resolve_state(state)
     status = daemon_status(state_dir)
     if status.get("running"):
-        code = stop_daemon(state_dir, timeout=15.0, force=False)
-    elif read_pid(state_dir) is not None:
-        code = stop_daemon(state_dir, timeout=5.0, force=True)  # stale: force cleanup
+        timeout = _resolve_drain_timeout(drain_timeout)
+        write_json_atomic(
+            restart_marker_path(state_dir),
+            {"ts": time.time(), "pid": status.get("pid")},
+        )
+        drained = drain_daemon(state_dir, timeout=timeout)
+        if drained:
+            stop_daemon(state_dir, timeout=5.0, force=True)
+            err_console.print(
+                f"drain timed out after {timeout:.1f}s — stopped after cutting the in-flight run short",
+                markup=False,
+                highlight=False,
+            )
+    elif status.get("stale") or status.get("pid"):
+        # A stale/dead registration: force cleanup, never a drain attempt
+        # against a dead pid (the pre-M11 contract, preserved).
+        stop_daemon(state_dir, timeout=5.0, force=True)
     else:
-        code = 0
-    if code:
-        return code
+        typer.echo("engine was not running — starting it")
     return _cmd_start(
         target=target,
         scope=scope,
@@ -429,7 +681,10 @@ def dispatch_hunt_alias(
 
 
 def daemon_start(
-    target: Annotated[str | None, typer.Option("--target", help="Hunt target URL (required).")] = None,
+    target_pos: Annotated[
+        str | None, typer.Argument(help="Hunt target URL (same as --target; Q11 positional form).")
+    ] = None,
+    target: Annotated[str | None, typer.Option("--target", help="Hunt target URL.")] = None,
     scope: Annotated[
         Path | None, typer.Option("--scope", help="Scope manifest JSON (required off-localhost).")
     ] = None,
@@ -453,7 +708,7 @@ def daemon_start(
     """Start the 24/7 hunt daemon and enqueue one hunt task."""
     raise typer.Exit(
         _cmd_start(
-            target=target,
+            target=target_pos or target,
             scope=scope,
             engine=engine,
             time_text=time_opt,
@@ -501,8 +756,19 @@ def daemon_restart(
     ] = False,
     force: Annotated[bool, typer.Option("--force", help="Replace an already-running daemon.")] = False,
     state: Annotated[Path | None, typer.Option("--state", help="State directory.")] = None,
+    drain_timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--drain-timeout",
+            help="Seconds to wait for the running engine to drain before forcing ($HUNTEROS_DRAIN_TIMEOUT).",
+        ),
+    ] = None,
 ) -> None:
-    """Restart the daemon: stop (force on stale) then start."""
+    """Restart the engine: drain first (in-flight work finishes), then start.
+
+    Nothing running? It simply starts. A drain timeout escalates to a forced
+    stop; a stale pid is force-cleaned before the fresh boot.
+    """
     raise typer.Exit(
         _cmd_restart(
             target=target,
@@ -514,6 +780,7 @@ def daemon_restart(
             yes=yes,
             force=force,
             state=state,
+            drain_timeout=drain_timeout,
         )
     )
 
@@ -534,8 +801,8 @@ def daemon_logs(
 
 def register_daemon_commands(app: typer.Typer) -> None:
     """Attach the ``daemon`` sub-app and the top-level ``start`` / ``stop`` /
-    ``status`` aliases to the root Typer app (same functions, so
-    ``hunter start --target ...`` === ``hunter daemon start --target ...``)."""
+    ``status`` / ``restart`` / ``logs`` aliases to the root Typer app (same
+    functions, so ``hunter start ...`` === ``hunter daemon start ...``)."""
     daemon_app = typer.Typer(help="The 24/7 hunt daemon (start/stop/status/restart/logs).")
     app.add_typer(daemon_app, name="daemon")
     daemon_app.command("start")(daemon_start)
@@ -546,3 +813,5 @@ def register_daemon_commands(app: typer.Typer) -> None:
     app.command("start")(daemon_start)
     app.command("stop")(daemon_stop)
     app.command("status")(daemon_status_cmd)
+    app.command("restart")(daemon_restart)
+    app.command("logs")(daemon_logs)

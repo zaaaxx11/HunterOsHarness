@@ -103,7 +103,7 @@ function Register-Path {
 
 # >>> hunteros PATH >>>
 # Added by the HunterOs Harness installer (idempotent - do not edit between markers).
-$env:PATH = "$env:USERPROFILE\.hunteros\bin;$env:PATH"
+$env:PATH = "$env:USERPROFILE\.hunteros\venv\Scripts;$env:USERPROFILE\.hunteros\bin;$env:PATH"
 # <<< hunteros PATH <<<
 '@
         Write-Ok "PATH registered in $profilePath - open a NEW shell to pick it up"

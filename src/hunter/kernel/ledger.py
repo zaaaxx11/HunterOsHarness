@@ -17,13 +17,13 @@ are free. Invariants:
       that reject direct UPDATE/DELETE on events/findings/evidence.
 
 State directory convention: ``<state_dir>/ledger.db`` where ``state_dir`` is
-CWD/.hunter by default (env HUNTER_STATE_DIR overrides, or explicit path).
+``~/.hunter`` by default (M11 unified home; env HUNTER_STATE_DIR overrides,
+or an explicit path).
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 import time
@@ -275,10 +275,9 @@ class Ledger:
     def _resolve_path(path: str | Path | None) -> Path:
         if path is not None:
             return Path(path)
-        state_dir = os.environ.get("HUNTER_STATE_DIR")
-        if state_dir:
-            return Path(state_dir) / "ledger.db"
-        return Path.cwd() / ".hunter" / "ledger.db"
+        from hunter.home import state_dir  # deferred: home.py is stdlib-only
+
+        return state_dir() / "ledger.db"
 
     @property
     def path(self) -> Path:

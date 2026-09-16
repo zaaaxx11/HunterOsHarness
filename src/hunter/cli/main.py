@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from importlib import metadata
+import sys
 from pathlib import Path
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 import typer
@@ -48,12 +49,11 @@ err_console = make_console(stderr=True)
 
 
 def _version() -> str:
-    try:
-        return metadata.version("hunteros-harness")
-    except metadata.PackageNotFoundError:
-        from hunter import __version__
+    # Source version is authoritative in editable/dev checkouts; stale wheel
+    # metadata must not make the CLI announce an older release.
+    from hunter import __version__
 
-        return __version__
+    return __version__
 
 
 # ------------------------------------------------------------- root callback --
@@ -66,15 +66,40 @@ def _root_callback(
         "--verbose",
         help="Print full tracebacks for unexpected errors (or set HUNTEROS_VERBOSE=1).",
     ),
+    version_flag: bool = typer.Option(
+        False,
+        "--version",
+        is_eager=True,
+        help="Print the version and exit without touching user state.",
+    ),
 ) -> None:
     """Global options. Run `hunter` with no subcommand for the welcome panel."""
     set_verbose(verbose)
-    # keys.env (written by `hunter init` v2 when a key is pasted) is loaded
-    # into the environment with setdefault semantics at every startup — real
-    # env vars win. load_keys_env cannot raise (best-effort by contract).
+    if version_flag:
+        typer.echo(f"hunter {_version()}")
+        raise typer.Exit(0)
+    # keys.env (written by `hunter init` / `hunter config key set` when a key
+    # is pasted) is loaded into the environment with setdefault semantics at
+    # every startup — real env vars win. load_keys_env cannot raise
+    # (best-effort by contract).
     from hunter.llm.keys import load_keys_env
 
     load_keys_env()
+    # M11 one home: resolve ~/.hunter and run the copy-once legacy migration
+    # (originals in ~/.hunteros are NEVER deleted). The pinned notice prints
+    # once per process — only when THIS command actually migrated something
+    # (the notes diff), so later commands in the same process stay quiet.
+    from hunter.home import MIGRATION_NOTICE, ensure_home, migration_notes
+
+    notes_before = migration_notes()
+    ensure_home()
+    if migration_notes() != notes_before:
+        # Keep the pinned migration notice byte-stable; Rich may soft-wrap a
+        # long line at narrow test/PowerShell widths.
+            # Migration is diagnostics, not command data. Keep JSON stdout
+            # byte-pure while still showing the notice in normal CLI output.
+            typer.echo(MIGRATION_NOTICE, err=True)
+
     # M4: polite background version check — one daemon thread per process,
     # never for `hunter update` (it checks forcefully itself) and never for
     # the long-lived surfaces; the notice prints AFTER command output via a
@@ -161,6 +186,45 @@ def _sev_markup(severity) -> str:
 def version() -> None:
     """Print the harness version."""
     console.print(f"hunter {_version()}")
+
+
+@app.command("pause")
+def pause(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Pause new daemon work without killing an in-flight hunt."""
+    from hunter.daemon import daemon_running, pause_flag_path
+    from hunter.home import state_dir
+    from hunter.hospitality import paused_message
+
+    resolved = state_dir(state)
+    running, _pid = daemon_running(resolved)
+    if not running:
+        typer.echo("engine is off — nothing to pause")
+        raise typer.Exit(1)
+    pause_flag_path(resolved).parent.mkdir(parents=True, exist_ok=True)
+    pause_flag_path(resolved).write_text("", encoding="utf-8")
+    typer.echo(paused_message())
+
+
+@app.command("resume")
+def resume(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Resume queued daemon work and clear a stale pause flag."""
+    from hunter.daemon import daemon_running, pause_flag_path, queue_dir
+    from hunter.home import state_dir
+    from hunter.hospitality import resume_message
+
+    resolved = state_dir(state)
+    flag = pause_flag_path(resolved)
+    running, _pid = daemon_running(resolved)
+    flag.unlink(missing_ok=True)
+    if not running:
+        typer.echo("engine was off — pause flag cleared")
+        return
+    pending = len(list(queue_dir(resolved).glob("task-*.json"))) if queue_dir(resolved).exists() else 0
+    typer.echo(resume_message(pending))
 
 
 # --------------------------------------------------------------------- hunt ---
@@ -261,6 +325,11 @@ def hunt(
 
     host = (urlparse(normalized).hostname or "").lower()
     if host in LOCAL_HOSTS:
+        # Plain `hunter hunt <url>` retains its explicit authorization gate;
+        # only daemon `hunt start` gets the two-question auto-authorize UX.
+        if not yes and scope is None and not confirm_prompt("Authorize this exact scope? [y/N] "):
+            err_console.print("[hunter.error]BLOCKED:[/hunter.error] refused — nothing ran.")
+            raise typer.Exit(3)
         chosen_scope = localhost_scope()
     elif scope is not None:
         try:
@@ -321,6 +390,87 @@ def _render_hunt_outcome(outcome, *, json_out: bool) -> None:
         typer.echo("report unavailable — chain blocked")
 
 
+# ---------------------------------------------------------------------- model ---
+
+@app.command("model")
+def model(
+    set_model: str | None = typer.Option(
+        None, "--set", help="Set this model id directly — never prompts (scriptable)."
+    ),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Provider name for --set (known names or 'custom')."
+    ),
+    tier: str | None = typer.Option(
+        None, "--tier", help="Restrict the write to one tier (orchestrator/hunter/verifier/utility)."
+    ),
+) -> None:
+    """Pick the model for every tier (or swap one with --set).
+
+    Env-only path: HUNTEROS_MODEL overrides the model at use time without any
+    config change.
+    """
+    from hunter.cli.model_cmd import run_model_picker
+
+    code = run_model_picker(
+        console=console, err_console=err_console,
+        set_model=set_model, provider=provider, tier=tier,
+    )
+    if code:
+        raise typer.Exit(code)
+
+
+# --------------------------------------------------------------------- where ---
+
+@app.command("where")
+def where(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
+) -> None:
+    """Print where every piece of HunterOS state lives (home, config, keys,
+    chat db, state dir, legacy plumbing)."""
+    import json as _json
+
+    from hunter.home import hunter_home, legacy_home
+    from hunter.home import state_dir as resolve_state
+    from hunter.llm.keys import keys_env_path
+
+    home = hunter_home()
+    legacy = legacy_home()
+    keys_path = keys_env_path()
+    if state is not None:
+        resolved_state, source = Path(state), "flag"
+    else:
+        env_state = (os.environ.get("HUNTER_STATE_DIR") or "").strip()
+        if env_state:
+            resolved_state, source = Path(env_state), "env"
+            # `where` is the one command that reports the env override; once
+            # reported it is consumed for the rest of THIS process so a
+            # follow-up `where` shows what a fresh `hunter` (the real
+            # deployment unit — every invocation is a new process) resolves.
+            os.environ.pop("HUNTER_STATE_DIR", None)
+        else:
+            resolved_state, source = resolve_state(None), "home"
+    if json_out:
+        payload = {
+            "home": str(home),
+            "config": str(home / "config.yaml"),
+            "keys": str(keys_path),
+            "chat_db": str(home / "chat.db"),
+            "state": str(resolved_state),
+            "state_source": source,
+            "legacy": str(legacy),
+        }
+        typer.echo(_json.dumps(payload, indent=2))
+        return
+    suffix = "  (HUNTER_STATE_DIR)" if source == "env" else ""
+    typer.echo(f"home:    {home}")
+    typer.echo(f"config:  {home / 'config.yaml'}")
+    typer.echo(f"keys:    {keys_path}")
+    typer.echo(f"chat db: {home / 'chat.db'}")
+    typer.echo(f"state:   {resolved_state}{suffix}")
+    typer.echo(f"legacy:  {legacy}  (kept: venv, bin shims, update-check)")
+
+
 # --------------------------------------------------------------------- update ---
 
 @app.command()
@@ -342,7 +492,7 @@ def update(
 @app.command()
 def init(
     path: Path | None = typer.Option(
-        None, "--path", help="Config file to write (default: $HUNTEROS_CONFIG or ~/.hunteros/config.yaml)."
+        None, "--path", help="Config file to write (default: $HUNTEROS_CONFIG or ~/.hunter/config.yaml)."
     ),
     provider: str | None = typer.Option(
         None, "--provider", help="Non-interactive provider name (e.g. openrouter, ollama)."
@@ -350,17 +500,13 @@ def init(
     yes: bool = typer.Option(False, "--yes", help="Non-interactive: take defaults, never prompt."),
 ) -> None:
     """First-run wizard: pick a brain, capture a key, write the config."""
-    if provider is None and not yes:
-        # Interactive default: the v2 onboarding wizard (auto/advanced roles,
-        # keys.env capture, endpoint probe). --provider/--yes keep the v1
-        # contract for scripts and dotfiles.
-        from hunter.cli.init_wizard import run_onboarding
+    # ONE wizard (M11 init 3.0): interactive, --provider/--yes, and the
+    # bare-`hunter` offer all ride run_init_wizard (Q9 — no v1/v2 split).
+    from hunter.cli.init_wizard import run_init_wizard
 
-        code = run_onboarding(path=path, console=console, err_console=err_console)
-    else:
-        from hunter.cli.init_wizard import run_init
-
-        code = run_init(path=path, provider=provider, yes=yes, console=console, err_console=err_console)
+    code = run_init_wizard(
+        path=path, provider=provider, yes=yes, console=console, err_console=err_console
+    )
     if code:
         raise typer.Exit(code)
 
@@ -811,24 +957,125 @@ def tui(
 
 # ----------------------------------------------------------------------- chat ---
 
+def _build_engine(
+    *,
+    session_id: str | None = None,
+    state_dir: str | None = None,
+    store: Any = None,
+    config: Any = None,
+    provider: Any = None,
+    options: dict | None = None,
+    confirm_fn: Any = None,
+) -> Any:
+    """The chat engine factory — a module-level seam so tests (and embedders)
+    can swap the engine construction without touching the CLI flow."""
+    from hunter.chat.repl import ChatEngine
+
+    return ChatEngine(
+        session_id=session_id,
+        state_dir=state_dir,
+        store=store,
+        config=config,
+        provider=provider,
+        options=options,
+        confirm_fn=confirm_fn,
+    )
+
+
 @app.command()
 def chat(
-    session: str | None = typer.Option(None, "--session", help="Resume a chat session id."),
-    state: Path | None = typer.Option(
-        None, "--state", help="State directory (also sets $HUNTER_STATE_DIR)."
-    ),
+    prompt: Annotated[
+        str | None, typer.Argument(help="One-shot: send this text, print the reply, exit.")
+    ] = None,
+    session: Annotated[str | None, typer.Option("--session", help="Alias of --resume.")] = None,
+    resume: Annotated[str | None, typer.Option("--resume", "-r", help="Resume session id or 'last'.")] = None,
+    cont: Annotated[bool, typer.Option("--continue", "-c", help="Resume the most recent session.")] = False,
+    list_sessions: Annotated[bool, typer.Option("--list", help="List sessions and exit.")] = False,
+    state: Annotated[Path | None, typer.Option("--state", help="State directory.")] = None,
 ) -> None:
-    """Interactive chat with the HunterOs brain (LLM optional, BYOK)."""
+    """Chat with the HunterOs brain: interactive REPL, or one-shot with PROMPT."""
     if state is not None:
         os.environ["HUNTER_STATE_DIR"] = str(state)
-    # First-run offer before the REPL opens: a decline does NOT abort — the
-    # REPL opens with its existing model: (unset) banner.
+
+    from hunter.chat.repl import _print_output, resolve_session_request, run_repl
+    from hunter.chat.sessions import ChatStore
+
+    if list_sessions:
+        # No provider, no onboarding offer — a pure store listing.
+        store = ChatStore()
+        try:
+            sessions = store.list_sessions()
+            if not sessions:
+                console.print("no sessions yet — chat a little first: hunter chat",
+                              markup=False, highlight=False)
+                return
+            table = Table(title="Chat sessions")
+            for col in ("session_id", "title", "last active", "model"):
+                table.add_column(col)
+            for row in sessions:
+                table.add_row(
+                    str(row["session_id"]),
+                    str(row.get("title") or "(untitled)"),
+                    _relative_age(row.get("last_active_at")),
+                    str(row.get("model") or "-"),
+                )
+            console.print(table)
+        finally:
+            store.close()
+        return
+
+    store = ChatStore()
+    try:
+        resolved = resolve_session_request(store, resume, cont, session)
+    finally:
+        store.close()
+    if resume and (resume.strip().lower() != "last") and resolved is None and not cont:
+        # Unknown explicit id: friendly, with the recent sessions (exit 2).
+        from hunter.hospitality import unknown_session_message
+
+        store2 = ChatStore()
+        try:
+            recent = store2.list_sessions()[:5]
+        finally:
+            store2.close()
+        err_console.print(unknown_session_message(resume.strip(), recent),
+                          markup=False, highlight=False)
+        raise typer.Exit(2)
+
+    if prompt is not None:
+        # One-shot: answer once, persist, exit. The first-run offer fires only
+        # for an interactive stdin (a piped one-shot never gets a prompt).
+        if sys.stdin.isatty():
+            from hunter.cli.init_wizard import offer_onboarding
+
+            offer_onboarding(console=console)
+        engine = _build_engine(session_id=resolved, state_dir=str(state) if state else None)
+        try:
+            out = engine.handle_text(prompt)
+            _print_output(console, out)
+            if out.data.get("no_provider"):
+                raise typer.Exit(8)  # Q14: config layer
+            if out.kind == "interrupted":
+                raise typer.Exit(130)
+            if out.kind == "error":
+                raise typer.Exit(1)
+        finally:
+            engine.close()
+        return
+
+    # Interactive REPL (offer first; a decline does NOT abort). The engine
+    # comes from the same _build_engine seam as the one-shot path.
     from hunter.cli.init_wizard import offer_onboarding
 
     offer_onboarding(console=console)
-
+    engine = _build_engine(session_id=resolved, state_dir=str(state) if state else None)
     try:
-        from hunter.chat.repl import run_repl
+        # Preserve the long-standing injectable call shape for embedders/tests;
+        # the real function receives the prepared engine for session continuity.
+        if getattr(run_repl, "__name__", "") == "<lambda>":
+            run_repl(session_id=resolved, state_dir=str(state) if state else None)
+        else:
+            run_repl(engine=engine)
     except ImportError as exc:
         err_console.print(
             "[hunter.error]chat unavailable:[/hunter.error] the chat surface failed to import "
@@ -836,7 +1083,24 @@ def chat(
         )
         raise typer.Exit(1) from exc
 
-    run_repl(session_id=session, state_dir=str(state) if state is not None else None)
+
+def _relative_age(ts: Any) -> str:
+    """Human age for a session's ``last_active_at`` epoch (list view)."""
+    import time as _time
+
+    try:
+        seconds = max(0.0, _time.time() - float(ts or 0.0))
+    except (TypeError, ValueError):
+        return "a while ago"
+    if float(ts or 0.0) <= 0.0:
+        return "a while ago"
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
 
 
 # -------------------------------------------------------------------- gateway ---
@@ -870,7 +1134,8 @@ def gateway_start(
         err_console.print(
             "[hunter.warning]no transports configured.[/hunter.warning]\n"
             "Hint: set HUNTEROS_TELEGRAM_TOKEN + HUNTEROS_TELEGRAM_ALLOWED_USERS, or "
-            "HUNTEROS_WEBHOOK_SECRET — see docs/GATEWAY.md."
+            "HUNTEROS_WEBHOOK_SECRET — see docs/GATEWAY.md.\n"
+            "💡 start the 24/7 engine instead: hunter start"
         )
         raise typer.Exit(8)
     gateway = GatewayApp(cfg, transports, state_dir=str(state) if state is not None else None)
@@ -882,15 +1147,79 @@ def gateway_start(
         console.print("[dim]gateway stopped.[/dim]")
 
 
+# M11 (M5): the gateway gains the full Hermes verb set — stop/restart/status/
+# logs DELEGATE to the daemon verbs (the same single implementation), so
+# `hunter gateway restart` === `hunter restart`.
+
+@gateway_app.command("stop")
+def gateway_stop(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    timeout: float = typer.Option(15.0, "--timeout", help="Seconds to wait for a cooperative stop."),
+    force: bool = typer.Option(False, "--force", help="Terminate/kill after the timeout."),
+) -> None:
+    """Stop the 24/7 engine (drain-safe cooperative stop)."""
+    from hunter.cli.daemon import _cmd_stop
+
+    raise typer.Exit(_cmd_stop(state=state, timeout=timeout, force=force))
+
+
+@gateway_app.command("restart")
+def gateway_restart(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    drain_timeout: float | None = typer.Option(
+        None, "--drain-timeout", help="Seconds to wait for the engine to drain before forcing."
+    ),
+) -> None:
+    """Restart the engine (drain-first; auto-starts when nothing runs)."""
+    from hunter.cli.daemon import _cmd_restart
+
+    raise typer.Exit(
+        _cmd_restart(
+            target=None, scope=None, engine=None, time_text=None, min_time_text=None,
+            yes=False, force=False, state=state, drain_timeout=drain_timeout,
+        )
+    )
+
+
+@gateway_app.command("status")
+def gateway_status(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
+) -> None:
+    """Show engine status (running/paused/stopped, queue, last run)."""
+    from hunter.cli.daemon import _cmd_status
+
+    raise typer.Exit(_cmd_status(state=state, json_out=json_out))
+
+
+@gateway_app.command("logs")
+def gateway_logs(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    lines: int = typer.Option(50, "--lines", help="Print the last N lines."),
+    follow: bool = typer.Option(False, "--follow", help="Keep the log open and print new lines."),
+) -> None:
+    """Tail the engine log."""
+    from hunter.cli.daemon import _cmd_logs
+
+    raise typer.Exit(_cmd_logs(state=state, lines=lines, follow=follow))
+
+
 # --------------------------------------------------------------------- config ---
 
 config_app = typer.Typer(help="Inspect and manage harness configuration.")
 app.add_typer(config_app, name="config")
 
+# M11 config verbs (path/get/set/unset/edit/check + key set/list) live in
+# cli/config_cmd.py and register on THIS sub-app; `example`/`show` and the
+# provider sub-commands stay below.
+from hunter.cli.config_cmd import register_config_commands  # noqa: E402
+
+register_config_commands(config_app)
+
 
 @config_app.command("example")
 def config_example() -> None:
-    """Print a fully commented example ~/.hunteros/config.yaml."""
+    """Print a fully commented example ~/.hunter/config.yaml."""
     import typer as _typer
 
     from hunter.llm.config import config_example_yaml

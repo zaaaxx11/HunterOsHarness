@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hunteros-harness"
-version = "0.5.0"
+version = "0.6.0"
 description = "HunterOs — evidence-first security-audit harness. Deterministic engine today, pluggable LLM brain tomorrow."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -55,6 +55,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 # typer/click apps construct Option/Argument defaults in signatures (B008).
 "src/hunter/cli/main.py" = ["B008", "E501"]
+"src/hunter/cli/config_cmd.py" = ["B008", "E501"]
+"src/hunter/cli/daemon.py" = ["B008", "E501"]
+"src/hunter/cli/model_cmd.py" = ["B008", "E501"]
 "src/hunter/agent/skills.py" = ["E501", "SIM"]
 "src/hunter/agent/curator.py" = ["E501"]
 "src/hunter/chat/commands.py" = ["E501"]
