@@ -275,9 +275,9 @@ class Ledger:
     def _resolve_path(path: str | Path | None) -> Path:
         if path is not None:
             return Path(path)
-        from hunter.home import state_dir  # deferred: home.py is stdlib-only
+        from hunter.runtime_paths import RuntimePaths
 
-        return state_dir() / "ledger.db"
+        return RuntimePaths.resolve(migrate=False).ledger
 
     @property
     def path(self) -> Path:

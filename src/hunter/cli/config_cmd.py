@@ -69,14 +69,9 @@ def _display_path(path: Path | None) -> Path:
     """Where `config path` points: explicit → $HUNTEROS_CONFIG →
     ~/.hunter/config.yaml (returned even when the file does not exist yet —
     it is the write target)."""
-    if path is not None:
-        return Path(path)
-    from_env = (os.environ.get("HUNTEROS_CONFIG") or "").strip()
-    if from_env:
-        return Path(from_env)
-    from hunter.home import hunter_home
+    from hunter.runtime_paths import RuntimePaths
 
-    return hunter_home() / "config.yaml"
+    return RuntimePaths.resolve(config=path, migrate=False).config
 
 
 def _raw_tree(target: Path) -> dict[str, Any]:
@@ -253,12 +248,24 @@ def _config_unset_cmd(
 
 
 def _resolve_editor() -> str:
-    """$VISUAL → $EDITOR → `notepad` (win32) → `vi` (POSIX)."""
+    """$VISUAL → $EDITOR → `notepad` (win32) → `vi` (POSIX).
+
+    The value is a raw command STRING; :func:`_editor_argv` splits it with the
+    platform-correct rules so ``code --wait`` and quoted Windows paths work.
+    """
     for var in ("VISUAL", "EDITOR"):
         editor = (os.environ.get(var) or "").strip()
         if editor:
             return editor
     return "notepad" if os.name == "nt" else "vi"
+
+
+def _editor_argv(editor: str, target: Path) -> list[str]:
+    """Editor command string → argv ending in the file path (never a shell)."""
+    from hunter.platform_command import split_command
+
+    parts = split_command(editor)
+    return [*parts, str(target)] if parts else [str(target)]
 
 
 def _config_edit_cmd() -> None:
@@ -272,7 +279,19 @@ def _config_edit_cmd() -> None:
     bak.write_bytes(target.read_bytes())  # overwrites the previous .bak
     console.print(f"Previous config backed up to: {bak}", markup=False, highlight=False)
     editor = _resolve_editor()
-    subprocess.call([editor, str(target)])  # NO shell — argv list only
+    # NO shell, and the editor string is split with host quoting rules so
+    # values like `code --wait` or `"C:\Program Files\...\editor.exe"` work.
+    try:
+        subprocess.call(_editor_argv(editor, target))  # noqa: S603 — argv list only
+    except OSError as exc:
+        err_console.print(
+            f"[hunter.error]cannot launch editor:[/hunter.error] {editor!r} "
+            f"({type(exc).__name__}) — set $VISUAL or $EDITOR to a working editor",
+            markup=False,
+            highlight=False,
+        )
+        err_console.print(f"your previous config is at {bak}", markup=False, highlight=False)
+        raise typer.Exit(1) from exc
     try:
         from hunter.llm.config import load_config
 

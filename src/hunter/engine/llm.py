@@ -126,14 +126,13 @@ class LLMEngine:
         # still refuses first, in every mode. Without the flag the gate stays
         # unconfigured and dispatch fails closed (approval.unavailable).
         if ctx.config.get("approval_auto_allow"):
-            from pathlib import Path
-
             from hunter.agent.approval import ApprovalStore, make_approval_gate
+            from hunter.runtime_paths import RuntimePaths
 
             state_dir = ctx.config.get("state_dir")
             if state_dir:
                 tool_ctx.config["approval_gate"] = make_approval_gate(
-                    ApprovalStore(Path(str(state_dir)) / "approvals"),
+                    ApprovalStore(RuntimePaths.resolve(state=state_dir, migrate=False).approvals),
                     ledger=ctx.ledger,
                     run_id=run_id,
                     auto_allow=True,

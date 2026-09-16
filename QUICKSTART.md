@@ -1,5 +1,8 @@
 # QUICKSTART — HunterOs Harness v0.6.0 in 60 seconds
 
+Supported platforms, Python versions, shell-specific commands, WSL2 guidance,
+and portability troubleshooting: **[docs/PORTABILITY.md](docs/PORTABILITY.md)**.
+
 **Evidence-first security auditing.** Every finding lives in a hash-chained
 ledger with bound evidence — a claim the harness cannot prove is a claim it
 refuses to store.
@@ -257,7 +260,7 @@ stderr notice after command output; disable it with
 `HUNTEROS_NO_UPDATE_CHECK=1` (CI is skipped automatically). Notices are
 stderr-only and quiet in long-lived `chat`, `tui`, and `gateway` surfaces.
 
-## v0.4.0 contracts
+## Current contracts
 
 Ordinary free text remains chat. Target-bearing hunt intent requires explicit
 confirmation when hunt mode is off; `/hunt on` and `/hunt off` are process-local.

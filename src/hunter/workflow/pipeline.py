@@ -82,7 +82,11 @@ def _ledger_db_path(state_dir: str | Path | None) -> str | Path | None:
     ``None`` keeps the Ledger default convention (env HUNTER_STATE_DIR or
     CWD/.hunter); otherwise the state directory holds ``ledger.db``.
     """
-    return None if state_dir is None else Path(state_dir) / "ledger.db"
+    if state_dir is None:
+        return None
+    from hunter.runtime_paths import RuntimePaths
+
+    return RuntimePaths.resolve(state=state_dir, migrate=False).ledger
 
 
 def _utc_now_iso() -> str:

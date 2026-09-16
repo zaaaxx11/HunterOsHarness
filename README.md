@@ -30,8 +30,9 @@ hunter gateway status  # inspect the 24/7 engine
 ```
 
 HunterOS keeps behavior in `~/.hunter/config.yaml`, secrets in
-`~/.hunter/keys.env`, and runtime state under `~/.hunter`. Existing legacy
-state under `~/.hunteros` is copied forward without deleting the originals.
+`~/.hunter/keys.env`, and runtime state under `~/.hunter`. Legacy state under
+`~/.hunteros` is migrated (copied forward) on first run without deleting the
+originals.
 
 ## User skills and curator
 
@@ -176,6 +177,7 @@ hunter scan https://target.example.com --scope scope.manifest.json
 ```
 
 Details, scope manifests, and troubleshooting: [QUICKSTART.md](QUICKSTART.md).
+Platform support, shell-specific install commands, and diagnostics: [docs/PORTABILITY.md](docs/PORTABILITY.md).
 First-run transcripts: [docs/FIRST-RUN.md](docs/FIRST-RUN.md).
 
 ## Updating
@@ -252,7 +254,7 @@ Full layer diagram, governance flow, invariants, and the L1–L5 framing:
   HMAC-verified against the Meta app secret or refused with 403.
   See [docs/GATEWAY.md](docs/GATEWAY.md).
 - **Development notes** — roadmaps, plans, tests, and testing products
-  stay untracked from v0.5 and are not part of the release package.
+  stay untracked from the public release and are not part of the release package.
   Install the package, then edit your own `SOUL.md` copy to tune the
   operating character.
 

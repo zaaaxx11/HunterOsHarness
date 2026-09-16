@@ -30,6 +30,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,8 @@ __all__ = [
     "pause_flag_path",
     "pid_alive",
     "pid_path",
+    "ProcessIdentity",
+    "process_identity",
     "process_signature",
     "queue_dir",
     "read_pid",
@@ -191,57 +194,118 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """Creation identity used to prevent PID reuse from claiming a daemon."""
+
+    pid: int
+    signature: str
+    verified: bool
+    reason: str = ""
+
+    @classmethod
+    def for_pid(cls, pid: int) -> ProcessIdentity:
+        """Read a portable process creation identity, failing closed."""
+        try:
+            number = int(pid)
+        except (TypeError, ValueError):
+            return cls(0, "", False, "invalid pid")
+        if number <= 0:
+            return cls(number, "", False, "invalid pid")
+        if sys.platform == "win32":
+            signature = _windows_process_signature(number)
+            return cls(
+                number,
+                signature or "",
+                bool(signature),
+                "" if signature else "GetProcessTimes unavailable",
+            )
+        # Linux and WSL expose the Linux proc start-time field. Use it only
+        # when the file parses exactly; unknown platforms do not guess.
+        if sys.platform.startswith("linux"):
+            try:
+                stat = Path(f"/proc/{number}/stat").read_text(encoding="utf-8")
+                fields = stat[stat.rfind(")") + 1 :].split()
+                signature = fields[19] if len(fields) > 19 else ""
+            except (OSError, UnicodeDecodeError):
+                signature = ""
+            return cls(
+                number,
+                signature,
+                bool(signature),
+                "" if signature else "proc start time unavailable",
+            )
+        if sys.platform == "darwin":
+            signature = _portable_ps_signature(number)
+            return cls(
+                number,
+                signature or "",
+                bool(signature),
+                "" if signature else "ps identity unavailable",
+            )
+        return cls(number, "", False, f"unsupported process identity platform: {sys.platform}")
+
+
+def _windows_process_signature(pid: int) -> str | None:
+    """Return Windows creation FILETIME, or None when it cannot be verified."""
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except (AttributeError, OSError):  # pragma: no cover - non-windows
+        return None
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        class _FILETIME(ctypes.Structure):
+            _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
+
+        creation = _FILETIME()
+        exit_time = _FILETIME()
+        kernel_time = _FILETIME()
+        user_time = _FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            return None
+        return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _portable_ps_signature(pid: int) -> str | None:
+    """Use macOS ``ps`` start time as an optional identity fallback."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def process_identity(pid: int) -> ProcessIdentity:
+    """Return the verified identity record for ``pid``."""
+    return ProcessIdentity.for_pid(pid)
+
+
 def process_signature(pid: int) -> str | None:
-    """A creation-time signature for ``pid`` (PID-reuse guard); None when the
-    process is gone. win32: ``GetProcessTimes`` creation FILETIME.
-    POSIX: ``/proc/<pid>/stat`` field 22 (starttime)."""
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return None
-    if pid <= 0:
-        return None
-    if sys.platform == "win32":
-        import ctypes
-
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        try:
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        except (AttributeError, OSError):  # pragma: no cover — non-windows
-            return None
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return None
-        try:
-
-            class _FILETIME(ctypes.Structure):
-                _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
-
-            creation = _FILETIME()
-            exit_time = _FILETIME()
-            kernel_time = _FILETIME()
-            user_time = _FILETIME()
-            if not kernel32.GetProcessTimes(
-                handle,
-                ctypes.byref(creation),
-                ctypes.byref(exit_time),
-                ctypes.byref(kernel_time),
-                ctypes.byref(user_time),
-            ):
-                return None
-            return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    # comm (field 2) may contain spaces/parens — parse after the LAST ')'.
-    fields = stat[stat.rfind(")") + 1 :].split()
-    # fields[0] is state (field 3) → starttime (field 22) is fields[19].
-    return fields[19] if len(fields) > 19 else None
+    """Compatibility wrapper returning a signature only when verified."""
+    identity = process_identity(pid)
+    return identity.signature if identity.verified else None
 
 
 def read_pid(state_dir: str | Path) -> dict[str, Any] | None:
@@ -267,8 +331,11 @@ def is_stale(
 
 
 def daemon_running(state_dir: str | Path) -> tuple[bool, str]:
-    """``(running, reason)`` — pid alive AND its creation signature matches
-    pid.json AND the heartbeat is not stale. Every False carries a reason."""
+    """Return liveness only after identity and heartbeat validation.
+
+    A pid file alone is never success; unverifiable identities fail closed and
+    include the platform-specific reason where available.
+    """
     record = read_pid(state_dir)
     if record is None:
         return False, "no daemon pid file"
@@ -280,9 +347,24 @@ def daemon_running(state_dir: str | Path) -> tuple[bool, str]:
         return False, f"pid {pid} is not alive"
     expected = str(record.get("proc_signature") or "")
     current = process_signature(pid)
-    if not expected or not current or current != expected:
+    if not expected:
+        reason = str(record.get("proc_identity_reason") or "process identity is missing")
+        return False, f"pid {pid} identity is unverified: {reason}"
+    if not current:
+        identity = process_identity(pid)
+        return False, f"pid {pid} identity is unverified: {identity.reason or 'unavailable'}"
+    if current != expected:
         return False, f"pid {pid} was reused by another process (signature mismatch)"
-    if is_stale(_read_json(heartbeat_path(state_dir))):
+    heartbeat = _read_json(heartbeat_path(state_dir))
+    if heartbeat is None:
+        return False, "daemon heartbeat is missing"
+    try:
+        heartbeat_pid = int(heartbeat.get("pid", 0))
+    except (TypeError, ValueError):
+        return False, "corrupt daemon heartbeat"
+    if heartbeat_pid != pid:
+        return False, f"daemon heartbeat belongs to pid {heartbeat_pid}, not {pid}"
+    if is_stale(heartbeat):
         return False, f"heartbeat is stale (>{DAEMON_STALE_SECONDS:.0f}s)"
     return True, "running"
 
@@ -545,8 +627,14 @@ def start_daemon(
     spawn_detached(args, log_path=log_path(state), env=env)
     deadline = time.monotonic() + _START_WAIT_SECONDS
     while time.monotonic() < deadline:
-        if read_pid(state) is not None:
-            return 0
+        record = read_pid(state)
+        if record is not None:
+            try:
+                pid = int(record.get("pid", 0))
+            except (TypeError, ValueError):
+                pid = 0
+            if pid > 0 and daemon_running(state)[0]:
+                return 0
         time.sleep(0.1)
     return 1
 
@@ -656,7 +744,9 @@ def _consume_restart_marker(state_dir: str | Path, log_file: str | Path) -> None
 def _last_run_summary(state: Path) -> dict[str, Any] | None:
     """The newest ledger run as ``{"run_id","status","findings"}`` — read-only
     and never raising (reporting is best-effort)."""
-    db = state / "ledger.db"
+    from hunter.runtime_paths import RuntimePaths
+
+    db = RuntimePaths.resolve(state=state, migrate=False).ledger
     if not db.is_file():
         return None
     try:
@@ -803,8 +893,16 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
     from hunter.gateway.app import GatewayApp, transports_from_env
     from hunter.llm.config import load_config
 
-    # 1. Self-registration FIRST (the parent waits for this file).
-    signature = process_signature(os.getpid()) or ""
+    # 1. Refuse before registration when the platform cannot verify identity.
+    # A live-looking pid.json must never advertise an unverified daemon.
+    identity = process_identity(os.getpid())
+    if not identity.verified:
+        daemon_dir(state_dir).mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError), open(log_path(state_dir), "a", encoding="utf-8") as handle:
+            handle.write(f"daemon startup refused: process identity unverified: {identity.reason}\n")
+        return 1
+    # Self-registration follows identity verification; the parent waits for this file.
+    signature = identity.signature
     transports: list[Any] = []
     with contextlib.suppress(Exception):  # transports are advisory metadata
         transports = list(transports_from_env())
@@ -814,6 +912,8 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
             "pid": os.getpid(),
             "started_at": time.time(),
             "proc_signature": signature,
+            "proc_identity_verified": identity.verified,
+            "proc_identity_reason": identity.reason,
             "harness_version": __version__,
             "state_dir": str(state_dir.resolve()),
             "transports": [getattr(t, "name", "?") for t in transports],
@@ -867,11 +967,14 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
     finally:
         # Clean shutdown: disconnect transports, let the open run finish.
         gateway_task.cancel()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await gateway_task
-        await worker_task  # an in-flight hunt winds down via the stop flag
+        # An in-flight hunt winds down via the stop flag. Cancellation during
+        # shutdown must not turn a clean daemon exit into an error.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await worker_task
         heartbeat_task.cancel()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await heartbeat_task
         with contextlib.suppress(OSError):
             pid_path(state_dir).unlink(missing_ok=True)
@@ -893,7 +996,9 @@ if __name__ == "__main__":  # pragma: no cover — the detached child entry
     import argparse
 
     parser = argparse.ArgumentParser(prog="hunter-daemon", description="HunterOs hunt daemon")
-    parser.add_argument("--state", default=os.environ.get("HUNTER_STATE_DIR", ".hunter"))
+    from hunter.runtime_paths import RuntimePaths
+
+    parser.add_argument("--state", default=str(RuntimePaths.resolve(migrate=False).state))
     parser.add_argument("--poll", type=float, default=5.0)
     _args = parser.parse_args()
     raise SystemExit(daemon_main(_args.state, poll_seconds=_args.poll))

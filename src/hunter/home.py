@@ -106,15 +106,16 @@ def state_dir(
     env: Mapping[str, str] | None = None,
     home: Path | None = None,
 ) -> Path:
-    """Explicit ``--state`` → ``$HUNTER_STATE_DIR`` → ``~/.hunter`` (the M11
-    default — cwd is never the default anymore)."""
-    if explicit is not None:
-        return Path(explicit)
-    env_map = os.environ if env is None else env
-    from_env = (env_map.get("HUNTER_STATE_DIR") or "").strip()
-    if from_env:
-        return Path(from_env)
-    return hunter_home(env=env_map, home=home)
+    """Explicit ``--state`` → ``$HUNTER_STATE_DIR`` → ``~/.hunter``.
+
+    Resolution is delegated to :class:`hunter.runtime_paths.RuntimePaths` so
+    ``~`` and HOME/USERPROFILE handling stay identical across every surface.
+    """
+    from hunter.runtime_paths import RuntimePaths
+
+    return RuntimePaths.resolve(
+        state=explicit, env=env, home=home, migrate=False
+    ).state
 
 
 # ---------------------------------------------------------------- migration --

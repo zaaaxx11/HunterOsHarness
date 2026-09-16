@@ -37,6 +37,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -208,7 +209,9 @@ def check_for_newer_version(
     """
     current = current_version or _current_version()
     now = (now_fn or time.time)()
-    base = Path(home) if home is not None else Path.home()
+    from hunter.runtime_paths import RuntimePaths
+
+    base = RuntimePaths.resolve(home=home, migrate=False).home.parent
 
     if not force:
         cached_latest = _read_fresh_cache(base, now)
@@ -502,10 +505,12 @@ def _read_direct_url() -> dict | None:
 def detect_install_method() -> str:
     """``"dev" | "installer" | "pipx" | "pip"`` for THIS process. Never
     raises — any metadata hiccup degrades to "pip"."""
+    from hunter.runtime_paths import RuntimePaths
+
     try:
         return classify_install(
             sys_prefix=Path(sys.prefix),
-            home=Path.home(),
+            home=RuntimePaths.resolve(migrate=False).home.parent,
             direct_url=_read_direct_url(),
             is_windows=os.name == "nt",
         )
@@ -520,10 +525,14 @@ def build_install_plan(
     windows = (os.name == "nt") if is_windows is None else bool(is_windows)
     if method == "installer":
         if windows:
+            # Prefer PowerShell 7 (pwsh) when present, else Windows PowerShell
+            # 5.1 — the installer is 5.1-compatible, but pwsh is often the only
+            # shell on modern/slim images.
+            shell = shutil.which("pwsh") or "powershell"
             return InstallPlan(
                 method="installer",
                 argv=(
-                    "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    shell, "-NoProfile", "-ExecutionPolicy", "Bypass",
                     "-File", "{script}", "-SkipSetup",
                 ),
                 fetch_url=RAW_INSTALL_PS1,
@@ -707,7 +716,14 @@ def run_update(
     method = detect_install_method()
     if method == "dev":
         # Nothing executed — a checkout is updated by git, not by pip magic.
-        console.print("dev/checkout install detected — update with: git pull && pip install -e .")
+        # `&&` is a POSIX/PS7-ism: Windows PowerShell 5.1 rejects it, so the
+        # command is split into two lines that work in every supported shell.
+        if windows:
+            console.print("dev/checkout install detected — update with:")
+            console.print("  git pull")
+            console.print(f'  & "{sys.executable}" -m pip install -e .')
+        else:
+            console.print("dev/checkout install detected — update with: git pull && pip install -e .")
         return 0
 
     result = check_for_newer_version(force=True)

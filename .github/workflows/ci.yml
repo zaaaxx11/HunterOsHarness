@@ -1,12 +1,18 @@
 name: ci
+
 on: [push, pull_request]
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: x64 quality / ${{ matrix.os }} / Python ${{ matrix.python-version }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.11", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     env:
       HUNTEROS_NO_UPDATE_CHECK: "1"
@@ -16,14 +22,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -e ".[dev]"
-      # tests/ ships untracked in v0.5, so every check degrades gracefully
-      # when the directory is absent. shell: bash keeps one syntax across the
-      # ubuntu/windows runners (the windows default is pwsh).
+          cache: pip
+      - name: Install development dependencies
+        run: python -m pip install -e ".[dev]"
       - name: Ruff
         shell: bash
+        # One bash syntax across the ubuntu/windows runners (the Windows
+        # default is pwsh). Source + the tracked scripts/ toolkit are always
+        # linted; the untracked tests/ directory is linted only when it is
+        # actually present, so a checkout without it still degrades gracefully.
         run: |
-          if [ -d tests ]; then
+          if [ -d tests ] && find tests -type f -name 'test_*.py' -print -quit | grep -q .; then
             python -m ruff check src scripts tests
           else
             python -m ruff check src scripts
@@ -31,8 +40,87 @@ jobs:
       - name: Pytest
         shell: bash
         run: |
-          if [ -d tests ]; then
+          if [ -d tests ] && find tests -type f -name 'test_*.py' -print -quit | grep -q .; then
             python -m pytest
           else
-            echo "tests/ absent; skipping"
+            echo "tests/ is absent or contains no test files; skipping pytest"
           fi
+
+  package:
+    name: build and validate package artifacts
+    runs-on: ubuntu-latest
+    env:
+      HUNTEROS_NO_UPDATE_CHECK: "1"
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install artifact tooling
+        run: python -m pip install --disable-pip-version-check build twine
+      - name: Build sdist and wheel
+        run: python -m build --sdist --wheel
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+      - name: Publish artifacts to the workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: hunteros-distributions
+          path: dist/*
+          if-no-files-found: error
+
+  artifact-smoke:
+    name: artifact smoke / ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.13"
+            experimental: false
+          - os: windows-latest
+            python-version: "3.13"
+            experimental: false
+          - os: macos-15-intel
+            python-version: "3.13"
+            experimental: false
+          - os: macos-14
+            python-version: "3.13"
+            experimental: true
+          - os: ubuntu-24.04-arm
+            python-version: "3.13"
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    env:
+      HUNTEROS_NO_UPDATE_CHECK: "1"
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: hunteros-distributions
+          path: dist
+      - name: Install wheel into a clean venv and smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv_dir=.ci-artifact-venv
+          python -m venv "$venv_dir"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            venv_python="$venv_dir/Scripts/python.exe"
+          else
+            venv_python="$venv_dir/bin/python"
+          fi
+          "$venv_python" -m pip install --disable-pip-version-check dist/*.whl
+          "$venv_python" -m pip check
+          "$venv_python" -c 'import hunter; assert hunter.__version__ == "0.6.0"; print(hunter.__version__)'
+          "$venv_python" -m hunter --version

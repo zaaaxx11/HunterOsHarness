@@ -133,15 +133,16 @@ def parse_keys_env(text: str) -> dict[str, str]:
 
 def keys_env_path(*, env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
     """Where keys.env lives: ``$HUNTEROS_KEYS_FILE`` if set, else
-    ``<home>/.hunter/keys.env`` (the unified M11 home)."""
-    env = os.environ if env is None else env
-    from_env = (env.get(KEYS_ENV_ENVVAR) or "").strip()
-    if from_env:
-        return Path(from_env)
-    from hunter.home import HOME_DIRNAME
+    ``<home>/.hunter/keys.env`` (the unified M11 home).
 
-    base = Path.home() if home is None else Path(home)
-    return base / HOME_DIRNAME / KEYS_ENV_FILENAME
+    Pure resolution — ``migrate=False`` on purpose: path inspection (and the
+    startup keys load) must never run the legacy migration as a side effect,
+    or the CLI root callback could migrate before it diffs the notice.
+    """
+    env = os.environ if env is None else env
+    from hunter.runtime_paths import RuntimePaths
+
+    return RuntimePaths.resolve(keys=None, env=env, home=home, migrate=False).keys
 
 
 # -------------------------------------------------------------------- write --
@@ -194,12 +195,14 @@ def write_keys_env(
     (same containment rule as the config target — a stray env var must not aim
     secret writes at arbitrary locations; no force override)."""
     env = os.environ if env is None else env
-    home = Path.home() if home is None else Path(home)
-    target = keys_env_path(env=env, home=home)
+    from hunter.runtime_paths import RuntimePaths
+
+    paths = RuntimePaths.resolve(env=env, home=home, migrate=False)
+    target = paths.keys
     if not entries:
         return target
     from_env = (env.get(KEYS_ENV_ENVVAR) or "").strip()
-    if from_env and not _is_within(target, home):
+    if from_env and not _is_within(target, paths.home.parent):
         raise _keys_error(
             "keys.refused",
             f"${KEYS_ENV_ENVVAR} points outside the home directory: {target}",

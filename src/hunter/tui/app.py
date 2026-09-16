@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import time
 from importlib import metadata, util
 from pathlib import Path
@@ -226,8 +225,10 @@ class HunterTui(App[None]):
             self._ledger = ledger
             self._owns_ledger = False
         else:
+            from hunter.runtime_paths import RuntimePaths
+
             self._ledger = (
-                Ledger(self._state_dir / "ledger.db")
+                Ledger(RuntimePaths.resolve(state=self._state_dir, migrate=False).ledger)
                 if self._state_dir is not None
                 else Ledger()
             )
@@ -604,14 +605,9 @@ class HunterTui(App[None]):
     # -- doctor ----------------------------------------------------------------
 
     def _state_display(self) -> Path:
-        if self._state_dir is not None:
-            return self._state_dir
-        env = os.environ.get("HUNTER_STATE_DIR")
-        if env:
-            return Path(env)
-        from hunter.home import state_dir
+        from hunter.runtime_paths import RuntimePaths
 
-        return state_dir()
+        return RuntimePaths.resolve(state=self._state_dir, migrate=False).state
 
     def _doctor_report(self) -> RichTable:
         table = RichTable(title="Doctor", show_header=False, box=box.SIMPLE, expand=True, pad_edge=False)

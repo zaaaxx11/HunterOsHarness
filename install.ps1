@@ -93,6 +93,11 @@ function Register-Path {
     # HUNTEROS_PROFILE exists so CI/dry-runs (and users with unusual setups)
     # can redirect the write; it is documented in the script header comment.
     $profilePath = if ($env:HUNTEROS_PROFILE) { $env:HUNTEROS_PROFILE } else { $PROFILE }
+    $parent = Split-Path -Parent $profilePath
+    if ($parent -and -not (Test-Path $parent)) {
+        # A fresh account may never have created the profile directory.
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
     if (-not (Test-Path $profilePath)) {
         New-Item -ItemType File -Path $profilePath -Force | Out-Null
     }
@@ -107,6 +112,35 @@ $env:PATH = "$env:USERPROFILE\.hunteros\venv\Scripts;$env:USERPROFILE\.hunteros\
 # <<< hunteros PATH <<<
 '@
         Write-Ok "PATH registered in $profilePath - open a NEW shell to pick it up"
+    }
+    Register-UserPath
+}
+
+function Register-UserPath {
+    # The PowerShell profile covers PowerShell 5.1/7; cmd.exe only reads the
+    # user environment. Persist the venv Scripts + shim dirs in the user PATH so
+    # `hunter`/`hunt` resolve in cmd too. Idempotent; never touches the machine
+    # PATH. Skipped in dry-run (which must not change system state).
+    if ($DryRun) { return }
+    $entries = @(
+        (Join-Path $env:USERPROFILE ".hunteros\venv\Scripts"),
+        (Join-Path $env:USERPROFILE ".hunteros\bin")
+    )
+    $current = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $parts = @()
+    if ($current) { $parts = $current -split ';' | Where-Object { $_ -ne '' } }
+    $added = $false
+    foreach ($entry in $entries) {
+        if (-not ($parts | Where-Object { $_.TrimEnd('\') -ieq $entry.TrimEnd('\') })) {
+            $parts += $entry
+            $added = $true
+        }
+    }
+    if ($added) {
+        [Environment]::SetEnvironmentVariable("PATH", ($parts -join ';'), "User")
+        Write-Ok "user PATH updated for cmd.exe - open a NEW shell to pick it up"
+    } else {
+        Write-Ok "user PATH already contains the HunterOS directories"
     }
 }
 
@@ -232,7 +266,7 @@ Register-Path
 
 if ($SkipSetup) {
     Write-Step "Skipping setup (-SkipSetup)"
-} elseif ($env:HUNTEROS_CONFIG -or (Test-Path (Join-Path $env:USERPROFILE ".hunteros\config.yaml"))) {
+} elseif ($env:HUNTEROS_CONFIG -or (Test-Path (Join-Path $env:USERPROFILE ".hunter\config.yaml")) -or (Test-Path (Join-Path $env:USERPROFILE ".hunteros\config.yaml"))) {
     Write-Step "Config found - skipping the wizard (run 'hunter init' to reconfigure)"
 } elseif (-not [Console]::IsInputRedirected) {
     Write-Step "Launching the onboarding wizard"

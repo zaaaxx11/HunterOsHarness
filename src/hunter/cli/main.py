@@ -78,6 +78,23 @@ def _root_callback(
     if version_flag:
         typer.echo(f"hunter {_version()}")
         raise typer.Exit(0)
+    # M11 one home: resolve ~/.hunter and run the copy-once legacy migration
+    # (originals in ~/.hunteros are NEVER deleted) BEFORE anything loads the
+    # unified home. The pinned notice prints once per process — only when THIS
+    # command actually migrated something (the notes diff), so later commands
+    # in the same process stay quiet. Migration MUST run before load_keys_env:
+    # keys-path resolution itself can migrate (RuntimePaths.resolve defaults to
+    # migrate=True), which would otherwise fire before the notes baseline and
+    # silently suppress the notice.
+    from hunter.home import MIGRATION_NOTICE, ensure_home, migration_notes
+
+    notes_before = migration_notes()
+    ensure_home()
+    if migration_notes() != notes_before:
+        # Migration is diagnostics, not command data. Keep JSON stdout
+        # byte-pure while still showing the notice in normal CLI output.
+        typer.echo(MIGRATION_NOTICE, err=True)
+
     # keys.env (written by `hunter init` / `hunter config key set` when a key
     # is pasted) is loaded into the environment with setdefault semantics at
     # every startup — real env vars win. load_keys_env cannot raise
@@ -85,20 +102,6 @@ def _root_callback(
     from hunter.llm.keys import load_keys_env
 
     load_keys_env()
-    # M11 one home: resolve ~/.hunter and run the copy-once legacy migration
-    # (originals in ~/.hunteros are NEVER deleted). The pinned notice prints
-    # once per process — only when THIS command actually migrated something
-    # (the notes diff), so later commands in the same process stay quiet.
-    from hunter.home import MIGRATION_NOTICE, ensure_home, migration_notes
-
-    notes_before = migration_notes()
-    ensure_home()
-    if migration_notes() != notes_before:
-        # Keep the pinned migration notice byte-stable; Rich may soft-wrap a
-        # long line at narrow test/PowerShell widths.
-            # Migration is diagnostics, not command data. Keep JSON stdout
-            # byte-pure while still showing the notice in normal CLI output.
-            typer.echo(MIGRATION_NOTICE, err=True)
 
     # M4: polite background version check — one daemon thread per process,
     # never for `hunter update` (it checks forcefully itself) and never for
@@ -128,8 +131,11 @@ def _root_callback(
 
 def _open_ledger(state: Path | None) -> Ledger:
     # `state` is a state DIRECTORY (pipeline convention); the db lives inside it.
-    db = None if state is None else Path(state) / "ledger.db"
-    return Ledger(db) if db is not None else Ledger()
+    if state is None:
+        return Ledger()
+    from hunter.runtime_paths import RuntimePaths
+
+    return Ledger(RuntimePaths.resolve(state=state, migrate=False).ledger)
 
 
 def _ledger_guard(exc: Exception) -> typer.Exit:
@@ -430,32 +436,26 @@ def where(
     chat db, state dir, legacy plumbing)."""
     import json as _json
 
-    from hunter.home import hunter_home, legacy_home
-    from hunter.home import state_dir as resolve_state
-    from hunter.llm.keys import keys_env_path
+    from hunter.runtime_paths import RuntimePaths
 
-    home = hunter_home()
-    legacy = legacy_home()
-    keys_path = keys_env_path()
+    paths = RuntimePaths.resolve(state=state, migrate=False)
+    home = paths.home
+    legacy = paths.legacy_home
+    keys_path = paths.keys
     if state is not None:
-        resolved_state, source = Path(state), "flag"
+        resolved_state, source = paths.state, "flag"
+    elif (os.environ.get("HUNTER_STATE_DIR") or "").strip():
+        resolved_state, source = paths.state, "env"
+        # Preserve the historical diagnostic behavior for a second `where`.
+        os.environ.pop("HUNTER_STATE_DIR", None)
     else:
-        env_state = (os.environ.get("HUNTER_STATE_DIR") or "").strip()
-        if env_state:
-            resolved_state, source = Path(env_state), "env"
-            # `where` is the one command that reports the env override; once
-            # reported it is consumed for the rest of THIS process so a
-            # follow-up `where` shows what a fresh `hunter` (the real
-            # deployment unit — every invocation is a new process) resolves.
-            os.environ.pop("HUNTER_STATE_DIR", None)
-        else:
-            resolved_state, source = resolve_state(None), "home"
+        resolved_state, source = paths.state, "home"
     if json_out:
         payload = {
             "home": str(home),
-            "config": str(home / "config.yaml"),
+            "config": str(paths.config),
             "keys": str(keys_path),
-            "chat_db": str(home / "chat.db"),
+            "chat_db": str(paths.chat_db),
             "state": str(resolved_state),
             "state_source": source,
             "legacy": str(legacy),
@@ -464,9 +464,9 @@ def where(
         return
     suffix = "  (HUNTER_STATE_DIR)" if source == "env" else ""
     typer.echo(f"home:    {home}")
-    typer.echo(f"config:  {home / 'config.yaml'}")
+    typer.echo(f"config:  {paths.config}")
     typer.echo(f"keys:    {keys_path}")
-    typer.echo(f"chat db: {home / 'chat.db'}")
+    typer.echo(f"chat db: {paths.chat_db}")
     typer.echo(f"state:   {resolved_state}{suffix}")
     typer.echo(f"legacy:  {legacy}  (kept: venv, bin shims, update-check)")
 

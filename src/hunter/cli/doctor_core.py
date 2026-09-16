@@ -49,6 +49,7 @@ def collect_checks(
     checks.append(
         Check("python", "ok", f"{platform.python_version()} on {platform.system()}")
     )
+    checks.append(_platform_check())
     checks.extend(_dep_checks())
     checks.extend(_ledger_checks(state, ledger_factory))
     checks.extend(_engine_checks())
@@ -60,6 +61,41 @@ def collect_checks(
 
 
 # --------------------------------------------------------------------- deps --
+
+
+def _platform_check() -> Check:
+    """One row describing how THIS platform is supported (portability policy).
+
+    ``ok`` for a first-class target, ``note`` for a platform that can run the
+    package but is not release-gated (emitted as advice, never a failure), and
+    the daemon process-identity backend is named so a macOS/WSL user can see
+    why daemon liveness is trusted or refused.
+    """
+    import sys
+
+    machine = platform.machine() or "unknown"
+    system = platform.system() or sys.platform
+    linux = sys.platform.startswith("linux")
+    windows = sys.platform == "win32"
+    macos = sys.platform == "darwin"
+    arm = machine.lower() in ("arm64", "aarch64")
+    supported = (windows and not arm) or (linux and not arm) or (linux and arm) or macos
+    if windows and arm:
+        supported = False
+    in_wsl = linux and "microsoft" in platform.release().lower()
+    detail = f"{system} {machine}"
+    if in_wsl:
+        detail += " (WSL2 — Linux userspace; install inside the distro)"
+    identity = "unavailable"
+    try:
+        from hunter.daemon import process_identity
+
+        probe = process_identity(os.getpid())
+        identity = "verified" if probe.verified else (probe.reason or "unverified")
+    except Exception:  # noqa: BLE001 — diagnostics must never raise
+        identity = "unavailable"
+    detail += f" — daemon identity: {identity}"
+    return Check("platform", "ok" if supported else "note", detail)
 
 
 def _dep_checks() -> list[Check]:
@@ -80,7 +116,11 @@ def _open_ledger(state: Path | None, ledger_factory: Callable[[], Any] | None) -
         return ledger_factory()
     from hunter.kernel.ledger import Ledger
 
-    return Ledger(None if state is None else Path(state) / "ledger.db")
+    if state is None:
+        return Ledger()
+    from hunter.runtime_paths import RuntimePaths
+
+    return Ledger(RuntimePaths.resolve(state=state, migrate=False).ledger)
 
 
 def _ledger_checks(state: Path | None, ledger_factory: Callable[[], Any] | None) -> list[Check]:
@@ -261,12 +301,9 @@ def _provider_checks(*, live: bool) -> list[Check]:
 
 
 def _chat_db_path() -> Path:
-    from_env = (os.environ.get("HUNTEROS_CHAT_DB") or "").strip()
-    if from_env:
-        return Path(from_env)
-    from hunter.home import hunter_home
+    from hunter.runtime_paths import RuntimePaths
 
-    return hunter_home() / "chat.db"
+    return RuntimePaths.resolve(migrate=False).chat_db
 
 
 def _chat_db_check() -> Check:

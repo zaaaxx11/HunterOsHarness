@@ -366,22 +366,22 @@ def resolve_config_target(
     refused unless ``force`` — a stray env var must not aim writes at
     arbitrary filesystem locations."""
     env = os.environ if env is None else env
-    home = Path.home() if home is None else Path(home)
+    from hunter.runtime_paths import RuntimePaths
+
+    paths = RuntimePaths.resolve(config=path, env=env, home=home, migrate=False)
     if path is not None:
-        return Path(path)
+        return paths.config
     from_env = (env.get("HUNTEROS_CONFIG") or "").strip()
     if from_env:
-        target = Path(from_env)
-        if not force and not _is_within(target, home):
+        target = paths.config
+        if not force and not _is_within(target, paths.home.parent):
             raise _config_write_error(
                 f"$HUNTEROS_CONFIG points outside the home directory: {target}",
                 "set HUNTEROS_CONFIG to a path under your home directory, "
                 "or pass an explicit config path",
             )
         return target
-    from hunter.home import HOME_DIRNAME
-
-    return home / HOME_DIRNAME / _CONFIG_FILENAME
+    return paths.config
 
 
 def write_config(

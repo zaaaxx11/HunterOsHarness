@@ -313,15 +313,14 @@ def find_config_path(
     default is returned only when the file exists, else None (pure
     defaults)."""
     env = os.environ if env is None else env
-    if path is not None:
-        return Path(path)
-    from_env = (env.get("HUNTEROS_CONFIG") or "").strip()
-    if from_env:
-        return Path(from_env)
-    from hunter.home import HOME_DIRNAME
+    from hunter.runtime_paths import RuntimePaths
 
-    base = (home or Path.home()) / HOME_DIRNAME / _CONFIG_FILENAME
-    return base if base.is_file() else None
+    # Pure resolution: config lookup must not trigger the legacy migration as a
+    # side effect (the CLI root callback owns migration + its one-time notice).
+    paths = RuntimePaths.resolve(config=path, env=env, home=home, migrate=False)
+    if path is not None or (env.get("HUNTEROS_CONFIG") or "").strip():
+        return paths.config
+    return paths.config if paths.config.is_file() else None
 
 
 def load_config(

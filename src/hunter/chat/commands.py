@@ -245,7 +245,9 @@ def _open_ledger(ctx: CommandContext) -> Ledger:
         return ctx.ledger_factory()
     state_dir = ctx.options.get("state_dir")
     if state_dir:
-        return Ledger(Path(state_dir) / "ledger.db")
+        from hunter.runtime_paths import RuntimePaths
+
+        return Ledger(RuntimePaths.resolve(state=state_dir, migrate=False).ledger)
     return Ledger()
 
 
@@ -260,8 +262,10 @@ def default_state_dir() -> Path:
 
 def _approval_root(options: dict[str, Any]) -> Path:
     """Where the surface's approval requests live: ``<state>/approvals``."""
+    from hunter.runtime_paths import RuntimePaths
+
     state_dir = options.get("state_dir")
-    return (Path(str(state_dir)) if state_dir else default_state_dir()) / "approvals"
+    return RuntimePaths.resolve(state=state_dir, migrate=False).approvals
 
 
 def _session_id(ctx: CommandContext) -> str | None:

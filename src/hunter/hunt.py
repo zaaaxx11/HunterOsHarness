@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-import os
 import threading
 from dataclasses import dataclass
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -119,7 +118,12 @@ def write_hunt_report(run_id: str, *, state_dir: str | Path | None = None) -> Pa
         from hunter.kernel.ledger import Ledger
         from hunter.reporting.markdown import ReportBlocked, render_markdown
 
-        db = Path(state_dir) / "ledger.db" if state_dir is not None else None
+        if state_dir is not None:
+            from hunter.runtime_paths import RuntimePaths
+
+            db = RuntimePaths.resolve(state=state_dir, migrate=False).ledger
+        else:
+            db = None
         ledger = Ledger(db)
         try:
             text = render_markdown(ledger, run_id)
@@ -127,10 +131,14 @@ def write_hunt_report(run_id: str, *, state_dir: str | Path | None = None) -> Pa
             return None
         finally:
             ledger.close()
-        root = Path(state_dir) if state_dir is not None else Path(
-            os.environ.get("HUNTER_STATE_DIR", ".hunter")
+        from hunter.runtime_paths import RuntimePaths
+
+        root = (
+            RuntimePaths.resolve(state=state_dir, migrate=False).reports.parent
+            if state_dir is not None
+            else RuntimePaths.resolve(migrate=False).reports.parent
         )
-        output = root / "reports" / f"{run_id}.md"
+        output = RuntimePaths.resolve(state=root, migrate=False).reports / f"{run_id}.md"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(text, encoding="utf-8")
         return output

@@ -44,6 +44,12 @@ where = ["src"]
 [tool.setuptools.package-data]
 hunter = ["_data/**/*.md", "_data/**/*.jinja", "_data/**/*.j2", "_data/**/*.yaml", "vault/*.json"]
 
+# Release-artifact hygiene: the source distribution must never carry the local
+# development kitchen (tests, plans, caches, or user state). The wheel already
+# excludes them by virtue of packages.find; this keeps the sdist equally clean.
+[tool.setuptools.exclude-package-data]
+"*" = ["tests/*", "docs/plans/*", ".hunter/*", ".hunteros/*", "**/__pycache__/*"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py310"

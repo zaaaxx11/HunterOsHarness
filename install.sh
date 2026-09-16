@@ -47,6 +47,13 @@ done
 VENV_DIR="$HOME/.hunteros/venv"
 BIN_DIR="$HOME/.hunteros/bin"
 PATH_TAG='hunteros PATH'
+# One marker identity for every supported shell. The delimiters are held in
+# variables so the tagged block's opening line appears exactly once in this
+# script source while still being written into each rc file; tools that grep
+# for the canonical marker keep working for bash, zsh and fish alike.
+PATH_BEGIN='# >>> hunteros PATH >>>'
+PATH_END='# <<< hunteros PATH <<<'
+PATH_NOTE='# Added by the HunterOs Harness installer (idempotent - do not edit between markers).'
 
 echo
 cat <<'BANNER'
@@ -83,31 +90,55 @@ SHIM
 }
 
 # --- PATH registration (tagged block, deduped) -----------------------------------
-# rc file: zsh -> ~/.zshrc, anything else -> ~/.bashrc. The block is appended
-# at most once (grep -qF inside an if keeps set -e safe); the rc file is
-# created mode 600 when missing.
+# First-class shells: bash -> ~/.bashrc, zsh -> ~/.zshrc, fish ->
+# ~/.config/fish/config.fish. The block is appended at most once (grep -qF
+# inside an if keeps set -e safe); a missing rc file/parent is created.
 
 register_path() {
     local rc
     case "$(basename "${SHELL:-}")" in
+        fish)
+            register_path_fish
+            return
+            ;;
         zsh) rc="$HOME/.zshrc" ;;
         *)   rc="$HOME/.bashrc" ;;
     esac
+    if [ ! -f "$rc" ]; then
+        mkdir -p "$(dirname "$rc")" 2>/dev/null || true
+        ( umask 077 && touch "$rc" )
+    fi
+    if grep -qF "$PATH_TAG" "$rc"; then
+        ok "PATH already registered in $rc"
+    else
+        {
+            printf '\n%s\n' "$PATH_BEGIN"
+            printf '%s\n' "$PATH_NOTE"
+            printf '%s\n' 'export PATH="$HOME/.hunteros/bin:$PATH"'
+            printf '%s\n\n' "$PATH_END"
+        } >> "$rc"
+        ok "PATH registered in $rc - open a NEW shell or: source $rc"
+    fi
+}
+
+# Fish does not read bash/zsh rc files and does not understand `export`, so it
+# gets its own tagged block (fish_add_path) instead of bash syntax.
+register_path_fish() {
+    local rc="$HOME/.config/fish/config.fish"
+    mkdir -p "$(dirname "$rc")" 2>/dev/null || true
     if [ ! -f "$rc" ]; then
         ( umask 077 && touch "$rc" )
     fi
     if grep -qF "$PATH_TAG" "$rc"; then
         ok "PATH already registered in $rc"
     else
-        cat >> "$rc" <<'BLOCK'
-
-# >>> hunteros PATH >>>
-# Added by the HunterOs Harness installer (idempotent - do not edit between markers).
-export PATH="$HOME/.hunteros/bin:$PATH"
-# <<< hunteros PATH <<<
-
-BLOCK
-        ok "PATH registered in $rc - open a NEW shell or: source $rc"
+        {
+            printf '\n%s\n' "$PATH_BEGIN"
+            printf '%s\n' "$PATH_NOTE"
+            printf '%s\n' 'fish_add_path "$HOME/.hunteros/bin"'
+            printf '%s\n\n' "$PATH_END"
+        } >> "$rc"
+        ok "PATH registered in $rc - open a NEW fish shell"
     fi
 }
 
@@ -176,9 +207,17 @@ step "Upgrading pip (quiet)"
     || fail "pip upgrade failed - check your network/proxy settings."
 
 # --- 3. Install the harness ------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+# A remote `curl | bash` run has no script path ($0 is just "bash"), so checkout
+# detection must not fall back to the caller's current directory: only an
+# explicit script path may be treated as a local checkout.
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+if [ -n "$SCRIPT_PATH" ] && [ -f "$SCRIPT_PATH" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd -P)"
+else
+    SCRIPT_DIR=""
+fi
 
-if [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
     step "Local checkout detected - installing editable from $SCRIPT_DIR"
     "$VENV_PYTHON" -m pip install -e "$SCRIPT_DIR" --disable-pip-version-check \
         || fail "Editable install failed - see the pip output above."
@@ -206,7 +245,7 @@ register_path
 #        the install; a re-run with an existing config is an update) ----------------
 if [ "$SKIP_SETUP" = "1" ]; then
     step "Skipping setup (--skip-setup)"
-elif [ -n "${HUNTEROS_CONFIG:-}" ] || [ -f "$HOME/.hunteros/config.yaml" ]; then
+elif [ -n "${HUNTEROS_CONFIG:-}" ] || [ -f "$HOME/.hunter/config.yaml" ] || [ -f "$HOME/.hunteros/config.yaml" ]; then
     step "Config found - skipping the wizard (run 'hunter init' to reconfigure)"
 elif [ -t 0 ]; then
     step "Launching the onboarding wizard"

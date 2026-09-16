@@ -1,0 +1,21 @@
+# Source-distribution hygiene: ship the package, not the local dev kitchen.
+# The wheel never included these; this keeps `sdist` equally clean so a public
+# artifact cannot carry internal tests, plans, caches, or user state.
+include README.md
+include QUICKSTART.md
+include CHANGELOG.md
+include LICENSE
+include pyproject.toml
+include SOUL.md
+include install.sh
+include install.ps1
+recursive-include src/hunter *
+
+prune tests
+prune docs/plans
+prune .hunter
+prune .hunteros
+prune .github
+global-exclude *.py[cod]
+global-exclude *.log
+global-exclude .DS_Store

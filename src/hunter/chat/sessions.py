@@ -24,7 +24,6 @@ The chat transcript is treated with the same discipline as the audit ledger:
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 import time
@@ -118,12 +117,9 @@ class ChatStore:
     def _resolve_path(path: str | Path | None) -> Path:
         if path is not None:
             return Path(path)
-        from_env = (os.environ.get("HUNTEROS_CHAT_DB") or "").strip()
-        if from_env:
-            return Path(from_env)
-        from hunter.home import hunter_home  # deferred: home.py is stdlib-only
+        from hunter.runtime_paths import RuntimePaths
 
-        return hunter_home() / "chat.db"
+        return RuntimePaths.resolve(migrate=False).chat_db
 
     @property
     def path(self) -> Path:

@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"})
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+# ``0.0.0.0`` is the unspecified/all-interfaces address, not loopback: dialing
+# it resolves differently across platforms (Linux frequently connects to
+# localhost, Windows/other stacks do not). It is deliberately NOT implicitly
+# authorized — a target using it needs an explicit scope manifest.
+UNSPECIFIED_HOSTS = frozenset({"0.0.0.0", "::", "[::]"})
 
 
 class ScopeViolation(PermissionError):

@@ -33,7 +33,6 @@ from hunter import __version__
 from hunter.chat.commands import (
     CommandContext,
     CommandReply,
-    default_state_dir,
     resolve_command,
     safe_execute,
     scope_for_target,
@@ -612,7 +611,13 @@ class ChatEngine:
         if self._audit is not None:
             self._audit_finish("aborted")
         state_dir = self.options.get("state_dir")
-        ledger = Ledger(f"{state_dir}/ledger.db" if state_dir else None)
+        from hunter.runtime_paths import RuntimePaths
+
+        ledger = Ledger(
+            RuntimePaths.resolve(state=state_dir, migrate=False).ledger
+            if state_dir
+            else None
+        )
         run_id = f"R-{uuid.uuid4().hex[:12]}"
         scope = ScopeSet(
             frozenset(spec.get("scope", {}).get("hosts") or ()),
@@ -640,9 +645,12 @@ class ChatEngine:
         from hunter.agent.tools_base import ToolContext
 
         # Same resolution the Ledger default convention uses (M8 F1): an
-        # explicit state_dir wins; otherwise env HUNTER_STATE_DIR or ./.hunter.
-        resolved_state_dir = str(state_dir) if state_dir else str(default_state_dir())
-        approval_store = ApprovalStore(Path(resolved_state_dir) / "approvals")
+        # explicit state_dir wins; otherwise env HUNTER_STATE_DIR or ~/.hunter.
+        from hunter.runtime_paths import RuntimePaths
+
+        resolved_paths = RuntimePaths.resolve(state=state_dir, migrate=False)
+        resolved_state_dir = str(resolved_paths.state)
+        approval_store = ApprovalStore(resolved_paths.approvals)
         gate_kwargs: dict[str, Any] = {"auto_allow": bool(self.options.get("hunt_mode"))}
         if self.confirm_fn is not None:
             confirm = self.confirm_fn
