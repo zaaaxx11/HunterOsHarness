@@ -20,6 +20,7 @@ strict order + thread asserts, negatives for writes/lifecycle.
 
 from __future__ import annotations
 
+import pathlib
 import threading
 from typing import Any
 
@@ -105,9 +106,9 @@ def test_r2a_parallel_true_loop_fans_out_pure_read_batch(tmp_path: Any, monkeypa
     try:
         loop = loop_mod.AgentLoop(TwoReads(), build_registry("basic"), tier="basic")  # type: ignore[arg-type]
         # R2-A requires the loop to consult the allowlist AND fan out.
-        if "_maybe_parallel_dispatch" not in dir(loop) or "run_parallel" not in open(
-            "src/hunter/agent/loop.py", encoding="utf-8"
-        ).read().split("def run(")[1].split("def _")[0]:
+        if "_maybe_parallel_dispatch" not in dir(loop) or "run_parallel" not in pathlib.Path(
+            "src/hunter/agent/loop.py"
+        ).read_text(encoding="utf-8").split("def run(")[1].split("def _")[0]:
             pytest.fail(
                 "EXPECTED-FAIL-R2A: AgentLoop.run never calls "
                 "parallel.run_parallel (sequential-only today)"
@@ -158,7 +159,7 @@ def test_r2a_parallel_true_overlap_observed_via_barrier(tmp_path: Any, monkeypat
 
 def test_r2a_parallel_true_order_preserved(tmp_path: Any) -> None:
     parallel = _needs_parallel()
-    loop_src = open("src/hunter/agent/loop.py", encoding="utf-8").read()
+    loop_src = pathlib.Path("src/hunter/agent/loop.py").read_text(encoding="utf-8")
     run_body = loop_src.split("def run(", 1)[1] if "def run(" in loop_src else ""
     if "run_parallel" not in run_body:
         pytest.fail(
@@ -183,7 +184,7 @@ def test_r2a_parallel_true_writes_stay_synchronous_negative() -> None:
         ("respond_to_user", {}),
     ]:
         assert parallel.is_parallelizable(name, args) is False
-    loop_src = open("src/hunter/agent/loop.py", encoding="utf-8").read()
+    loop_src = pathlib.Path("src/hunter/agent/loop.py").read_text(encoding="utf-8")
     run_body = loop_src.split("def run(", 1)[1] if "def run(" in loop_src else ""
     if "run_parallel" not in run_body:
         pytest.fail(
@@ -197,7 +198,7 @@ def test_r2a_parallel_true_scope_claim_gates_dispatch_thread() -> None:
     assert parallel.gates_run_on_pool_thread() is False
     assert parallel.scope_gate_owner() == "dispatch-thread"
     assert parallel.claim_gate_owner() == "dispatch-thread"
-    loop_src = open("src/hunter/agent/loop.py", encoding="utf-8").read()
+    loop_src = pathlib.Path("src/hunter/agent/loop.py").read_text(encoding="utf-8")
     run_body = loop_src.split("def run(", 1)[1] if "def run(" in loop_src else ""
     if "run_parallel" not in run_body:
         pytest.fail(
@@ -210,7 +211,7 @@ def test_r2a_parallel_true_ledger_begin_immediate_no_locked(tmp_path: Any) -> No
     parallel = _needs_parallel()
     from hunter.kernel.ledger import Ledger
 
-    loop_src = open("src/hunter/agent/loop.py", encoding="utf-8").read()
+    loop_src = pathlib.Path("src/hunter/agent/loop.py").read_text(encoding="utf-8")
     run_body = loop_src.split("def run(", 1)[1] if "def run(" in loop_src else ""
     if "run_parallel" not in run_body and "store_parallel_evidence" not in loop_src:
         pytest.fail(

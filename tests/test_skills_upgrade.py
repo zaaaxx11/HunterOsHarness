@@ -102,7 +102,9 @@ def test_skills_match_le5_block_le16k_quarantined_inert():
         version="0.1.0", min_tier="basic", tags=("decoy",), source="user",
         body="b", quarantined=True, path="",
     )
-    assert decoy not in skills.match_skills("cross site scripting", "audit reflected xss", (*corpus.skills, decoy))
+    assert decoy not in skills.match_skills(
+        "cross site scripting", "audit reflected xss", (*corpus.skills, decoy)
+    )
 
 
 def test_skills_shadowing_noted():

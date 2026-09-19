@@ -30,6 +30,8 @@ Adversarial mitigations:
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 from hunter.chat.commands import (
@@ -273,10 +275,8 @@ def test_c2_audit_mode_smalltalk_zero_findings(tmp_path):
         finally:
             ledger.close()
     finally:
-        try:
+        with contextlib.suppress(Exception):
             engine._audit_finish("completed")
-        except Exception:
-            pass
         store.close()
 
 
@@ -287,7 +287,7 @@ def test_c2_note_chat_only_single_sanctioned_write(tmp_path):
     store, sid = _store_with_session(tmp_path)
     try:
         before = len(store.messages(sid))
-        reply = safe_execute("note", _ctx(store, sid, tmp_path, args="remember this"))
+        safe_execute("note", _ctx(store, sid, tmp_path, args="remember this"))
         after = len(store.messages(sid))
         assert after - before == 1, "single sanctioned write"
         ledger = Ledger(tmp_path / "ledger.db")

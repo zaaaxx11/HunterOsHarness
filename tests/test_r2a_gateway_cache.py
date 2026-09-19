@@ -92,7 +92,7 @@ def test_r2a_gateway_cache_tmp_path_isolation_no_cross_state_leak(tmp_path: Any)
 
 
 def test_r2a_gateway_cache_durable_lease_wired(tmp_path: Any) -> None:
-    app_mod = _needs_app()
+    _needs_app()
     source = pathlib.Path("src/hunter/gateway/app.py").read_text(encoding="utf-8")
     if "durable_lease" not in source:
         pytest.fail(
@@ -139,4 +139,4 @@ def test_r2a_gateway_cache_negative_unbounded_dict_rejected(tmp_path: Any) -> No
     cap = int(getattr(app, "engine_cache_maxsize", 64))
     for i in range(cap + 20):
         app.engine_for(f"webhook:{i}")
-    assert len(getattr(app, "_engines")) <= cap
+    assert len(app._engines) <= cap

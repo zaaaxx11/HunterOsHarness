@@ -19,7 +19,6 @@ Adversarial: credential_in_url BLOCKED, non-hex/oversized -> rpc.bad_envelope
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import httpx
 import pytest

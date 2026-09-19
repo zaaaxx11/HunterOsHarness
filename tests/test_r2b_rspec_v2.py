@@ -22,7 +22,6 @@ divergence never ruled_out (fail-closed), source-hash mismatch needs_follow_up.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import httpx
 import pytest

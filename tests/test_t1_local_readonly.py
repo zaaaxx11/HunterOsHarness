@@ -21,7 +21,6 @@ pathlib resolution against tmp_path; ReDoS is covered by fixed-string-default
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 

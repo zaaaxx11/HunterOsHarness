@@ -46,7 +46,10 @@ def _ctx(transport=None, events=None, tier="basic", jail=None, scope_hosts=None)
 
     if events is None:
         events = []
-    scope = ScopeSet(scope_hosts or frozenset({"rpc.example.com", "api.etherscan.io", "example.com"}), name="r2b-royal")
+    scope = ScopeSet(
+        scope_hosts or frozenset({"rpc.example.com", "api.etherscan.io", "example.com"}),
+        name="r2b-royal",
+    )
     http = ScopedHttpClient(scope, transport=transport or _mock(), min_interval=0)
     config: dict[str, Any] = {"tier": tier}
     if jail is not None:
@@ -148,7 +151,9 @@ def test_r2b_royal_t1_jail_preserved(tmp_path: Path):
     (jail / "docs" / "audit.md").write_text("scope: example.com\n", encoding="utf-8")
     (tmp_path / "outside.txt").write_text("outside", encoding="utf-8")
     ctx, _ = _ctx(jail=jail)
-    assert loc.search_files({"pattern": "scope", "root": str(tmp_path / "outside.txt")}, ctx).get("blocked") is True
+    assert loc.search_files(
+        {"pattern": "scope", "root": str(tmp_path / "outside.txt")}, ctx
+    ).get("blocked") is True
     assert loc.read_file({"path": "../outside.txt"}, ctx).get("blocked") is True
     ctx.ledger.close()
     ctx.http.close()

@@ -19,7 +19,6 @@ input, 8k redacted, one engine_event, no widen, no socket beyond manifest host.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import httpx
 import pytest
@@ -31,7 +30,10 @@ def _require_inventory_append():
     import hunter.agent.inventory as inv
     missing = [b for b in ("slither", "cast", "anvil") if b not in inv.INVENTORY_BINARIES]
     if missing:
-        pytest.fail(f"{R2B} — inventory missing append-only {missing}; INVENTORY_BINARIES={inv.INVENTORY_BINARIES}")
+        pytest.fail(
+            f"{R2B} — inventory missing append-only {missing}; "
+            f"INVENTORY_BINARIES={inv.INVENTORY_BINARIES}"
+        )
     return inv
 
 

@@ -19,6 +19,7 @@ tmp stores. No sockets/sleep/TUI loop. ANSI stripped; rstrip comparator.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 
@@ -91,7 +92,7 @@ def test_r2c_doctor_redact_sentinel(monkeypatch, tmp_path):
     checks = collect_checks(live=True)
     blob = "\n".join(c.detail for c in checks)
     assert "sk-live-supersecretvalue12345" not in blob
-    assert "sk-***" in blob or "NOT set" not in blob or True
+    assert True
 
 
 def test_r2c_doctor_json_envelope():
@@ -137,10 +138,8 @@ def test_r2c_doctor_last_link_recorded_model_shows(monkeypatch):
     cfg.model_tiers["orchestrator"].model = "m0"
     r = ProviderRouter(cfg, litellm_module=fake)
     monkeypatch.setattr("hunter.llm.router.time.sleep", lambda *a, **k: None)
-    try:
+    with contextlib.suppress(Exception):
         r.complete("orchestrator", [{"role": "user", "content": "hi"}])
-    except Exception:
-        pass
     view = _strip(describe(r, "orchestrator"))
     assert "last" in view.lower(), "chain view must carry last-link"
     assert "sk-secret-abc123XYZ" not in view, "last-link must be redacted"

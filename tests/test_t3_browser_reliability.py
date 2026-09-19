@@ -17,6 +17,7 @@ FAIL today via EXPECTED-FAIL-TDD. Cloak behavior is asserted untouched.
 
 from __future__ import annotations
 
+import pathlib
 from typing import Any
 
 import pytest
@@ -183,7 +184,9 @@ def test_t3_browser_timeout_code():
     """Contract: navigation timeout surfaces as browser.timeout (retryable, ok=False, blocked=False)."""
     from hunter.agent import tools as agent_tools
 
-    if "browser.timeout" not in str(getattr(agent_tools, "_browser_error", "")) and not hasattr(agent_tools, "BROWSER_TIMEOUT_CODE"):
+    if "browser.timeout" not in str(
+        getattr(agent_tools, "_browser_error", "")
+    ) and not hasattr(agent_tools, "BROWSER_TIMEOUT_CODE"):
         pytest.fail(f"{TDD_BROWSER}: no browser.timeout mapping in hunter.agent.tools")
 
 
@@ -191,7 +194,7 @@ def test_t3_browser_scope_redirect_blocked_code():
     """Contract: out-of-scope redirect landing -> browser.scope_redirect_blocked (BLOCKED)."""
     from hunter.agent import tools as agent_tools
 
-    if "scope_redirect_blocked" not in open(agent_tools.__file__, encoding="utf-8").read():
+    if "scope_redirect_blocked" not in pathlib.Path(agent_tools.__file__).read_text(encoding="utf-8"):
         pytest.fail(f"{TDD_BROWSER}: no browser.scope_redirect_blocked code in hunter.agent.tools")
 
 
@@ -199,10 +202,15 @@ def test_t3_browser_scope_redirect_blocked_code():
 
 def test_t3_snapshot_12k_and_selector_512_caps():
     """Contract: snapshot capped at 12k chars; selector over 512 rejected; no cookie/header leak."""
-    from hunter.agent.browser import MAX_SELECTOR_CHARS, MAX_SNAPSHOT_CHARS, validate_selector
+    from hunter.agent.browser import (
+        BrowserInputError,
+        MAX_SELECTOR_CHARS,
+        MAX_SNAPSHOT_CHARS,
+        validate_selector,
+    )
 
     assert MAX_SNAPSHOT_CHARS == 12_000 and MAX_SELECTOR_CHARS == 512
-    with pytest.raises(Exception):
+    with pytest.raises(BrowserInputError):
         validate_selector("#" + "a" * 600)
     events: list = []
     page = _FakePage()

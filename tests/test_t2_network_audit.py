@@ -23,7 +23,6 @@ All tests FAIL today via EXPECTED-FAIL-TDD. No real DNS / network / binaries.
 
 from __future__ import annotations
 
-from typing import Any
 
 import httpx
 import pytest
@@ -36,7 +35,10 @@ def _require_network():
     try:
         import hunter.agent.tools_network as net  # type: ignore[import-not-found]
     except ImportError:
-        pytest.fail(f"{TDD_NET} — module missing; create dns_resolve/crt_sh/headers_audit/recon_subdomains/port_hint")
+        pytest.fail(
+            f"{TDD_NET} — module missing; "
+            "create dns_resolve/crt_sh/headers_audit/recon_subdomains/port_hint"
+        )
     return net
 
 
@@ -101,7 +103,9 @@ def test_t2_dns_host_normalization_casefold_trailing_dot():
     net = _require_network()
     ctx, _ = _ctx()
     outcome = net.dns_resolve({"host": "EXAMPLE.com.", "rtype": "A"}, ctx)
-    assert outcome.get("blocked") is not True, "trailing-dot FQDN of an allowed host must normalize, not bypass"
+    assert outcome.get("blocked") is not True, (
+        "trailing-dot FQDN of an allowed host must normalize, not bypass"
+    )
     assert outcome["ok"] or outcome.get("code") == "dns.resolve_error"
 
 
@@ -200,7 +204,9 @@ def test_t2_http_follow_redirects_default_off():
 
 
 def test_t2_http_manual_hops_max3_per_hop_scope():
-    """Contract: follow_redirects=true walks MANUALLY, max 3 hops, per-hop check_url; evil hop aborts + ledgers."""
+    """Contract: follow_redirects=true walks MANUALLY, max 3 hops,
+    per-hop check_url; evil hop aborts + ledgers.
+    """
     from hunter.agent.tools import build_registry
 
     registry = build_registry("basic")
@@ -296,7 +302,9 @@ def test_t2_recon_subdomains_ct_only():
 
 
 def test_t2_port_hint_no_socket():
-    """Contract: port_hint opens NO socket (zero http calls); returns inventory hint + proposed shell string."""
+    """Contract: port_hint opens NO socket (zero http calls); returns inventory
+    hint + proposed shell string.
+    """
     net = _require_network()
     calls: list[str] = []
 

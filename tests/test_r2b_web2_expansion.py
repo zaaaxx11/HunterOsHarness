@@ -199,7 +199,10 @@ def test_r2b_web2_no_live_net_transport_guard():
 
     from hunter.tools.scope import ScopeSet
 
-    client = hc.ScopedHttpClient(ScopeSet(frozenset({"example.com"}), name="r2b"), transport=httpx.MockTransport(handler))
+    client = hc.ScopedHttpClient(
+        ScopeSet(frozenset({"example.com"}), name="r2b"),
+        transport=httpx.MockTransport(handler),
+    )
     assert client.request("GET", "http://example.com/").status == 200
     assert seen == ["http://example.com/"]
     client.close()

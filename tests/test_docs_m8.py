@@ -91,9 +91,9 @@ def test_gitignore_and_tracking_contract():
         "*.log",
         "artifacts/",
         "reports/",
-        # F10 delta: tests and the CLI-smoke scratch dir are also untracked
-        # (owner directive: no testing products on GitHub).
-        "tests/",
+        # F10 delta: the CLI-smoke scratch dir stays untracked.
+        # tests/ IS tracked since the suite was published (CI lints + runs it);
+        # the wheel/sdist still excludes it via MANIFEST.in prune.
         ".hunter-cli-smoke/",
     ):
         assert pattern in gitignore, pattern
@@ -107,4 +107,4 @@ def test_gitignore_and_tracking_contract():
     ).stdout.splitlines()
     assert not any(name.startswith("docs/ROADMAP") for name in tracked)
     assert not any(name.startswith("docs/plans/") for name in tracked)
-    assert not any(name.startswith("tests/") for name in tracked)
+    assert any(name.startswith("tests/") for name in tracked)

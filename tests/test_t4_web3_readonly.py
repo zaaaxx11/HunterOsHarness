@@ -25,6 +25,7 @@ All tests FAIL today via EXPECTED-FAIL-TDD. RPC is fully mocked (MockTransport).
 from __future__ import annotations
 
 import json
+import pathlib
 from typing import Any
 
 import httpx
@@ -37,14 +38,26 @@ def _require_web3():
     try:
         import hunter.agent.tools_web3 as web3tools  # type: ignore[import-not-found]
     except ImportError:
-        pytest.fail(f"{TDD_WEB3} — module missing; create contract_read/contract_source_fetch/abi_decode_hint + slither/cast hints")
+        pytest.fail(
+            f"{TDD_WEB3} — module missing; "
+            "create contract_read/contract_source_fetch/abi_decode_hint "
+            "+ slither/cast hints"
+        )
     return web3tools
 
 
 def _rpc_transport(result="0x", events=None):
     def handler(request: httpx.Request) -> httpx.Response:
         if events is not None:
-            events.append(("rpc", {"url": str(request.url), "body": request.content.decode("utf-8", "replace")[:500]}))
+            events.append(
+                (
+                    "rpc",
+                    {
+                        "url": str(request.url),
+                        "body": request.content.decode("utf-8", "replace")[:500],
+                    },
+                )
+            )
         payload = {"jsonrpc": "2.0", "id": 1, "result": result}
         return httpx.Response(200, headers={"content-type": "application/json"}, text=json.dumps(payload))
 
@@ -64,7 +77,10 @@ def _ctx(rpc_host="rpc.example.com", events=None, tier="basic", transport=None):
     return ToolContext(
         run_id="R-T4", ledger=Ledger(":memory:"), http=http, scope=scope,
         target_url="http://rpc.example.com/", emit=lambda k, p: events.append((k, dict(p))),
-        config={"tier": tier, "chain_scope": [{"chain_id": 1, "address": "0xabc0000000000000000000000000000000000def"}]},
+        config={
+            "tier": tier,
+            "chain_scope": [{"chain_id": 1, "address": "0xabc0000000000000000000000000000000000def"}],
+        },
         state={},
     ), events
 
@@ -76,7 +92,9 @@ RPC = "https://rpc.example.com"
 # -- scope --------------------------------------------------------------------------
 
 def test_t4_onchain_scope_exact_lowercase():
-    """Contract: scope match is EXACT (chain_id, lowercase address); case differs -> still match; other addr blocked."""
+    """Contract: scope match is EXACT (chain_id, lowercase address);
+    case differs -> still match; other addr blocked.
+    """
     w3 = _require_web3()
     ctx, _ = _ctx()
     ok = w3.contract_read(
@@ -84,7 +102,12 @@ def test_t4_onchain_scope_exact_lowercase():
     )
     assert ok["ok"], "address match must be case-insensitive (lowercased compare)"
     blocked = w3.contract_read(
-        {"chain_id": 1, "address": "0x0000000000000000000000000000000000000001", "method": "eth_getBalance", "rpc_url": RPC},
+        {
+            "chain_id": 1,
+            "address": "0x0000000000000000000000000000000000000001",
+            "method": "eth_getBalance",
+            "rpc_url": RPC,
+        },
         ctx,
     )
     assert blocked.get("blocked") is True, "unlisted address must be BLOCKED (no auto-widen)"
@@ -125,20 +148,27 @@ def test_t4_basic_vs_advanced_storage_gating():
     for method in ("eth_call", "eth_getCode", "eth_getBalance"):
         out = w3.contract_read({"chain_id": 1, "address": ADDR, "method": method, "rpc_url": RPC}, ctx)
         assert out["ok"], f"{method} must work at basic tier"
-    locked = w3.contract_read({"chain_id": 1, "address": ADDR, "method": "eth_getStorageAt", "rpc_url": RPC}, ctx)
+    locked = w3.contract_read(
+        {"chain_id": 1, "address": ADDR, "method": "eth_getStorageAt", "rpc_url": RPC}, ctx
+    )
     assert locked.get("code") == "tier.capability_locked"
     ctx2, _ = _ctx(tier="advanced")
-    assert w3.contract_read({"chain_id": 1, "address": ADDR, "method": "eth_getStorageAt", "rpc_url": RPC}, ctx2)["ok"]
+    assert w3.contract_read(
+        {"chain_id": 1, "address": ADDR, "method": "eth_getStorageAt", "rpc_url": RPC}, ctx2
+    )["ok"]
 
 
 def test_t4_httpx_jsonrpc_no_web3_dep():
     """Contract: transport is httpx JSON-RPC; the module must not import web3."""
     w3 = _require_web3()
-    source = open(w3.__file__, encoding="utf-8").read()
+    source = pathlib.Path(w3.__file__).read_text(encoding="utf-8")
     assert "import web3" not in source and "from web3" not in source, "no web3 dependency allowed"
     events: list = []
     ctx, _ = _ctx(events=events)
-    w3.contract_read({"chain_id": 1, "address": ADDR, "method": "eth_call", "rpc_url": RPC, "calldata": "0x70a08231"}, ctx)
+    w3.contract_read(
+        {"chain_id": 1, "address": ADDR, "method": "eth_call", "rpc_url": RPC, "calldata": "0x70a08231"},
+        ctx,
+    )
     rpc_calls = [e for e in events if e[0] == "rpc"]
     assert len(rpc_calls) == 1 and '"jsonrpc"' in rpc_calls[0][1]["body"]
 
@@ -152,16 +182,19 @@ def test_t4_contract_call_evidence_bounded_redacted():
     blob = json.dumps(out["evidence"]["data"])
     assert len(blob) <= 8_192 + 256, "contract_call evidence bounded at 8k"
     # R-spec gate: contract_call alone must NOT satisfy finding R3.
-    from hunter.agent.tools import build_registry
 
-    assert "contract_call" not in open("src/hunter/agent/tools.py", encoding="utf-8").read().split("http_exchange is mandatory")[0][-100:]
+    assert "contract_call" not in pathlib.Path("src/hunter/agent/tools.py").read_text(
+        encoding="utf-8"
+    ).split("http_exchange is mandatory")[0][-100:]
 
 
 def test_t4_source_fetch_explorer_allowlist():
     """Contract: contract_source_fetch only talks to the explorer allowlist via ctx.http."""
     w3 = _require_web3()
     ctx, _ = _ctx()
-    blocked = w3.contract_source_fetch({"chain_id": 1, "address": ADDR, "explorer": "https://evil.example.net/api"}, ctx)
+    blocked = w3.contract_source_fetch(
+        {"chain_id": 1, "address": ADDR, "explorer": "https://evil.example.net/api"}, ctx
+    )
     assert blocked.get("blocked") is True
 
 
@@ -178,7 +211,6 @@ def test_t4_slither_cast_unavailable_with_hint():
     """Contract: slither/cast surface as tool.unavailable + install hint; inventory reflects missing."""
     w3 = _require_web3()
     from hunter.agent.tools_base import ToolContext  # noqa: F401  (seam shape pin)
-    from hunter.agent.tools import build_registry
 
     registry = w3.build_web3_registry("basic")
     for name in ("slither_hint", "cast_hint"):

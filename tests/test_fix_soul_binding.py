@@ -15,9 +15,7 @@ All tests FAIL now and must PASS after the fix.
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
 
-import pytest
 
 from hunter.agent.soul import (
     CORE_IDENTITY,
@@ -26,7 +24,6 @@ from hunter.agent.soul import (
     SOUL_TRUNCATION_MARKER,
     load_soul,
     sanitize_soul,
-    soul_block,
 )
 
 

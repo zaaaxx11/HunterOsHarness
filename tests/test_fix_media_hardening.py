@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from hunter.kernel.claimgate import ClaimGateBlocked
 from hunter.kernel.ledger import Ledger
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +39,7 @@ def test_add_evidence_allowlist_rejects_unknown_kind(led):
     # Valid kinds stay allowed.
     led.add_evidence("r1", "http_exchange", {"body": "ok"})
     led.add_evidence("r1", "http_response", {"body": "ok"})
-    with pytest.raises(Exception):
+    with pytest.raises(ClaimGateBlocked):
         led.add_evidence("r1", "evil_kind_xyz", {"body": "x"})
 
 
@@ -46,7 +47,7 @@ def test_add_evidence_size_cap_rejects_huge(led):
     led.create_run("r1", "t", "e", "s")
     led.add_evidence("r1", "http_response", {"body": "small"})
     huge = "x" * (5 * 1024 * 1024)
-    with pytest.raises(Exception):
+    with pytest.raises(ClaimGateBlocked):
         led.add_evidence("r1", "http_response", {"body": huge})
 
 

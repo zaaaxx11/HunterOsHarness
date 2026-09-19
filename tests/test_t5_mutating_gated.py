@@ -15,7 +15,6 @@ patch_write tests FAIL today via EXPECTED-FAIL-TDD, keeping the file red.
 
 from __future__ import annotations
 
-import time
 
 import pytest
 
@@ -76,7 +75,11 @@ def test_t5_patch_write_diff_preview_backup_jail(tmp_path):
     ctx = _ctx(approval_gate=lambda *a: None)
     ctx.config["jail"] = str(jail)
     preview = patch.patch_write(
-        {"path": "app.py", "diff": "--- a/app.py\n+++ b/app.py\n@@\n-print('old')\n+print('new')\n", "dry_run": True},
+        {
+            "path": "app.py",
+            "diff": "--- a/app.py\n+++ b/app.py\n@@\n-print('old')\n+print('new')\n",
+            "dry_run": True,
+        },
         ctx,
     )
     assert preview["ok"] and "print('new')" in preview.get("preview", "")
@@ -85,7 +88,9 @@ def test_t5_patch_write_diff_preview_backup_jail(tmp_path):
         {"path": "app.py", "diff": "--- a/app.py\n+++ b/app.py\n@@\n-print('old')\n+print('new')\n"},
         ctx,
     )
-    assert applied["ok"] and len(list(jail.glob("app.py.bak-*"))) == 1, "apply must leave a timestamped backup"
+    assert applied["ok"] and len(list(jail.glob("app.py.bak-*"))) == 1, (
+        "apply must leave a timestamped backup"
+    )
     evil = patch.patch_write({"path": "../escape.py", "diff": "x"}, ctx)
     assert evil.get("blocked") is True, "jail escape must be BLOCKED"
 

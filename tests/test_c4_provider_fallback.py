@@ -30,6 +30,7 @@ Mitigations: time.sleep monkeypatched (no real sleep); fake litellm mirrors
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 import socket
@@ -37,11 +38,9 @@ import socket
 import pytest
 
 from hunter.errors import EXIT_AUTH, EXIT_CONFIG, EXIT_ERROR, EXIT_RATE_LIMIT, HunterError
-from hunter.llm import config as config_mod
 from hunter.llm.base import ClassifiedError, TurnResult
 from hunter.llm.config import (
     FallbackEntry,
-    HunterConfig,
     ProviderConfig,
     TierConfig,
     default_config,
@@ -105,10 +104,8 @@ def _router(cfg=None, queue=(), monkeypatch=None):
     from hunter.llm.router import ProviderRouter
 
     cfg = cfg or default_config()
-    try:
+    with contextlib.suppress(KeyError):
         cfg.model_tiers["orchestrator"].model = cfg.model_tiers["orchestrator"].model or "m0"
-    except KeyError:
-        pass
     fake = FakeLiteLLM(queue)
     router = ProviderRouter(cfg, litellm_module=fake)
     if monkeypatch is not None:
@@ -163,7 +160,6 @@ def test_c4_classify_once_exit_codes():
         err = hunter_error_from_classified(ClassifiedError(reason=reason, message="m"))
         assert err.exit_code == exit_code, reason
         assert hint and code, reason
-    from hunter.llm.router import ProviderRouter
 
     router, _, _ = _router()
     once = router.classify(FakeError("invalid api key", 401))

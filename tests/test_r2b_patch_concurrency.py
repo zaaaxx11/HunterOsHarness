@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -72,7 +71,10 @@ def test_r2b_patch_two_threads_one_ok_one_locked():
         def _run():
             results.append(patch.patch_write({"path": "app.py", "diff": DIFF}, ctx))
         t1, t2 = threading.Thread(target=_run), threading.Thread(target=_run)
-        t1.start(); t2.start(); t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
         codes = sorted(r.get("code", "ok") for r in results)
         assert "patch.locked" in codes, f"one writer must report patch.locked, got {codes}"
         assert any(p.get("locked") is True for k, p in events if k == "engine_event")
@@ -97,7 +99,7 @@ def test_r2b_patch_backup_chain_n3_prune(tmp_path: Path):
     patch = _require_patch()
     jail = _jail(tmp_path)
     ctx, _ = _ctx(jail)
-    for i in range(4):
+    for _ in range(4):
         patch.patch_write({"path": "app.py", "diff": DIFF}, ctx)
     backups = sorted(jail.glob("app.py.bak-*"))
     assert len(backups) == 3, f"must prune to N=3, got {len(backups)}"

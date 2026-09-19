@@ -18,7 +18,6 @@ EXPECTED-FAIL-TDD until those modules land, keeping the file red by design.
 
 from __future__ import annotations
 
-from typing import Any
 
 import httpx
 import pytest
@@ -130,7 +129,9 @@ def test_contract_handlers_never_persist_ids_loop_does():
     ctx, _ = _ctx()
     from hunter.agent.tools import build_registry
 
-    out = build_registry("basic").dispatch("http_request", {"method": "GET", "url": "http://127.0.0.1:9/"}, ctx)
+    out = build_registry("basic").dispatch(
+        "http_request", {"method": "GET", "url": "http://127.0.0.1:9/"}, ctx
+    )
     assert "EV-" not in out.result_for_model, "handlers must never fabricate evidence ids"
 
 

@@ -68,7 +68,6 @@ def test_r2c_royal_ledger_only_reports(tmp_path):
 def test_r2c_royal_never_die(tmp_path):
     from hunter.chat.repl import ChatEngine, run_repl
     from hunter.chat.sessions import ChatStore
-    from hunter.llm.base import TurnResult
 
     class _Boom:
         name = "fake"

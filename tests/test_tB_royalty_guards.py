@@ -12,7 +12,6 @@ here goes red, the expansion has broken a load-bearing invariant — stop.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 import httpx
 import pytest
@@ -49,7 +48,9 @@ def test_royal_no_handler_fabricates_ids():
     from hunter.agent.tools import build_registry
 
     ctx, _ = _ctx()
-    out = build_registry("basic").dispatch("http_request", {"method": "GET", "url": "http://127.0.0.1:9/"}, ctx)
+    out = build_registry("basic").dispatch(
+        "http_request", {"method": "GET", "url": "http://127.0.0.1:9/"}, ctx
+    )
     assert out.ok and "EV-" not in out.result_for_model
     eid = ctx.ledger.add_evidence("R-ROYAL", "http_exchange", {"url": "http://127.0.0.1:9/"})
     assert eid.startswith("EV-")

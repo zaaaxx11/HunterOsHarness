@@ -13,11 +13,9 @@ makes them green via test-only pin updates + 1 src welcome fix + docs sweep
 
 from __future__ import annotations
 
-import re
 import tomllib
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 ROOT = Path(__file__).resolve().parents[1]

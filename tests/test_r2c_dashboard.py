@@ -18,6 +18,7 @@ ANSI stripped; rstrip comparator; ledger.db counted only.
 """
 from __future__ import annotations
 
+import pathlib
 import re
 
 import pytest
@@ -140,9 +141,9 @@ def test_r2c_dash_engine_trailer_20_redacted_sx_restart():
 
     keys = {str(b.key).lower() for b in tui_app.HunterTui.BINDINGS}
     assert {"s", "x"} <= keys
-    assert "restart" in _strip(trailer(events)).lower() or "restart" in open(
-        __import__("pathlib").Path(__file__).resolve().parents[1] / "src" / "hunter" / "tui" / "app.py",
-        encoding="utf-8").read().lower()
+    assert "restart" in _strip(trailer(events)).lower() or "restart" in (
+        pathlib.Path(__file__).resolve().parents[1] / "src" / "hunter" / "tui" / "app.py"
+    ).read_text(encoding="utf-8").lower()
 
 
 def test_r2c_dash_config_copy_real_diff_notify_never_writes(tmp_path, monkeypatch):
@@ -156,7 +157,6 @@ def test_r2c_dash_config_copy_real_diff_notify_never_writes(tmp_path, monkeypatc
     notified: list[str] = []
     app = HunterTui.__new__(HunterTui)
     app.notify = lambda msg, **k: notified.append(str(msg))  # type: ignore[method-assign]
-    import difflib
 
     row = "tier: basic"
     app.query_one = lambda *a, **k: type("S", (), {"renderable": row})()  # type: ignore[method-assign]

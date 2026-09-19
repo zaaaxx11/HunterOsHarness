@@ -149,7 +149,7 @@ def test_r2c_note_cap_20(tmp_path):
                             options={"state_dir": str(tmp_path), "audit_active": True})
         for i in range(20):
             park(engine, f"thought-{i:02d}")
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             park(engine, "thought-21-overflow")
     finally:
         store.close()
