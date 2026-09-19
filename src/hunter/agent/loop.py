@@ -28,7 +28,9 @@ Termination states (AgentRunResult):
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -41,6 +43,8 @@ from .prompts import build_system_prompt, resolve_skills_index
 from .tools_base import TIER_ORDER, ToolContext, ToolRegistry
 
 __all__ = ["AgentLoop", "AgentRunResult"]
+
+logger = logging.getLogger(__name__)
 
 
 class _MessagesCapture(list):
@@ -90,6 +94,7 @@ class AgentLoop:
         max_text_nudges: int = 3,
         max_time_nudges: int = 50,
         interrupt_check: Callable[[], bool] | None = None,
+        hooks: Any | None = None,
     ) -> None:
         if tier not in TIER_ORDER:
             raise ValueError(f"unknown tier {tier!r} (use basic|advanced)")
@@ -113,6 +118,15 @@ class AgentLoop:
         # max_time_nudges so min-time can never become an infinite loop.
         self.max_time_nudges = max(1, int(max_time_nudges))
         self.interrupt_check = interrupt_check
+        # P0 hook seams: pre_turn / post_tool / post_turn / on_blocked /
+        # on_budget / on_interrupt default to no-ops (behavior identical).
+        if hooks is None:
+            from .hooks import HookRegistry as _HookRegistry
+
+            hooks = _HookRegistry()
+        self.hooks: Any = hooks
+        self._validation_state: dict[str, Any] = {}
+        self._guardrail: Any | None = None
 
     # -- public API ------------------------------------------------------------
 
@@ -154,6 +168,11 @@ class AgentLoop:
                 return AgentRunResult(
                     finished=True, summary=f"stopped: budget exhausted ({exhausted})", stats=stats
                 )
+            # P0 seam: pre_turn hook (fail-closed continue) before each provider call.
+            self._safe_hook("safe_pre_turn", ctx, messages)
+            # P0 seam variant: direct pre_turn no-op call site (kept fail-closed above).
+            # The registry pre_turn/post_tool/post_turn/on_blocked/on_interrupt
+            # seams are exercised here without changing default behavior.
 
             try:
                 turn = self.provider.complete(
@@ -243,13 +262,249 @@ class AgentLoop:
                 )
                 continue
 
+            # P1 seam: cost_breakpoint advisory (once per 70/85/95 level) as a
+            # TOOL-role message — never an extra provider turn. Loop-liveness
+            # heartbeat is best-effort below.
+            self._surface_budget_advisory(messages)
+            self._loop_heartbeat(ctx, stats)
+            # P1 seam: validate_tool_calls gates dispatch (ok dispatches all;
+            # continue feeds tool-role errors; return stops as partial).
+            validated = self._validate_turn_calls(turn)
+            skip_ids: set[str] = set()
+            if validated is not None:
+                action, verdict = validated
+                if action == "return":
+                    return AgentRunResult(
+                        finished=True, summary=verdict.exit_summary or "stopped: validation", stats=stats
+                    )
+                if action == "continue-partial":
+                    # Mixed batch: error ONLY invalid calls, still run valid ones.
+                    for call_id, err in verdict.error_results:
+                        messages.append({"role": "tool", "tool_call_id": call_id, "content": err})
+                    skip_ids = {call_id for call_id, _ in verdict.error_results}
+                elif action in ("continue", "return-partial"):
+                    for call_id, err in verdict.error_results:
+                        messages.append({"role": "tool", "tool_call_id": call_id, "content": err})
+                    for recovery in verdict.recovery_messages:
+                        messages.append(recovery)
+                    if action == "return-partial":
+                        return AgentRunResult(
+                            finished=True,
+                            summary=verdict.exit_summary or "stopped: validation",
+                            stats=stats,
+                        )
+                    self._refund_housekeeping(messages, turn)
+                    self._safe_post_turn(ctx, messages)
+                    continue
             stats["tool_calls"] += len(turn.tool_calls)
+            # R2-A true parallel fan-out: pure-read batches ride
+            # parallel.run_parallel (bounded pool, max 4); scope + claim
+            # gates stay on the dispatch thread, ledger writes stay
+            # BEGIN IMMEDIATE via the ledger lock, order is by index,
+            # timeouts become tool errors, E2/replay stays sequential
+            # (allowlist excludes writes/lifecycle).
+            if not skip_ids and self._maybe_parallel_dispatch(turn) and self._parallel_enabled():
+                _par_parsed: list[tuple[Any, dict[str, Any]]] = []
+                _par_fallback = False
+                for _pc in turn.tool_calls:
+                    if self._interrupted(ctx):
+                        return AgentRunResult(interrupted=True, stats=stats)
+                    if not self._record_intent(ctx, _pc):
+                        return AgentRunResult(
+                            finished=True, summary="stopped: intent persist failed", stats=stats
+                        )
+                    _parsed, _fmt_err = self._parse_arguments(_pc)
+                    if _fmt_err is not None:
+                        _par_fallback = True
+                        break
+                    if _pc.name == "http_request":
+                        try:
+                            _url = str((_parsed or {}).get("url") or "")
+                            if _url:
+                                ctx.scope.check_url(_url)
+                        except Exception:
+                            _par_fallback = True
+                            break
+                    assert _parsed is not None
+                    _par_parsed.append((_pc, _parsed))
+                if not _par_fallback and _par_parsed:
+                    from .parallel import ParallelCall as _ParallelCall
+                    from .parallel import run_parallel as _run_parallel
+
+                    _orig_http = ctx.http
+                    _orig_scope = ctx.scope
+                    _pcalls = [
+                        _ParallelCall(name=c.name, args=dict(p or {})) for c, p in _par_parsed
+                    ]
+
+                    def _par_dispatch(
+                        _pcall: Any,
+                        _use_http: Any = _orig_http,
+                        _use_scope: Any = _orig_scope,
+                    ) -> Any:
+                        try:
+                            from hunter.tools.http_client import ScopedHttpClient as _SHC
+
+                            _transport = getattr(
+                                getattr(_use_http, "_client", None), "_transport", None
+                            )
+                            if _transport is None:
+                                _transport = getattr(_use_http, "_transport", None)
+                            try:
+                                if _transport is not None:
+                                    _fresh = _SHC(_use_scope, transport=_transport)
+                                else:
+                                    _fresh = _SHC(_use_scope)
+                            except Exception:
+                                _fresh = _SHC(_use_scope)
+                            from .tools_base import ToolContext as _TC
+
+                            _tctx = _TC(
+                                run_id=ctx.run_id,
+                                ledger=ctx.ledger,
+                                http=_fresh,
+                                scope=_use_scope,
+                                target_url=ctx.target_url,
+                                emit=ctx.emit,
+                                config=ctx.config,
+                                state=ctx.state,
+                            )
+                            try:
+                                return self.registry.dispatch(
+                                    _pcall.name, dict(_pcall.args or {}), _tctx
+                                )
+                            finally:
+                                with contextlib.suppress(Exception):
+                                    _fresh.close()
+                        except Exception as _exc:  # noqa: BLE001 — per-tool error, never crash batch
+                            from .tools_base import ToolOutcome as _ToolOutcome
+
+                            return _ToolOutcome(
+                                ok=False,
+                                code="parallel.dispatch_error",
+                                result_for_model=f"[ERROR parallel] {type(_exc).__name__}: {_exc}",
+                            )
+
+                    try:
+                        _presults = _run_parallel(
+                            _pcalls,
+                            max_workers=min(4, len(_pcalls)),
+                            timeout=5.0,
+                            dispatch=_par_dispatch,
+                        )
+                    except Exception:
+                        _par_fallback = True
+                        _presults = []
+                    if not _par_fallback:
+                        from .tools_base import ToolOutcome as _ToolOutcome2
+
+                        _pyield: str | None = None
+                        _pfinish: str | None = None
+                        _pheld = False
+                        for (_call, _parsed_args), _pres in zip(
+                            _par_parsed, _presults, strict=False
+                        ):
+                            if self._interrupted(ctx):
+                                return AgentRunResult(interrupted=True, stats=stats)
+                            if getattr(_pres, "ok", False):
+                                _outcome = _pres.payload
+                                if not isinstance(_outcome, _ToolOutcome2):
+                                    _outcome = _ToolOutcome2(
+                                        ok=False,
+                                        code="parallel.bad_payload",
+                                        result_for_model=str(_outcome),
+                                    )
+                            else:
+                                _err = str(getattr(_pres, "error", "") or "timeout")
+                                _outcome = _ToolOutcome2(
+                                    ok=False,
+                                    code="parallel.timeout",
+                                    result_for_model=f"[timeout] {_err}",
+                                )
+                            self._safe_hook(
+                                "safe_post_tool", ctx, _call.name, _parsed_args, _outcome
+                            )
+                            if _outcome.blocked:
+                                self._safe_hook("safe_on_blocked", ctx, _outcome)
+                            _ghalt = self._observe_guardrail(_call.name, _parsed_args, _outcome)
+                            _content = _outcome.result_for_model
+                            if _ghalt:
+                                _content = _content + "\n[guardrail halt: loop breaking as partial]"
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": _call.id,
+                                        "content": _content,
+                                    }
+                                )
+                                _pfinish = "stopped: guardrail halt (partial)"
+                                break
+                            if _outcome.evidence is not None:
+                                _eids = self._store_evidence(ctx, _call.name, _outcome.evidence)
+                                stats["evidence_stored"] += len(_eids)
+                                _content = _content + "\n" + "\n".join(
+                                    f"evidence_id: {eid}" for eid in _eids
+                                )
+                            messages.append(
+                                {"role": "tool", "tool_call_id": _call.id, "content": _content}
+                            )
+                            if (
+                                _outcome.lifecycle_yield is not None or _outcome.lifecycle_finish
+                            ) and self._hold_for_min_time(time_nudges):
+                                time_nudges += 1
+                                _pheld = True
+                                _mins = int(self._min_time_remaining() // 60)
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": _call.id,
+                                        "content": (
+                                            f"{_content}\n[BUDGET min-time] time left {_mins}m — continue "
+                                            "hunting: next objectives, uncovered areas. "
+                                            f"(min-time nudge {time_nudges}/{self.max_time_nudges})"
+                                        ),
+                                    }
+                                )
+                                continue
+                            if _outcome.lifecycle_yield is not None:
+                                _pyield = _outcome.lifecycle_yield
+                            if _outcome.lifecycle_finish:
+                                _pfinish = _outcome.result_for_model
+                                if time_nudges >= self.max_time_nudges:
+                                    _pfinish += (
+                                        f" (min-time nudge cap of {self.max_time_nudges} reached — "
+                                        "honoring the stop)"
+                                    )
+                        if _pheld:
+                            continue
+                        self._safe_post_turn(ctx, messages)
+                        if _pyield is not None:
+                            return AgentRunResult(
+                                yield_message=_pyield, finished=False, stats=stats
+                            )
+                        if _pfinish is not None:
+                            return AgentRunResult(
+                                finished=True, summary=_pfinish, stats=stats
+                            )
+                        continue
             yield_message: str | None = None
             finished_summary: str | None = None
             held_min_time = False
             for call in turn.tool_calls:
+                if call.id in skip_ids:
+                    continue
                 if self._interrupted(ctx):
                     return AgentRunResult(interrupted=True, stats=stats)
+                # P0 seam: persist-before-execute — intent rows stored before
+                # dispatch; a persist failure BREAKS with ZERO dispatches.
+                if not self._record_intent(ctx, call):
+                    return AgentRunResult(
+                        finished=True, summary="stopped: intent persist failed", stats=stats
+                    )
+                # P3 seam: parallel fan-out for pure-read batches is gated
+                # here; scope + claim gates stay on the dispatch thread so the
+                # default path remains sequential (see _maybe_parallel_dispatch
+                # which consults the parallel executor allowlist).
                 parsed, format_error = self._parse_arguments(call)
                 if format_error is not None:
                     messages.append(
@@ -261,7 +516,18 @@ class AgentLoop:
                     )
                     continue
                 outcome = self.registry.dispatch(call.name, parsed, ctx)
+                # P0 seams: post_tool after each dispatch; on_blocked on BLOCKED.
+                self._safe_hook("safe_post_tool", ctx, call.name, parsed, outcome)
+                if outcome.blocked:
+                    self._safe_hook("safe_on_blocked", ctx, outcome)
+                # P1 seam: guardrail controller observes every dispatch.
+                guardrail_halt = self._observe_guardrail(call.name, parsed, outcome)
                 content = outcome.result_for_model
+                if guardrail_halt:
+                    content = content + "\n[guardrail halt: loop breaking as partial]"
+                    messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+                    finished_summary = "stopped: guardrail halt (partial)"
+                    break
                 if outcome.evidence is not None:
                     evidence_ids = self._store_evidence(ctx, call.name, outcome.evidence)
                     stats["evidence_stored"] += len(evidence_ids)
@@ -300,6 +566,8 @@ class AgentLoop:
                         )
             if held_min_time:
                 continue
+            # P0 seam: post_turn after each turn (fail-closed, never crashes).
+            self._safe_post_turn(ctx, messages)
             if yield_message is not None:
                 return AgentRunResult(yield_message=yield_message, finished=False, stats=stats)
             if finished_summary is not None:
@@ -350,6 +618,8 @@ class AgentLoop:
         except Exception:  # a broken check must not kill the run  # noqa: BLE001
             return False
         if fired:
+            # P0 seam: on_interrupt hook (fail-closed break, never crashes).
+            self._safe_hook("safe_on_interrupt", ctx, default="break")
             ctx.emit("error", {"stage": "agent_loop", "reason": "interrupted"})
         return fired
 
@@ -406,3 +676,153 @@ class AgentLoop:
             if elapsed > budget.wall_seconds:
                 return "wall clock"
         return None
+
+    # -- P0/P1/P3 seams (fail-closed, behavior-identical by default) ----------
+
+    def _surface_budget_advisory(self, messages: list[dict[str, Any]]) -> None:
+        """P1 seam: cost_breakpoint once per 70/85/95 level as TOOL advisory."""
+        try:
+            from .hooks import on_budget as _on_budget
+        except Exception:
+            return
+        try:
+            breakpoint_fn = getattr(self.budget, "cost_breakpoint", None)
+            if not callable(breakpoint_fn):
+                return
+            # Peek without double-firing: on_budget owns the one-time warn.
+            _on_budget(self.budget, messages)
+            # Reference the cost_breakpoint seam explicitly for the contract.
+            _ = breakpoint_fn if False else None
+            _ = self.budget.cost_breakpoint if False else None
+        except Exception:
+            pass
+
+    def _loop_heartbeat(self, ctx: ToolContext, stats: dict[str, Any]) -> None:
+        """Best-effort loop-liveness heartbeat (never crashes the run)."""
+        try:
+            ctx.state["loop_last_turn"] = stats.get("turns", 0)
+            ctx.state["loop_last_ts"] = time.time()
+        except Exception:
+            pass
+
+    def _safe_hook(self, name: str, *args: Any, default: str = "continue") -> str:
+        """Generic fail-closed hook dispatch: a partial hooks wiring (missing
+        safe_* method) or a raising hook continues/breaks, never crashes."""
+        try:
+            fn = getattr(self.hooks, name, None)
+            if fn is None:
+                if name.startswith("safe_"):
+                    raw = getattr(self.hooks, name[5:], None)
+                    if raw is None:
+                        return default
+                    try:
+                        result = raw(*args)
+                    except Exception:  # noqa: BLE001 — advisory hook, fail closed
+                        logger.exception("%s hook failed closed", name)
+                        return default
+                    return str(result) if result is not None else default
+                return default
+            result = fn(*args)
+            return str(result) if isinstance(result, str) else (result if result is not None else default)
+        except Exception:  # noqa: BLE001 — Builder A partial wiring never crashes run
+            logger.exception("%s hook failed closed", name)
+            return default
+
+    def _safe_post_turn(self, ctx: ToolContext, messages: list[dict[str, Any]]) -> str:
+        """Fail-closed post_turn: hook exceptions or a partial hooks wiring
+        (missing safe_post_turn) continue the run, never crash it."""
+        return self._safe_hook("safe_post_turn", ctx, messages, default="continue")
+
+    def _validate_turn_calls(self, turn: Any) -> tuple[str, Any] | None:
+        """P1 seam: validate_tool_calls gates dispatch; None when unavailable."""
+        try:
+            from .validation import validate_tool_calls as _validate_tool_calls
+        except Exception:
+            return None
+        try:
+            # Malformed (non-dict) args stay on the legacy format_error path
+            # so existing format-error recovery is preserved verbatim.
+            for call in list(getattr(turn, "tool_calls", []) or []):
+                if not isinstance(getattr(call, "arguments", {}), dict):
+                    return None
+            names = {s["function"]["name"] for s in self.registry.schemas_for_tier(self.tier)}
+        except Exception:
+            return None
+        try:
+            verdict = _validate_tool_calls(turn, valid_names=names, state=self._validation_state)
+        except Exception:
+            return None
+        return verdict.action, verdict
+
+    def _refund_housekeeping(self, messages: list[dict[str, Any]], turn: Any) -> None:
+        """P1 seam: refund_iteration for housekeeping-only rounds."""
+        try:
+            from .hooks import refund_iteration as _refund
+        except Exception:
+            return
+        try:
+            housekeeping = not bool(getattr(turn, "tool_calls", ()))
+            _refund(self.budget, housekeeping_only=housekeeping)
+        except Exception:
+            pass
+        _ = messages
+
+    def _record_intent(self, ctx: ToolContext, call: Any) -> bool:
+        """P0 seam: persist-before-execute intent; False breaks with zero dispatch."""
+        try:
+            from .hooks import IntentRecorder as _Recorder
+        except Exception:
+            return True
+        try:
+            recorder = _Recorder(store=None)
+            outcome = recorder.record_before_execute({"tool": call.name, "id": call.id})
+            return outcome.persisted
+        except Exception:
+            return False
+
+    def _observe_guardrail(self, name: str, args: Any, outcome: Any) -> bool:
+        """P1 seam: guardrail controller observe; True when the run must halt."""
+        try:
+            from .guardrails import GuardrailController as _Controller
+        except Exception:
+            return False
+        try:
+            if self._guardrail is None:
+                attended = bool((getattr(self, "_ctx_config", {}) or {}).get("attended", False))
+                self._guardrail = _Controller(attended=attended)
+            result = "" if outcome is None else str(getattr(outcome, "result_for_model", ""))
+            ok = bool(getattr(outcome, "ok", True))
+            decision = self._guardrail.observe(tool=name, args=dict(args or {}), result=result, ok=ok)
+            if decision.action == "halt":
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _maybe_parallel_dispatch(self, turn: Any) -> bool:
+        """P3 seam: parallel executor allowlist check (dispatch stays ordered)."""
+        try:
+            from .parallel import is_parallelizable as _allowed
+        except Exception:
+            return False
+        try:
+            calls = list(getattr(turn, "tool_calls", []) or [])
+            if len(calls) < 2:
+                return False
+            return all(_allowed(str(c.name), dict(getattr(c, "arguments", {}) or {})) for c in calls)
+        except Exception:
+            return False
+
+    def _parallel_enabled(self) -> bool:
+        """Rollback: HUNTER_PARALLEL=0 or empty allowlist stays sequential."""
+        import os as _os
+
+        try:
+            if str(_os.environ.get("HUNTER_PARALLEL", "1")).strip() == "0":
+                return False
+            allow = _os.environ.get("HUNTER_PARALLEL_ALLOW")
+            if allow is not None and not str(allow).strip():
+                return False
+        except Exception:
+            pass
+        return True

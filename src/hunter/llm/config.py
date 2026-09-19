@@ -38,7 +38,7 @@ from hunter.llm.base import LEGACY_TIERS, TIERS, normalize_tier
 AGENT_TIERS: tuple[str, ...] = ("basic", "advanced", *TIERS)
 
 VALID_TOP_KEYS: tuple[str, ...] = (
-    "model_tiers", "providers", "fallback_providers", "budget", "agent",
+    "model_tiers", "providers", "fallback_providers", "budget", "agent", "ui",
 )
 _TIER_KEYS: tuple[str, ...] = (
     "provider", "model", "base_url", "key_env", "timeout", "reasoning_effort",
@@ -62,6 +62,10 @@ _AGENT_KEYS: tuple[str, ...] = (
 # (`hunt start` records the minimal scope it granted; capped at 50 entries).
 _APPROVED_SCOPE_KEYS: tuple[str, ...] = ("host", "name", "allow_subdomains", "ts", "source")
 _FALLBACK_KEYS: tuple[str, ...] = ("provider", "model", "base_url", "key_env")
+# R2-C skins: `ui.skin` selects the terminal skin (teal default). The valid
+# names are single-sourced from hunter.palette.SKINS; the loader fail-closes
+# on unknown names so a typo can never silently land as a broken theme.
+_UI_KEYS: tuple[str, ...] = ("skin",)
 
 # M1: the endpoint SHAPE is stored ("" = unset) so M2 can branch to the
 # responses API without another migration. Nothing reads it in M1.
@@ -161,6 +165,17 @@ class AgentConfig:
 
 
 @dataclass
+class UiConfig:
+    """TUI surface settings. ``skin`` selects the terminal skin (default
+    ``"teal"``); valid names are single-sourced from ``hunter.palette.SKINS``.
+    Persisted via ``write_config({"ui": {"skin": ...}})`` — the same
+    diff-then-set path as every other config write (the TUI never writes the
+    file directly)."""
+
+    skin: str = "teal"
+
+
+@dataclass
 class HunterConfig:
     """Effective HunterOs LLM configuration (validated). ``source_path`` is
     the file it was loaded from, or None for pure defaults."""
@@ -170,6 +185,7 @@ class HunterConfig:
     fallback_providers: list[FallbackEntry] = field(default_factory=list)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
     source_path: str | None = None
     # One entry per legacy tier name mapped at load time (model_tiers keys,
     # then agent.tier, then $HUNTEROS_TIER). Nothing in resolve/complete ever
@@ -298,6 +314,7 @@ def default_config() -> HunterConfig:
         fallback_providers=[],
         budget=BudgetConfig(),
         agent=AgentConfig(),
+        ui=UiConfig(),
     )
 
 
@@ -559,8 +576,37 @@ def validate_raw(raw: Mapping[str, Any], *, source_text: str | None = None) -> H
         scope_confirm=_as_bool(agent_raw.get("scope_confirm", False), "agent.scope_confirm"),
         approved_scopes=_validate_approved_scopes(agent_raw.get("approved_scopes", [])),
     )
+    cfg.ui = _validate_ui(raw.get("ui"), source_text=text or None)
     cfg.legacy_notes = tuple(notes)
     return cfg
+
+
+def _validate_ui(ui_raw: Any, *, source_text: str | None = None) -> UiConfig:
+    """The ``ui`` surface block (R2-C skins): a mapping with a single ``skin``
+    key. Unknown keys are ``config.unknown_key``; unknown skin names are
+    ``config.value`` fail-closed against the single-sourced
+    ``hunter.palette.SKINS`` registry (a typo can never silently land)."""
+    if ui_raw is None:
+        return UiConfig()
+    if not isinstance(ui_raw, dict):
+        raise _config_error(
+            "config.type",
+            f"ui must be a mapping, got {type(ui_raw).__name__}",
+            f"valid keys under ui: {', '.join(_UI_KEYS)}",
+        )
+    _reject_unknown(ui_raw, _UI_KEYS, "ui", source_text=source_text)
+    skin = _as_str(ui_raw.get("skin", "teal"), "ui.skin") or "teal"
+    try:
+        from hunter.palette import SKINS as _SKINS  # noqa: PLC0415 — single source, lazy
+    except Exception:  # noqa: BLE001 — palette unavailable: accept the string
+        _SKINS = {}
+    if _SKINS and skin not in _SKINS:
+        raise _config_error(
+            "config.value",
+            f"ui.skin must be one of: {', '.join(sorted(_SKINS))} — got '{skin}'",
+            "set ui.skin via the TUI skin picker or `hunter config set ui.skin <name>`",
+        )
+    return UiConfig(skin=skin)
 
 
 def _validate_approved_scopes(scopes_raw: Any) -> list[ApprovedScope]:
@@ -823,4 +869,7 @@ budget:                        # per-run governor (RunBudget)
 agent:
   tier: basic                  # basic | advanced | orchestrator | hunter | verifier | utility
   api_max_retries: 3           # attempts per provider before failing over
+
+ui:                            # TUI surface (R2-C skins-as-data)
+  skin: teal                   # teal | midnight | amber (persisted by the skin picker)
 """

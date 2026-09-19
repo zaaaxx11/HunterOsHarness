@@ -16,6 +16,8 @@ from typing import Any
 __all__ = ["INVENTORY_BINARIES", "inventory_binaries"]
 
 # Pinned tuple (M8 F1) — order is part of the contract.
+# R2-B B3 appends heavy opt-in binaries AFTER the pinned 15 (append-only:
+# the first 15 entries never move; the tail stays sorted).
 INVENTORY_BINARIES: tuple[str, ...] = (
     "curl",
     "wget",
@@ -32,6 +34,10 @@ INVENTORY_BINARIES: tuple[str, ...] = (
     "testssl",
     "openssl",
     "httpx",
+    # R2-B heavy opt-in (slither/cast/anvil): appended, sorted.
+    "anvil",
+    "cast",
+    "slither",
 )
 
 

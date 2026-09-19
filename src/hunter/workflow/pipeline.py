@@ -55,7 +55,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from hunter.llm.base import RunBudget
     from hunter.tools.scope import ScopeSet
 
-__all__ = ["RunSummary", "run_scan"]
+__all__ = ["RunSummary", "replay_contract_read", "run_scan"]
 
 
 @dataclass
@@ -468,6 +468,25 @@ def _execute_scan(
         phase_line=render_phase_progress(snapshots),
         report_markdown=report_text,
     )
+
+
+def replay_contract_read(args: dict[str, Any]) -> dict[str, Any]:
+    """R2-B B1 replay analog: a fresh RPC with the same calldata must return
+    a byte-equal result. Any divergence — including second-host divergence —
+    is fail-closed to ``needs_follow_up`` (never verified, never ruled_out).
+
+    Pure function (no network): the caller supplies ``prior_result`` and
+    ``fresh_result``; comparison is exact over lower-cased hex.
+    """
+    prior = str(args.get("prior_result", "") or "").strip().lower()
+    fresh = str(args.get("fresh_result", "") or "").strip().lower()
+    byte_equal = bool(prior) and prior == fresh
+    if byte_equal:
+        return {"byte_equal": True, "verdict": "verified",
+                "result_for_model": "replay byte-equal: verified."}
+    return {"byte_equal": False, "verdict": "needs_follow_up",
+            "second_host": bool(args.get("second_host", False)),
+            "result_for_model": "replay divergence: needs_follow_up (never ruled_out)."}
 
 
 def _replay_candidate(

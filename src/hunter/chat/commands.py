@@ -132,6 +132,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("verbose", "Cycle chat verbosity (normal -> verbose -> quiet)", "Config"),
     # Info
     CommandDef("skills", "List bundled methodology skills", "Info"),
+    # Dual-mode chat (Planner C2)
+    CommandDef("mode", "Show or switch the chat surface mode (chat|audit)", "General",
+               args_hint="[chat|audit]"),
+    CommandDef("note", "Save a chat-only note (one chat.db row, never a ledger run)", "Session",
+               args_hint="<text>"),
 ]
 
 
@@ -629,6 +634,20 @@ def _exec_model(ctx: CommandContext) -> CommandReply:
             resolved[tier] = model
             lines.append(f"  {tier}: {model}")
         lines.append(f"agent.tier: {cfg.agent.tier}")
+        try:
+            from hunter.llm.router import ProviderRouter, describe_chain  # noqa: PLC0415 — lazy
+
+            class _NoNet:
+                def completion(self, **kwargs):
+                    raise RuntimeError("chain view only (no dial)")
+
+                def completion_cost(self, response):
+                    return 0.0
+
+            _router = ProviderRouter(cfg, litellm_module=_NoNet())
+            lines.append(describe_chain(_router, "orchestrator"))
+        except Exception:
+            lines.append("last: no attempts recorded yet")
         return CommandReply("\n".join(lines), data={"models": resolved})
 
     # v0.4 rename: legacy aliases normalize BEFORE the membership check and
@@ -930,8 +949,19 @@ def _exec_audit(ctx: CommandContext) -> CommandReply:
     """Validate an interactive audit request; target requests are one-shot."""
     arg = (ctx.args or "").strip()
     if arg.lower() in ("status", ""):
+        stored = str(ctx.options.get("mode", "chat") or "chat").lower()
+        stored = stored if stored in ("chat", "audit") else "chat"
+        # The chip reports the live posture: an active run drives audit mode
+        # even when the surface flag was never flipped explicitly.
+        label = "audit" if ctx.options.get("audit_active") else stored
+        base = ctx.options.get("audit_status") or "no audit active — /audit <target> to start one"
+        if "mode:" in base.lower():
+            return CommandReply(
+                base,
+                data={"audit_active": bool(ctx.options.get("audit_active"))},
+            )
         return CommandReply(
-            ctx.options.get("audit_status") or "no audit active — /audit <target> to start one",
+            f"{base} (mode: {label})",
             data={"audit_active": bool(ctx.options.get("audit_active"))},
         )
     if arg.lower() == "finish":
@@ -1077,6 +1107,90 @@ def _exec_hunt(ctx: CommandContext) -> CommandReply:
     return _audit_target_reply(ctx, "hunt")
 
 
+# -- dual-mode chat (/mode, /note — Planner C2) -------------------------------
+
+
+def _exec_mode(ctx: CommandContext) -> CommandReply:
+    """Show or switch the chat surface mode (chat|audit).
+
+    Bare ``/mode`` reports the current mode. ``/mode chat|audit`` flips the
+    surface flag. Switching audit→chat while an audit is active forces an
+    ``/audit finish`` (``audit_finish=True``) — an armed run is never
+    silently dropped; the engine closes it via the same path as
+    ``/audit finish``.
+    """
+    raw = (ctx.args or "").strip().lower()
+    stored = str(ctx.options.get("mode", "chat") or "chat").lower()
+    if stored not in ("chat", "audit"):
+        stored = "chat"
+    if not raw:
+        return CommandReply(
+            f"mode: {stored} — /mode chat|audit switches the surface mode",
+            data={"mode": stored},
+        )
+    if raw not in ("chat", "audit"):
+        return CommandReply("usage: /mode [chat|audit]", data={"mode": stored})
+    if raw == "chat" and ctx.options.get("audit_active"):
+        # audit->chat with a live run: force the finish, never drop it.
+        ctx.options["mode"] = "chat"
+        return CommandReply(
+            "closing the audit run... mode: chat — the audit finish is forced, "
+            "never silently dropped",
+            data={"mode": "chat", "audit_finish": True},
+        )
+    if raw == stored:
+        return CommandReply(f"mode: {stored} (unchanged)", data={"mode": stored})
+    ctx.options["mode"] = raw
+    return CommandReply(
+        f"mode: {raw} — "
+        + ("free text now drives the audit agent" if raw == "audit"
+           else "plain conversational chat; audit asks get a hint, never a decline"),
+        data={"mode": raw},
+    )
+
+
+def _exec_note(ctx: CommandContext) -> CommandReply:
+    """Save one chat-only note: exactly one chat.db row, zero ledger rows.
+
+    While an audit is active the note is parked in the R2-C queue (run_id
+    None, never an audit turn) — free text must never smuggle writes into
+    an armed run; /audit finish flushes the queue.
+    """
+    text = (ctx.args or "").strip()
+    if not text:
+        return CommandReply("usage: /note <text> — saves a chat-only note (never a ledger run)")
+    sid = _session_id(ctx)
+    if not sid:
+        return CommandReply("no active session — say something first")
+    if ctx.options.get("audit_active"):
+        try:
+            from hunter.chat.notes import NOTE_CAP, park_note  # noqa: PLC0415 — lazy, cycle-safe
+
+            class _CtxEngine:
+                def __init__(self, store, session_id, options):
+                    self.store = store
+                    self.session_id = session_id
+                    self.options = options
+
+            park_note(_CtxEngine(ctx.store, sid, ctx.options), text)
+        except ValueError as exc:
+            if "queue full" in str(exc):
+                return CommandReply(
+                    f"note queue full ({NOTE_CAP}) — run /audit finish first",
+                    data={"note": {"action": "refused_queue_full"}},
+                )
+            raise
+        return CommandReply(
+            "noted (parked — audit active; will flush on /audit finish)",
+            data={"note": {"action": "parked"}},
+        )
+    ctx.store.append_message(sid, "user", f"note: {text}")
+    return CommandReply(
+        "noted — one chat.db row saved (the ledger was not touched)",
+        data={"note": {"action": "saved"}},
+    )
+
+
 EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "help": _exec_help,
     "new": _exec_new,
@@ -1101,4 +1215,6 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "deny": _exec_deny,
     "retro": _exec_retro,
     "curate": _exec_curate,
+    "mode": _exec_mode,
+    "note": _exec_note,
 }

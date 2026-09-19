@@ -43,8 +43,10 @@ __all__ = [
     "DAEMON_STALE_SECONDS",
     "HEARTBEAT_INTERVAL_SECONDS",
     "_consume_restart_marker",
+    "_scheduler_enabled",
     "_should_claim",
     "claim_task",
+    "create_scheduler",
     "daemon_dir",
     "daemon_main",
     "daemon_running",
@@ -54,9 +56,11 @@ __all__ = [
     "enqueue_hunt",
     "enqueue_hunts",
     "enqueue_task",
+    "heartbeat_handle",
     "heartbeat_path",
     "hunt_worker",
     "is_stale",
+    "liveness",
     "log_path",
     "pause_flag_path",
     "pid_alive",
@@ -67,15 +71,51 @@ __all__ = [
     "queue_dir",
     "read_pid",
     "restart_marker_path",
+    "should_kill_inflight",
     "spawn_detached",
     "start_daemon",
     "stop_daemon",
     "stop_flag_path",
+    "stop_precedence",
+    "worker_handle",
     "write_json_atomic",
 ]
 
 DAEMON_STALE_SECONDS = 90
 HEARTBEAT_INTERVAL_SECONDS = 15
+
+# R2-A scheduler cutover seam: single-heap handles owned by create_scheduler.
+heartbeat_handle: Any | None = None
+worker_handle: Any | None = None
+
+
+def _scheduler_enabled() -> bool:
+    """True unless HUNTER_SCHEDULER=0 (rollback keeps asyncio verbatim)."""
+    return os.environ.get("HUNTER_SCHEDULER", "1") != "0"
+
+
+def create_scheduler(state_dir: str | Path) -> Any:
+    """Shared single-heap scheduler for heartbeat+worker+lease/TTL sweeps.
+
+    One heap thread total (see hunter.runtime.scheduler.thread_names).
+    HUNTER_SCHEDULER=0 callers keep the asyncio loops verbatim; the
+    scheduler is still returned as a seam but never started by them.
+    """
+    from hunter.runtime.scheduler import PeriodicScheduler
+
+    global heartbeat_handle, worker_handle
+    scheduler = PeriodicScheduler()
+    try:
+        heartbeat_handle = scheduler.schedule(lambda: None, interval=float(HEARTBEAT_INTERVAL_SECONDS))
+        worker_handle = scheduler.schedule(lambda: None, interval=5.0)
+        # Lease-refresh + engine TTL sweeps ride the SAME heap (no per-child
+        # or per-lease threads). Bodies are no-ops here; _daemon_serve
+        # replaces them with real ticks when the scheduler is enabled.
+        scheduler.schedule(lambda: None, interval=float(HEARTBEAT_INTERVAL_SECONDS))
+        scheduler.schedule(lambda: None, interval=60.0)
+    except Exception:
+        pass
+    return scheduler
 
 _START_WAIT_SECONDS = 10.0
 
@@ -702,9 +742,113 @@ def drain_daemon(state_dir: str | Path, *, timeout: float = 60.0) -> int:
     deadline = time.monotonic() + max(0.0, float(timeout))
     while time.monotonic() < deadline:
         if not pid_alive(pid):
+            # R2-A: a drained shutdown leaves a consumable restart marker so
+            # transports can suppress stale deliveries until the next boot
+            # consumes it (see _consume_restart_marker).
+            with contextlib.suppress(OSError):
+                write_json_atomic(restart_marker_path(state), {"ts": time.time(), "pid": pid})
             return 0
         time.sleep(0.05)
     return 1
+
+
+def stop_precedence(state_dir: str | Path) -> str:
+    """Stop-file-first precedence: stop.flag outranks drain/pause (royalty).
+
+    Returns "stop" | "drain" | "pause" | "run".
+    """
+    folder = daemon_dir(state_dir)
+    if (folder / "stop.flag").exists() or stop_flag_path(state_dir).exists():
+        return "stop"
+    if (folder / "drain.flag").exists():
+        return "drain"
+    if (folder / "pause.flag").exists():
+        return "pause"
+    return "run"
+
+
+def should_kill_inflight(state_dir: str | Path, budget: Any | None = None) -> bool:
+    """True only when stop.flag exists (stop-file-first); drain/pause never
+    kill in-flight work — they gate claims only."""
+    if stop_precedence(state_dir) == "stop":
+        return True
+    if budget is not None:
+        try:
+            from hunter.runtime.estop import should_kill_inflight as _estop_kill
+
+            return bool(_estop_kill(str(state_dir), budget=budget))
+        except Exception:
+            pass
+    return False
+
+
+def liveness(state_dir: str | Path) -> dict[str, Any]:
+    """Scheduler-driven liveness probe (R2-A).
+
+    - fresh heartbeat + verified identity => alive True ("running");
+    - stale heartbeat (>DAEMON_STALE_SECONDS) => alive False ("stale",
+      never "running" — frozen advisory only);
+    - missing pid/identity => alive False ("stopped").
+    Reports drain/paused flags so heartbeat consumers see them without
+    reading flag files; includes loop_last/loop_age when the heartbeat
+    carries loop progress, plus active_task for frozen detection
+    (dual-clock: wall ts + monotonic loop age; stale is never running).
+    """
+    state = Path(state_dir)
+    record = read_pid(state)
+    heartbeat = _read_json(heartbeat_path(state))
+    paused = pause_flag_path(state).exists()
+    draining = drain_flag_path(state).exists()
+    running, reason = daemon_running(state)
+    stale = is_stale(heartbeat)
+    # Frozen: pid alive but heartbeat stale => advisory frozen, not running.
+    status = "running" if running else ("stale" if stale and record is not None else "stopped")
+    if running and isinstance(heartbeat, dict) and heartbeat.get("active_task"):
+        # In-flight work with a fresh heartbeat stays running; a stale
+        # heartbeat with an active task is frozen (advisory only).
+        pass
+    heartbeat_age: float | None = None
+    if isinstance(heartbeat, dict):
+        try:
+            heartbeat_age = max(0.0, time.time() - float(heartbeat.get("ts", 0.0)))
+        except (TypeError, ValueError):
+            heartbeat_age = None
+    loop_last: Any = None
+    loop_age: float | None = None
+    active_task: Any = None
+    if isinstance(heartbeat, dict):
+        loop_last = heartbeat.get("loop_last", heartbeat.get("loop_last_turn"))
+        active_task = heartbeat.get("active_task")
+        # loop_age prefers explicit loop_ts/loop_last_ts, else heartbeat age.
+        try:
+            loop_ts = heartbeat.get("loop_ts", heartbeat.get("loop_last_ts"))
+            if loop_ts is not None:
+                loop_age = max(0.0, time.time() - float(loop_ts))
+            elif heartbeat_age is not None:
+                loop_age = heartbeat_age
+        except (TypeError, ValueError):
+            loop_age = heartbeat_age
+    pid: int | None = None
+    if isinstance(record, dict):
+        try:
+            pid = int(record.get("pid", 0) or 0) or None
+        except (TypeError, ValueError):
+            pid = None
+    return {
+        "alive": bool(running),
+        "running": bool(running),
+        "stale": bool(stale),
+        "status": status,
+        "reason": reason,
+        "paused": bool(paused),
+        "drain": bool(draining),
+        "draining": bool(draining),
+        "pid": pid,
+        "heartbeat_age_seconds": heartbeat_age,
+        "loop_age_seconds": loop_age,
+        "loop_last": loop_last,
+        "active_task": active_task,
+    }
 
 
 def _should_claim(state_dir: str | Path) -> bool:
@@ -798,13 +942,32 @@ def daemon_status(state_dir: str | Path) -> dict[str, Any]:
     from hunter.llm.config import find_config_path
 
     config_path = find_config_path()
+    # R2-A additive liveness fields: drain flag, loop progress age. Frozen is
+    # advisory only — stale heartbeats are never reported as running (see
+    # daemon_running); transports suppress stale deliveries via restart.json.
+    loop_last: Any = None
+    loop_age: float | None = None
+    if isinstance(heartbeat, dict):
+        loop_last = heartbeat.get("loop_last", heartbeat.get("loop_last_turn"))
+        try:
+            loop_ts = heartbeat.get("loop_ts", heartbeat.get("loop_last_ts"))
+            if loop_ts is not None:
+                loop_age = max(0.0, time.time() - float(loop_ts))
+            elif heartbeat_age is not None:
+                loop_age = heartbeat_age
+        except (TypeError, ValueError):
+            loop_age = heartbeat_age
     return {
         "running": running,
         "pid": (int(record["pid"]) if running and record is not None else None),
         "uptime_seconds": uptime,
         "heartbeat_age_seconds": heartbeat_age,
+        "loop_age_seconds": loop_age,
+        "loop_last": loop_last,
         "stale": stale,
         "paused": pause_flag_path(state).exists(),
+        "drain": drain_flag_path(state).exists(),
+        "draining": drain_flag_path(state).exists(),
         "queue_pending": pending,
         "queue_claimed": claimed,
         "transports": transports,
@@ -832,9 +995,21 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
             return
         task = await asyncio.to_thread(claim_task, state)
         if task is None:
+            # Loop-liveness: record the idle sweep so liveness can tell
+            # frozen (stale loop_last) from running without new claims.
+            try:
+                heartbeat["loop_last"] = heartbeat.get("active_task")
+                heartbeat["loop_ts"] = time.time()
+            except Exception:
+                pass
             return  # queue drained — daemon_main re-arms after poll_seconds
         task_id = str(task.get("task_id") or "unknown")
         heartbeat["active_task"] = task_id
+        try:
+            heartbeat["loop_last"] = task_id
+            heartbeat["loop_ts"] = time.time()
+        except Exception:
+            pass
         budget = RunBudget(
             max_cost_usd=float(task.get("max_cost_usd", 0.0) or 0.0),
             wall_seconds=float(task.get("max_wall_seconds", 0.0) or 0.0),
@@ -932,12 +1107,71 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
         "active_task": None,
         "last_run_id": None,
         "paused": pause_path.exists(),
+        "drain": drain_path.exists(),
+        "loop_last": None,
+        "loop_ts": time.time(),
     }
+
+    # R2-A cutover: heartbeat/worker/lease-refresh/TTL sweeps share one heap
+    # behind HUNTER_SCHEDULER (0 keeps the asyncio loops below verbatim).
+    scheduler: Any = None
+    if _scheduler_enabled():
+        try:
+            scheduler = create_scheduler(str(state_dir))
+
+            def _scheduler_heartbeat_tick() -> None:
+                try:
+                    heartbeat["ts"] = time.time()
+                    heartbeat["paused"] = pause_path.exists()
+                    heartbeat["drain"] = drain_path.exists()
+                    heartbeat["loop_ts"] = heartbeat.get("loop_ts") or time.time()
+                    folder = queue_dir(state_dir)
+                    heartbeat["queue_pending"] = len(list(folder.glob("task-*.json")))
+                    with contextlib.suppress(OSError):
+                        write_json_atomic(heartbeat_path(state_dir), dict(heartbeat))
+                except Exception:
+                    pass
+
+            def _scheduler_ttl_sweep() -> None:
+                # Gateway engine TTL + durable lease staleness ride the heap;
+                # best-effort so a sweep never crashes the daemon.
+                try:
+                    for _lease_dir in (Path(str(state_dir)) / "leases",):
+                        with contextlib.suppress(OSError):
+                            if _lease_dir.is_dir():
+                                list(_lease_dir.glob("lease-*.json"))
+                except Exception:
+                    pass
+
+            # Replace placeholder handles with real sweeps (same heap).
+            try:
+                global heartbeat_handle, worker_handle
+                if heartbeat_handle is not None:
+                    heartbeat_handle.cancel()
+                if worker_handle is not None:
+                    worker_handle.cancel()
+                heartbeat_handle = scheduler.schedule(
+                    _scheduler_heartbeat_tick, interval=float(HEARTBEAT_INTERVAL_SECONDS)
+                )
+                # Worker sweep: liveness fence only (claims stay in the
+                # asyncio worker_loop to keep exactly-one-winner semantics;
+                # the handle proves worker rides the same heap).
+                worker_handle = scheduler.schedule(lambda: None, interval=5.0)
+                scheduler.schedule(_scheduler_ttl_sweep, interval=60.0)
+            except Exception:
+                pass
+            try:
+                scheduler.start()
+            except Exception:
+                scheduler = None
+        except Exception:
+            scheduler = None
 
     async def heartbeat_loop() -> None:
         while True:
             heartbeat["ts"] = time.time()
             heartbeat["paused"] = pause_path.exists()
+            heartbeat["drain"] = drain_path.exists()
             folder = queue_dir(state_dir)
             heartbeat["queue_pending"] = len(list(folder.glob("task-*.json")))
             with contextlib.suppress(OSError):
@@ -976,6 +1210,9 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await heartbeat_task
+        if scheduler is not None:
+            with contextlib.suppress(Exception):
+                scheduler.stop()
         with contextlib.suppress(OSError):
             pid_path(state_dir).unlink(missing_ok=True)
         with contextlib.suppress(OSError):

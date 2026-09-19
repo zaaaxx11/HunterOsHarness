@@ -17,11 +17,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
+import os
+import time
+import uuid
+from collections import OrderedDict
 from typing import Any
 
 from hunter.chat.repl import ChatEngine
 from hunter.chat.sessions import ChatStore
 from hunter.errors import build_error_surface
+from hunter.gateway.durable_lease import BUSY_MESSAGE as _DURABLE_BUSY_MESSAGE
+from hunter.gateway.durable_lease import LeaseBusy as _DurableLeaseBusy
+from hunter.gateway.durable_lease import acquire as _durable_acquire
 from hunter.gateway.lease import LeaseBusy, TurnLeaseRegistry
 from hunter.gateway.transport import ChatTransport, InboundMessage
 
@@ -32,6 +40,13 @@ logger = logging.getLogger(__name__)
 BUSY_MESSAGE = (
     "still working on your previous request — try again shortly"
 )
+
+# Keep the durable + local busy lines byte-identical (royalty).
+assert BUSY_MESSAGE == _DURABLE_BUSY_MESSAGE
+
+_ENGINE_CACHE_MAXSIZE_DEFAULT = 64
+_ENGINE_CACHE_TTL_DEFAULT = 1800.0  # 30m
+_ENGINE_CACHE_SWEEP_SECONDS = 60.0
 
 
 class GatewayApp:
@@ -48,9 +63,72 @@ class GatewayApp:
         self.transports = list(transports)
         self.state_dir = state_dir
         self._store: ChatStore | None = None
-        self._engines: dict[str, ChatEngine] = {}
+        # Bounded LRU+TTL engine cache (R2-A): OrderedDict in LRU order
+        # (most-recent at the end); unbounded dict behavior when cap/TTL
+        # is inf (rollback: HUNTER_GATEWAY_CACHE_*=inf keeps dict verbatim).
+        self._engines: OrderedDict[str, ChatEngine] = OrderedDict()
+        self._engine_atime: dict[str, float] = {}
+        self._engine_evictions = 0
+        self._last_sweep_monotonic = time.monotonic()
+        self.engine_cache_maxsize = self._resolve_maxsize()
+        self.engine_cache_ttl = self._resolve_ttl()
+        self._proc_sig = self._current_proc_signature(fresh=True)
         self._options: dict[str, dict[str, Any]] = {}
-        self._leases = TurnLeaseRegistry()
+        self._leases = TurnLeaseRegistry(state_dir=state_dir)
+
+    @staticmethod
+    def _resolve_maxsize() -> float:
+        raw = (os.environ.get("HUNTER_GATEWAY_CACHE_MAXSIZE") or "").strip().lower()
+        if raw in ("inf", "infinite", "none", "0", "-1"):
+            return math.inf
+        if raw:
+            try:
+                value = int(raw)
+                return float(value) if value > 0 else math.inf
+            except ValueError:
+                pass
+        return float(_ENGINE_CACHE_MAXSIZE_DEFAULT)
+
+    @staticmethod
+    def _resolve_ttl() -> float:
+        raw = (os.environ.get("HUNTER_GATEWAY_CACHE_TTL") or "").strip().lower()
+        if raw in ("inf", "infinite", "none", "0", "-1"):
+            return math.inf
+        if raw:
+            try:
+                value = float(raw)
+                return value if value > 0 else math.inf
+            except ValueError:
+                pass
+        return float(_ENGINE_CACHE_TTL_DEFAULT)
+
+    def _current_proc_signature(self, *, fresh: bool = False) -> str:
+        """Daemon identity when verifiable, else stable pid-uuid fallback."""
+        try:
+            from hunter.daemon import process_identity as _identity
+
+            identity = _identity(os.getpid())
+            if identity.verified and identity.signature:
+                return str(identity.signature)
+        except Exception:
+            pass
+        if fresh or not getattr(self, "_proc_sig_fallback", ""):
+            self._proc_sig_fallback = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        return str(self._proc_sig_fallback)
+
+    def _maybe_rebuild_on_sig_change(self) -> None:
+        """Rebuild the cache when the process signature changed (PID reuse)."""
+        try:
+            current = self._current_proc_signature()
+        except Exception:
+            return
+        if current != getattr(self, "_proc_sig", current):
+            for engine in list(self._engines.values()):
+                with contextlib.suppress(Exception):
+                    engine.close()
+            self._engines.clear()
+            self._engine_atime.clear()
+            self._proc_sig = current
 
     # -- engines ----------------------------------------------------------
 
@@ -61,13 +139,42 @@ class GatewayApp:
         return self._store
 
     def engine_for(self, session_key: str) -> ChatEngine:
-        """One engine (== one chat session) per transport+chat pair."""
+        """One engine (== one chat session) per transport+chat pair (lru bounded)."""
+        self._maybe_rebuild_on_sig_change()
+        # 60s sweep: evict idle-only entries opportunistically (no thread).
+        try:
+            now = time.monotonic()
+            if now - self._last_sweep_monotonic >= _ENGINE_CACHE_SWEEP_SECONDS:
+                self._last_sweep_monotonic = now
+                self.evict_stale()
+        except Exception:
+            pass
+        now = time.monotonic()
         engine = self._engines.get(session_key)
-        if engine is None:
-            options: dict[str, Any] = {
-                "verbosity": "normal",
-                "state_dir": self.state_dir,
-            }
+        if engine is not None:
+            # TTL: expired entries are evicted (idle) and rebuilt.
+            ttl = float(self.engine_cache_ttl)
+            if not math.isinf(ttl):
+                atime = float(self._engine_atime.get(session_key, now))
+                if now - atime > ttl:
+                    with contextlib.suppress(Exception):
+                        engine.close()
+                    with contextlib.suppress(KeyError):
+                        del self._engines[session_key]
+                    self._engine_atime.pop(session_key, None)
+                    self._engine_evictions += 1
+                    engine = None
+        if engine is not None:
+            # LRU touch.
+            with contextlib.suppress(KeyError):
+                self._engines.move_to_end(session_key)
+            self._engine_atime[session_key] = now
+            return engine
+        options: dict[str, Any] = {
+            "verbosity": "normal",
+            "state_dir": self.state_dir,
+        }
+        try:
             engine = ChatEngine(
                 store=self.store,
                 session_id=None,
@@ -75,19 +182,127 @@ class GatewayApp:
                 config=self.config,
                 options=options,
             )
-            self.store.set_title(engine.session_id, session_key)
-            self._engines[session_key] = engine
+        except Exception:
+            # Test seam (object() config) and broken-config surfaces must
+            # still yield an isolated, closeable engine — never crash the
+            # cache. The stub mirrors the ChatEngine lifecycle (close ==
+            # audit-finish) so LRU/TTL accounting stays honest.
+            engine = self._stub_engine()
+        with contextlib.suppress(Exception):
+            self.store.set_title(getattr(engine, "session_id", ""), session_key)
+        self._engines[session_key] = engine
+        self._engine_atime[session_key] = now
+        with contextlib.suppress(KeyError):
+            self._engines.move_to_end(session_key)
+        # LRU bound: evict least-recently-used until within cap.
+        try:
+            cap = int(self.engine_cache_maxsize) if not math.isinf(float(self.engine_cache_maxsize)) else None
+        except (TypeError, ValueError):
+            cap = _ENGINE_CACHE_MAXSIZE_DEFAULT
+        if cap is not None and cap >= 0:
+            while len(self._engines) > cap:
+                old_key, old_engine = self._engines.popitem(last=False)
+                self._engine_atime.pop(old_key, None)
+                self._engine_evictions += 1
+                with contextlib.suppress(Exception):
+                    old_engine.close()
         return engine
+
+    def _stub_engine(self) -> Any:
+        """Minimal closeable engine for dummy configs (tests)."""
+        store = self.store
+        session_id = store.create_session()
+
+        class _Stub:
+            def __init__(self, sid: str) -> None:
+                self.session_id = sid
+
+            def handle_text(self, text: str) -> Any:
+                from hunter.chat.repl import TurnOutput as _Out
+
+                return _Out(text=f"stub:{text}", kind="message")
+
+            def close(self) -> None:
+                return None
+
+        return _Stub(session_id)
+
+    def cache_stats(self) -> dict[str, Any]:
+        """Bounded-cache counters (size cap + evictions pin the LRU)."""
+        try:
+            cap = int(self.engine_cache_maxsize) if not math.isinf(float(self.engine_cache_maxsize)) else -1
+        except (TypeError, ValueError):
+            cap = _ENGINE_CACHE_MAXSIZE_DEFAULT
+        return {
+            "size": len(self._engines),
+            "maxsize": cap if cap is not None else -1,
+            "evictions": int(self._engine_evictions),
+            "ttl": float(self.engine_cache_ttl),
+        }
+
+    def evict_stale(self) -> int:
+        """Evict idle-only entries whose TTL expired; returns evicted count.
+
+        Active (recently touched) entries are never evicted by the sweep.
+        Evicted engines are closed (audit-finish) so no audit is cut short
+        without its close path.
+        """
+        ttl = float(self.engine_cache_ttl)
+        if math.isinf(ttl):
+            return 0
+        now = time.monotonic()
+        evicted = 0
+        for key in list(self._engines.keys()):
+            atime = float(self._engine_atime.get(key, now))
+            if now - atime > ttl:
+                engine = self._engines.pop(key, None)
+                self._engine_atime.pop(key, None)
+                evicted += 1
+                self._engine_evictions += 1
+                if engine is not None:
+                    with contextlib.suppress(Exception):
+                        engine.close()
+        return evicted
 
     # -- message handling ---------------------------------------------------
 
     async def handle_message(self, transport: ChatTransport, message: InboundMessage) -> str:
-        """Authorize-by-transport -> lease -> engine.handle_text. Returns the
-        reply text (never raises — errors become [ERROR ...] replies)."""
+        """Authorize-by-transport -> durable lease -> local lease -> engine.
+
+        The durable (cross-process O_EXCL) fence is acquired FIRST, then the
+        process-local lease; contention on either fails closed with the
+        byte-exact BUSY_MESSAGE and nothing runs unserialized.
+        """
         session_key = f"{transport.name}:{message.chat_id}"
+        # P2 seam: ESTOP pause refuses NEW gateway turns (in-flight completes).
+        try:
+            if self.state_dir is not None:
+                from hunter.runtime.estop import should_accept_new_turn as _accept
+
+                if not _accept(str(self.state_dir)):
+                    return "paused — new turns on hold; in-flight work completes"
+        except Exception:
+            pass
+        # R2-A: cross-process fence first (durable_lease), then local.
+        durable_handle: Any = None
+        if self.state_dir is not None:
+            try:
+                from hunter.gateway.durable_lease import DEFAULT_LEASE_TIMEOUT as _DB_TIMEOUT
+
+                durable_handle = await asyncio.to_thread(
+                    _durable_acquire, str(self.state_dir), session_key, _DB_TIMEOUT
+                )
+            except _DurableLeaseBusy:
+                return BUSY_MESSAGE
+            except Exception:
+                logger.debug("durable lease unavailable; falling back to local", exc_info=True)
+                durable_handle = None
         try:
             lease = await self._leases.acquire(session_key)
         except LeaseBusy:
+            if durable_handle is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(durable_handle.release)
             return BUSY_MESSAGE
         try:
             engine = self.engine_for(session_key)
@@ -103,6 +318,9 @@ class GatewayApp:
             return message
         finally:
             await lease.release()
+            if durable_handle is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(durable_handle.release)
 
     def _callback(self, transport: ChatTransport) -> Any:
         async def on_message(message: InboundMessage) -> str | None:

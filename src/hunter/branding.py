@@ -12,6 +12,8 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
+from hunter.palette import SKINS  # noqa: E402 — single source, identity-preserved
+
 # Keep this mapping small and immutable-by-convention: every renderer consumes
 # the same seven values rather than inventing a nearby shade.
 PALETTE: dict[str, str] = {
@@ -151,6 +153,7 @@ __all__ = [
     "ANSI_FALLBACK",
     "ANSI_RESET",
     "PALETTE",
+    "SKINS",
     "ansi256",
     "colorize",
     "make_console",

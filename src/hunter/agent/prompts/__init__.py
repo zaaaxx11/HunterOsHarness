@@ -21,6 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from hunter.engine.base import TargetSpec
 
 __all__ = [
+    "build_chat_messages",
     "build_goal",
     "build_system_prompt",
     "load_skills_index",
@@ -252,6 +253,35 @@ def build_system_prompt(
     if config_note:
         prompt = f"{prompt}\n\nHarness note: {config_note}\n"
     return prompt
+
+
+def build_chat_messages(
+    *,
+    system: str,
+    budget_hint: str = "",
+    approval: str = "",
+    nudge: str = "",
+    history: list[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
+    """Assemble chat messages for one model turn.
+
+    The ``system`` prompt ships VERBATIM as the single system message;
+    volatile per-turn hints (budget pressure, a pending approval id, the
+    consumed-approval retry nudge) ride as ``tool``/``assistant`` messages
+    AFTER it — never inside the system prompt, so cached prefixes stay
+    stable and hint text can never rewrite doctrine.
+    """
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+    if history:
+        messages.extend({"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
+                        for m in history)
+    if budget_hint:
+        messages.append({"role": "tool", "content": f"budget: {budget_hint}"})
+    if approval:
+        messages.append({"role": "tool", "content": f"approval: {approval}"})
+    if nudge:
+        messages.append({"role": "assistant", "content": str(nudge)})
+    return messages
 
 
 def build_goal(target: TargetSpec, tier: str) -> str:

@@ -163,3 +163,24 @@ def cancelled_line(*, wrote_config: bool) -> str:
     if wrote_config:
         return "⏸️ cancelled — the config was written; run `hunter doctor` to verify."
     return "⏸️ cancelled — nothing was changed."
+
+
+# -- R2-C skins-as-data getters (delegates, no hardcoded hex) -----------------
+
+def available_skins() -> list[str]:
+    """Sorted skin names from the single palette registry."""
+    from hunter.palette import SKINS  # noqa: PLC0415 — lazy, cycle-safe
+
+    return sorted(SKINS)
+
+
+def skin_base(skin: str = "teal") -> str:
+    """Base token for a skin (teal verbatim via the registry)."""
+    from hunter.palette import get_token  # noqa: PLC0415 — lazy, cycle-safe
+
+    return get_token("base", skin=skin)
+
+
+def skin_hint(skin: str = "teal") -> str:
+    """Hospitality line naming the active skin (names only, never hex)."""
+    return f"💡 skin: {skin} — pick via hunter tui (hot-reload, no restart)"

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -16,8 +16,9 @@ from hunter.llm.keys import atomic_write_text
 
 __all__ = [
     "MAX_MOUNTED", "MAX_BLOCK_CHARS", "MAX_SKILL_BYTES", "MAX_BODY_LINES",
-    "MAX_DESCRIPTION_CHARS", "DUPLICATE_JACCARD", "Skill", "Corpus",
-    "user_skills_dir", "parse_skill_md", "load_corpus", "target_hint",
+    "MAX_DESCRIPTION_CHARS", "MAX_NEW_DESCRIPTION_CHARS", "DUPLICATE_JACCARD", "Skill", "Corpus",
+    "user_skills_dir", "parse_skill_md", "lint_tool_linkage", "record_skill_use",
+    "load_corpus", "target_hint",
     "tokenize", "match_skills", "render_block", "selected_skill_names",
     "install_default_skill_selector", "write_skill",
 ]
@@ -28,6 +29,7 @@ MAX_BLOCK_CHARS = 16_000
 MAX_SKILL_BYTES = 32_768
 MAX_BODY_LINES = 400
 MAX_DESCRIPTION_CHARS = 200
+MAX_NEW_DESCRIPTION_CHARS = 60
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -49,6 +51,7 @@ class Skill:
     body: str
     quarantined: bool
     path: str
+    hunter: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,24 @@ def parse_skill_md(text: str, *, directory_id: str, source: str = "user", path: 
         quarantined = quarantined.lower() == "true"
     if not isinstance(quarantined, bool):
         return None
+    hunter_meta: dict[str, Any] = {}
+    try:
+        raw_hunter = metadata.get("hunter", {})
+        if isinstance(raw_hunter, dict):
+            category = raw_hunter.get("category", "")
+            tools = raw_hunter.get("tools", [])
+            config = raw_hunter.get("config", {})
+            hunter_meta = {
+                "category": str(category) if isinstance(category, str) else "",
+                "tools": [str(t) for t in tools] if isinstance(tools, (list, tuple)) else [],
+                "config": dict(config) if isinstance(config, dict) else {},
+            }
+            # Drop empty hunter blocks to keep legacy cards lean, but keep
+            # non-empty mappings for the Planner B linkage.
+            if not hunter_meta["category"] and not hunter_meta["tools"] and not hunter_meta["config"]:
+                hunter_meta = {}
+    except Exception:
+        hunter_meta = {}
     return Skill(
         name=name,
         description=description,
@@ -130,7 +151,41 @@ def parse_skill_md(text: str, *, directory_id: str, source: str = "user", path: 
         body=body,
         quarantined=quarantined,
         path=path,
+        hunter=hunter_meta,
     )
+
+
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+
+
+def lint_tool_linkage(body: str, known_tools: Iterable[str]) -> list[str]:
+    """Check that a new-card body backtick-links >=1 registered native tool."""
+    try:
+        known = {str(t).strip() for t in known_tools}
+    except Exception:
+        known = set()
+    linked = [m.strip() for m in _BACKTICK_RE.findall(str(body or ""))]
+    if any(item in known for item in linked):
+        return []
+    return ["body must backtick-link at least one registered tool (e.g. `http_request`)"]
+
+
+def record_skill_use(
+    state: dict[str, Any], name: str, emit: Callable[[str, dict[str, Any]], None] | None = None
+) -> int:
+    """Counter-only usage record: emits skill_mounted, never card body text."""
+    counts = state.setdefault("skill_use_counts", {})
+    try:
+        current = int(counts.get(name, 0)) + 1
+    except (TypeError, ValueError):
+        current = 1
+    counts[name] = current
+    if emit is not None:
+        try:
+            emit("skill_mounted", {"skill": str(name), "count": current})
+        except Exception:
+            pass
+    return current
 
 
 def _skip(notes: list[str], directory_id: str, reason: str = "malformed") -> None:

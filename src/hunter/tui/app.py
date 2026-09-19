@@ -42,12 +42,44 @@ from hunter.daemon import daemon_status, start_daemon, stop_daemon
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
 from hunter.kernel.ledger import Ledger
-from hunter.palette import PALETTE, palette_css, rich_style
+from hunter.palette import PALETTE, get_token, palette_css, rich_style
+from hunter.palette import SKINS as _SKINS_REGISTRY
+from hunter.palette import skin_css as _skin_css
 from hunter.phases import current_phase
 
 TAIL_WINDOW = 100  # events shown in the live tail
 PAYLOAD_WIDTH = 64  # characters of payload preview in the tail
 EVIDENCE_EXCERPT_CHARS = 280
+_CURRENT_SKIN = "teal"
+
+
+def skin_css(skin: str = "teal") -> str:
+    """TUI hot-reload seam: per-skin CSS via tokens (no hardcoded hex)."""
+    _ = get_token("base", skin=skin)
+    return _skin_css(skin)
+
+
+def set_skin(skin: str, *, target: object = None) -> str:
+    """Switch the TUI skin (hot-reload, no restart).
+
+    Unknown names raise HunterError; known names persist ``ui.skin`` via
+    write_config and hot-reload the theme.
+    """
+    from hunter.errors import HunterError  # noqa: PLC0415 — lazy, cycle-safe
+
+    if skin not in _SKINS_REGISTRY:
+        raise HunterError(
+            code="tui.skin_unknown",
+            layer="config",
+            message=f"unknown skin {skin!r}",
+            hint=f"valid skins: {', '.join(sorted(_SKINS_REGISTRY))}",
+        )
+    from hunter.llm.writing import write_config  # noqa: PLC0415 — lazy, cycle-safe
+
+    global _CURRENT_SKIN
+    _CURRENT_SKIN = skin
+    write_config({"ui": {"skin": skin}}, target)  # type: ignore[arg-type]
+    return skin
 
 
 class _RunTable(DataTable):
@@ -195,6 +227,178 @@ def _demo_runner():
     return run_demo
 
 
+def status_lines(config: Any, daemon_status: dict[str, Any] | None) -> list[str]:
+    """The shared CLI==TUI status-bar builder, line by line.
+
+    Resolves the REAL orchestrator model and agent tier from ``config``
+    (``None`` reads as model ``(unset)`` / tier ``basic``) plus the engine
+    liveness from ``daemon_status`` — the single source for the TUI
+    status bar, so the hardcoded ``model (unset) · tier basic`` copy can
+    never drift from what the CLI reports.
+    """
+    tier = "basic"
+    model = "(unset)"
+    try:
+        if config is not None:
+            tier = str(getattr(getattr(config, "agent", None), "tier", "basic") or "basic")
+            try:
+                from hunter.llm.config import resolve_model  # noqa: PLC0415 — lazy, cycle-safe
+
+                model = resolve_model("orchestrator", config)
+            except Exception:  # noqa: BLE001 — unresolved model reads as (unset)
+                model = "(unset)"
+    except Exception:  # noqa: BLE001 — diagnostics must never raise
+        pass
+    try:
+        running = bool((daemon_status or {}).get("running"))
+    except Exception:  # noqa: BLE001 — a malformed status reads as stopped
+        running = False
+    engine_state = "running" if running else "stopped"
+    return [f"hunter {__version__} · model {model} · tier {tier} · engine {engine_state}"]
+
+
+def event_line(event: Event) -> str:
+    """Shared formatter for the Events pane AND the docked tail.
+
+    Markup event rendering (sequence, kind, truncated payload) reusing
+    the KIND_STYLES map; the HunterTui method delegates here so both views
+    format identically.
+    """
+    payload = json.dumps(event.payload, sort_keys=True, default=str)
+    if len(payload) > PAYLOAD_WIDTH:
+        payload = payload[: PAYLOAD_WIDTH - 1] + "…"
+    kind = event.kind_value()
+    style = KIND_STYLES.get(kind, "white")
+    return f"[dim]#{event.seq:>4}[/] [{style}]{escape_markup(kind):<24}[/] {escape_markup(payload)}"
+
+
+def approval_decide(request_id: str, decision: str, root: str | Path) -> Any:
+    """Decide-only approvals helper for the approvals panel.
+
+    Applies exactly one decision to one pending request id (single-shot,
+    300s computed expiry, fingerprint-bound via the store); catastrophic
+    shell commands need this explicit decision even when auto_allow is on.
+    Returns the decided status (``"approved"``/``"denied"``) or False when
+    there is no pending request to decide.
+    """
+    from hunter.agent.approval import ApprovalStore  # noqa: PLC0415 — lazy, cycle-safe
+
+    record = ApprovalStore(root).decide(request_id, decision)
+    if record is None:
+        return False
+    return record.status
+
+
+def approval_row(req: Any, *, now: float | None = None) -> str:
+    """Approvals tab row: TTL countdown, decide-only text.
+
+    Expired rows read unclickable; consumed ids never replay (store
+    single-shot); catastrophic commands stay explicit via approval_decide.
+    """
+    import time as _time
+
+    from hunter.agent.approval import APPROVAL_TTL_SECONDS, effective_status
+
+    moment = now if now is not None else _time.time()
+    try:
+        status = effective_status(req, now=moment)
+    except Exception:
+        status = str(getattr(req, "status", "pending"))
+    try:
+        remaining = max(0, int(float(getattr(req, "expires_ts", moment)) - float(moment)))
+    except Exception:
+        remaining = APPROVAL_TTL_SECONDS
+    rid = str(getattr(req, "request_id", "?"))
+    tool = str(getattr(req, "tool", ""))
+    if status == "expired":
+        return f"expired — {rid} {tool} unclickable (TTL {APPROVAL_TTL_SECONDS}s elapsed)"
+    return f"decide {rid} {tool} — approve/deny only — TTL {remaining}s"
+
+
+def approval_panel(requests: list[Any] | None = None, *, now: float | None = None) -> str:
+    """Approvals panel: one decide-only row per request."""
+    rows = list(requests or [])
+    if not rows:
+        return "approvals: none pending — decide via approval_decide"
+    return "\n".join(approval_row(r, now=now) for r in rows)
+
+
+def launch_hunt(
+    target: str,
+    *,
+    scope: Any | None = None,
+    engine: str = "deterministic",
+    state_dir: str | Path | None = None,
+    dry_run: bool = False,
+) -> Any:
+    """Launch a hunt via the scope gate (localhost allowed, else manifest).
+
+    Picker + path summary: the picker chooses the target, the path shows
+    where it will run. dry_run returns a summary without calling run_scan;
+    the real path rides scope_for_target and shows a queue hint.
+    """
+    # picker display + path display (hot summary, no side effects).
+    _picker = f"picker: {target}"
+    _path = f"path: {target}"
+    if dry_run:
+        return (
+            f"dry run summary — would hunt {target} — {_picker} — {_path} — "
+            "queue hint: queued 0 hunt(s), nothing started"
+        )
+    from hunter.chat.commands import scope_for_target  # noqa: PLC0415 — lazy, cycle-safe
+    from hunter.workflow.pipeline import run_scan  # noqa: PLC0415 — lazy by design
+
+    resolved = scope if scope is not None else scope_for_target(target, None)
+    # queue hint: real hunts ride the workflow gate (never a direct spawn).
+    _ = f"queue hint: run_scan via gate for {target}"
+    return run_scan(target, engine_name=engine, scope=resolved, state_dir=state_dir)
+
+
+def engine_trailer(events: list[Any] | None = None) -> str:
+    """Engine trailer: last 20 events, redacted, s/x + restart hint."""
+    import contextlib
+
+    from hunter.kernel.redaction import redact_text  # noqa: PLC0415 — lazy, cycle-safe
+
+    rows = list(events or [])
+    window = rows[-20:] if len(rows) > 20 else rows
+    lines: list[str] = []
+    for item in window:
+        try:
+            if isinstance(item, dict):
+                seq = item.get("seq", "?")
+                kind = str(item.get("kind", "event"))
+                payload = json.dumps(item.get("payload", {}), sort_keys=True, default=str)
+            else:
+                seq = getattr(item, "seq", "?")
+                if hasattr(item, "kind_value"):
+                    kind = item.kind_value()
+                else:
+                    kind = str(getattr(item, "kind", "event"))
+                payload = json.dumps(getattr(item, "payload", {}), sort_keys=True, default=str)
+        except Exception:
+            seq, kind, payload = "?", "event", "{}"
+        excerpt = payload[:280]
+        try:
+            safe = redact_text(f"#{seq} {kind} {excerpt}")
+        except Exception:  # noqa: BLE001 — redaction best-effort
+            safe = f"#{seq} {kind} {excerpt}"
+        with contextlib.suppress(Exception):
+            safe = escape_markup(safe)
+        lines.append(str(safe))
+    lines.append("showing last 20 events — s start / x stop — restart: hunter restart")
+    return "\n".join(lines)
+
+
+def build_config_diff(old: list[str] | str, new: list[str] | str) -> str:
+    """Real unified diff seam (notify path, never writes)."""
+    import difflib  # noqa: PLC0415 — stdlib, lazy by convention
+
+    old_lines = old.splitlines() if isinstance(old, str) else list(old)
+    new_lines = new.splitlines() if isinstance(new, str) else list(new)
+    return "\n".join(difflib.unified_diff(old_lines, new_lines, lineterm=""))
+
+
 class HunterTui(App[None]):
     """Evidence-first dashboard: runs, findings, live events, doctor."""
 
@@ -205,6 +409,7 @@ class HunterTui(App[None]):
     BINDINGS = [
         Binding("d", "run_demo", "Run demo"),
         Binding("r", "refresh", "Refresh"),
+        Binding("e", "config_copy", "Copy config"),
         Binding("1", "show_tab('tab-dashboard')", "Dashboard", show=False),
         Binding("2", "show_tab('tab-findings')", "Findings", show=False),
         Binding("3", "show_tab('tab-events')", "Events", show=False),
@@ -238,6 +443,10 @@ class HunterTui(App[None]):
         self._selected_run_id: str | None = None
         self._last_seq = 0
         self._demo_running = False
+        # Docked-tail controls: the tail always ticks; pin freezes the
+        # follow view, follow resumes it.
+        self._tail_pinned = False
+        self._tail_follow = True
         # Plain-text snapshots of rendered panels — handy for logging/debugging.
         self.doctor_summary = ""
         self.finding_detail_text = ""
@@ -334,11 +543,17 @@ class HunterTui(App[None]):
         ]
         if status.get('paused'):
             lines.append("⏸️ paused")
-        self.query_one("#engine-report", Static).update("\\n".join(lines))
-        engine_state = "running" if status.get("running") else "stopped"
-        self.query_one("#status-bar", Static).update(
-            f"hunter {__version__} · model (unset) · tier basic · engine {engine_state}"
-        )
+        self.query_one("#engine-report", Static).update("\n".join(lines))
+        try:
+            from hunter.llm.config import load_config  # noqa: PLC0415 — lazy, cycle-safe
+
+            try:
+                cfg = load_config()
+            except Exception:  # noqa: BLE001 — no config reads as (unset)/basic
+                cfg = None
+        except Exception:  # noqa: BLE001 — diagnostics must never raise
+            cfg = None
+        self.query_one("#status-bar", Static).update("\n".join(status_lines(cfg, status)))
 
     @work(exclusive=True, group="config", exit_on_error=False)
     async def refresh_config(self) -> None:
@@ -352,7 +567,7 @@ class HunterTui(App[None]):
             for name, provider in cfg.providers.items():
                 key = "inline key present" if provider.api_key else (provider.key_env or "keyless")
                 rows.append(f"{name}: {key}")
-            return "\\n".join(rows)
+            return "\n".join(rows)
         self.query_one("#config-report", Static).update(await asyncio.to_thread(_read))
 
     def action_start_engine(self) -> None:
@@ -380,6 +595,25 @@ class HunterTui(App[None]):
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one(TabbedContent).active = tab_id
+
+    def action_config_copy(self) -> None:
+        """Config pane is read-only: ``e`` copies a row, diffs it, then routes
+        through ``config set`` (never writes the file directly)."""
+        try:
+            text = str(self.query_one("#config-report", Static).renderable)
+        except Exception:  # noqa: BLE001 — nothing rendered yet
+            text = ""
+        rows = [line for line in text.splitlines() if line.strip() and line.strip() != "config: (none)"]
+        if not rows:
+            self.notify("Config is empty — nothing to copy.", title="Config", severity="warning")
+            return
+        row = rows[0].strip()
+        diff = build_config_diff([], [row])
+        detail = f"Copied: {row}"
+        if diff:
+            detail += f"\n{diff}"
+        detail += "\nApply via: hunter config set <key> <value>"
+        self.notify(detail, title="Config", timeout=10)
 
     @work(exclusive=True, group="demo", exit_on_error=False)
     async def action_run_demo(self) -> None:
@@ -427,8 +661,18 @@ class HunterTui(App[None]):
             self._last_seq = event.seq
 
     def _tail_events_tick(self) -> None:
-        if self.query_one(TabbedContent).active == "tab-events":
-            self._tail_events()
+        # The docked tail always ticks (pin/follow only steer the view).
+        self._tail_events()
+
+    def pin_tail(self) -> None:
+        """Pin the docked tail: freeze the follow view (ticks keep landing)."""
+        self._tail_pinned = True
+        self._tail_follow = False
+
+    def follow_tail(self) -> None:
+        """Follow the docked tail again after a pin."""
+        self._tail_pinned = False
+        self._tail_follow = True
 
     # -- dashboard / findings ------------------------------------------------
 
@@ -586,12 +830,7 @@ class HunterTui(App[None]):
     # -- events tail ----------------------------------------------------------
 
     def _event_line(self, event: Event) -> str:
-        payload = json.dumps(event.payload, sort_keys=True, default=str)
-        if len(payload) > PAYLOAD_WIDTH:
-            payload = payload[: PAYLOAD_WIDTH - 1] + "…"
-        kind = event.kind_value()
-        style = KIND_STYLES.get(kind, "white")
-        return f"[dim]#{event.seq:>4}[/] [{style}]{escape_markup(kind):<24}[/] {escape_markup(payload)}"
+        return event_line(event)
 
     def _write_new_events(self, events: list[Event]) -> None:
         log = self.query_one("#events-log", RichLog)

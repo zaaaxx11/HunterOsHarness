@@ -292,6 +292,22 @@ def render_config(data: Mapping[str, Any] | None) -> str:
         lines.append("  approved_scopes:              # audit trail of auto-authorized minimal scopes")
         for entry in scopes:
             lines.extend(_render_scope_entry(entry))
+
+    # --- ui -------------------------------------------------------------------
+    # R2-C skins: ui.skin must survive every rewrite (it used to be silently
+    # dropped — same data-loss class as the M11 browser_cloak bug). Always
+    # rendered so write → load → rewrite is a fixpoint.
+    ui_raw: Any = data.get("ui") or {}
+    if not isinstance(ui_raw, Mapping):
+        raise _config_write_error(
+            f"ui must be a mapping, got {type(ui_raw).__name__}",
+            "fix the ui section — it needs a skin key, e.g. ui:\n  skin: teal",
+        )
+    skin = ui_raw.get("skin", "teal") or "teal"
+    lines.append("")
+    lines.append("ui:                            # TUI surface (R2-C skins-as-data)")
+    lines.append(f"  skin: {_scalar(skin)}"
+                 "                   # teal | midnight | amber")
     return "\n".join(lines) + "\n"
 
 

@@ -50,10 +50,16 @@ class Lease:
 
 
 class TurnLeaseRegistry:
-    """Process-local registry of per-key turn leases (single event loop)."""
+    """Process-local registry of per-key turn leases (single event loop).
 
-    def __init__(self) -> None:
+    ``state_dir`` roots the durable cross-process backend
+    (hunter.gateway.durable_lease) — set when the gateway runs with a
+    state dir so second OS processes fence via O_CREAT|O_EXCL files.
+    """
+
+    def __init__(self, state_dir: str | None = None) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
+        self.state_dir = state_dir
 
     def _lock_for(self, session_key: str) -> asyncio.Lock:
         lock = self._locks.get(session_key)

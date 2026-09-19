@@ -66,8 +66,7 @@ CLOAK_USER_AGENTS: tuple[str, ...] = (
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0",
 )
 CLOAK_VIEWPORT_POOL: tuple[tuple[int, int], ...] = (
@@ -106,6 +105,18 @@ class BrowserUnavailable(RuntimeError):
 
 class BrowserInputError(ValueError):
     """A browser input violates the deliberately small tool contract."""
+
+
+class BrowserTimeout(TimeoutError):
+    """A browser action exceeded its deadline (retryable, never a scope refusal)."""
+
+
+class BrowserScopeRedirectBlocked(ScopeViolation):
+    """An out-of-scope redirect landing (BLOCKED, distinct from direct scope refusals)."""
+
+
+BROWSER_TIMEOUT_CODE = "browser.timeout"
+BROWSER_SCOPE_REDIRECT_BLOCKED_CODE = "browser.scope_redirect_blocked"
 
 
 @dataclass(frozen=True)
@@ -225,9 +236,7 @@ class BrowserSession:
             starter = module.sync_playwright()
             self._driver = starter.start()
             if self.cloak:
-                self._browser = self._driver.chromium.launch(
-                    headless=True, args=list(CLOAK_LAUNCH_ARGS)
-                )
+                self._browser = self._driver.chromium.launch(headless=True, args=list(CLOAK_LAUNCH_ARGS))
                 self._context = self._browser.new_context(**self._cloak_context_kwargs())
                 # The masking script is a stealth aid, installed at most once.
                 # It is capability-guarded: a context without add_init_script
@@ -273,9 +282,16 @@ class BrowserSession:
 
     def _finish_url(self, page: Any) -> str:
         if self._blocked_request is not None:
-            raise ScopeViolation("BLOCKED: browser request was outside the authorized scope")
+            raise BrowserScopeRedirectBlocked(
+                "BLOCKED: browser redirect landing was outside the authorized scope"
+            )
         current = str(getattr(page, "url", ""))
-        self.scope.check_url(current)
+        try:
+            self.scope.check_url(current)
+        except ScopeViolation as exc:
+            # A post-action landing outside scope is a redirect-block, distinct
+            # from a direct out-of-scope request.
+            raise BrowserScopeRedirectBlocked(str(exc)) from exc
         return sanitize_browser_text(current, limit=2_048)
 
     def _title(self, page: Any) -> str:
@@ -293,9 +309,16 @@ class BrowserSession:
             self._page.goto(url, timeout=NAVIGATION_TIMEOUT_MS, wait_until="domcontentloaded")
         except ScopeViolation:
             raise
+        except (TimeoutError, BrowserTimeout) as exc:
+            raise BrowserTimeout(f"browser navigation timed out after {NAVIGATION_TIMEOUT_MS}ms") from exc
         except Exception as exc:
+            name = type(exc).__name__.lower()
+            if "timeout" in name or "timeout" in str(exc).lower():
+                raise BrowserTimeout(f"browser navigation timed out: {exc}") from exc
             if self._blocked_request is not None:
-                raise ScopeViolation("BLOCKED: browser request was outside the authorized scope") from exc
+                raise BrowserScopeRedirectBlocked(
+                    "BLOCKED: browser redirect landing was outside the authorized scope"
+                ) from exc
             raise
         current = self._finish_url(self._page)
         return BrowserAction(action="navigate", url=current, title=self._title(self._page))
@@ -344,7 +367,9 @@ class BrowserSession:
             locator.click()
         except Exception as exc:
             if self._blocked_request is not None:
-                raise ScopeViolation("BLOCKED: browser request was outside the authorized scope") from exc
+                raise BrowserScopeRedirectBlocked(
+                    "BLOCKED: browser redirect landing was outside the authorized scope"
+                ) from exc
             raise
         current = self._finish_url(page)
         return BrowserAction(action="click", url=current, title=self._title(page))
@@ -360,7 +385,9 @@ class BrowserSession:
             locator.fill(text)
         except Exception as exc:
             if self._blocked_request is not None:
-                raise ScopeViolation("BLOCKED: browser request was outside the authorized scope") from exc
+                raise BrowserScopeRedirectBlocked(
+                    "BLOCKED: browser redirect landing was outside the authorized scope"
+                ) from exc
             raise
         current = self._finish_url(page)
         return BrowserAction(action="type", url=current, title=self._title(page), text_length=len(text))
@@ -389,10 +416,14 @@ class BrowserSession:
 
 
 __all__ = [
+    "BROWSER_SCOPE_REDIRECT_BLOCKED_CODE",
+    "BROWSER_TIMEOUT_CODE",
     "BROWSER_TOOL_NAMES",
     "BrowserAction",
     "BrowserInputError",
+    "BrowserScopeRedirectBlocked",
     "BrowserSession",
+    "BrowserTimeout",
     "BrowserUnavailable",
     "CLOAK_INIT_SCRIPT",
     "CLOAK_LAUNCH_ARGS",

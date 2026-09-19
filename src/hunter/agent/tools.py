@@ -52,7 +52,9 @@ from .browser import (
     BROWSER_TOOL_NAMES,
     PLAYWRIGHT_INSTALL_HINT,
     BrowserInputError,
+    BrowserScopeRedirectBlocked,
     BrowserSession,
+    BrowserTimeout,
     BrowserUnavailable,
     load_playwright,
     sanitize_browser_text,
@@ -294,14 +296,33 @@ def _http_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     method = _as_str(args.get("method", "GET")).strip().upper() or "GET"
     url = _as_str(args.get("url", "")).strip()
     if not url:
+        ctx.emit("engine_event", {"tool": "http_request", "code": "http.url_required"})
         return _blocked("http.url_required", "http_request requires 'url'.")
     if method not in PASSIVE_METHODS and _tier_level(ctx) < TIER_ORDER["advanced"]:
+        ctx.emit("engine_event", {"tool": "http_request", "code": "tier.passive_only"})
         return _blocked(
             "tier.passive_only",
             f"method {method} is an active request; tier "
             f"'{ctx.config.get('tier', 'basic')}' is passive-only (GET/HEAD/OPTIONS). "
             "Elevate the tier to send it.",
         )
+    # Planner B T2 bounds: timeout 1..30s, max_body_chars <=40000, manual redirects.
+    try:
+        timeout = int(args.get("timeout", 10))
+    except (TypeError, ValueError):
+        timeout = -1
+    if timeout < 1 or timeout > 30:
+        ctx.emit("engine_event", {"tool": "http_request", "code": "http.timeout_bounds"})
+        return _blocked(
+            "http.timeout_bounds",
+            f"timeout must be between 1 and 30 seconds (got {args.get('timeout', 10)!r}).",
+        )
+    try:
+        max_body = int(args.get("max_body_chars", 40_000))
+    except (TypeError, ValueError):
+        max_body = 40_000
+    max_body = max(1, min(40_000, max_body))
+    follow = bool(args.get("follow_redirects", False))
     headers_raw = args.get("headers") or {}
     headers = (
         {_as_str(k): _as_str(v) for k, v in headers_raw.items()} if isinstance(headers_raw, dict) else {}
@@ -309,29 +330,82 @@ def _http_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     body = args.get("body")
     body = _as_str(body) if body is not None else None
     purpose = _as_str(args.get("purpose", "")).strip()
+    # Manual redirect chain: max 3 hops, per-hop scope gate, fail-closed abort.
+    current_url = url
+    current_method = method
+    hops = 0
+    exchange: Exchange | None = None
     try:
-        exchange: Exchange = ctx.http.request(method, url, headers=headers or None, body=body)
+        while True:
+            exchange = ctx.http.request(
+                current_method, current_url, headers=headers or None, body=body
+            )
+            if not follow:
+                break
+            if exchange.status not in (301, 302, 303, 307, 308):
+                break
+            location = (
+                exchange.response_headers.get("location", "")
+                or exchange.response_headers.get("Location", "")
+            )
+            if not location or hops >= 3:
+                break
+            from urllib.parse import urljoin as _urljoin  # noqa: PLC0415 — local, cheap
+
+            nxt = _urljoin(current_url, str(location))
+            try:
+                ctx.scope.check_url(nxt)
+            except ScopeViolation as exc:
+                ctx.emit(
+                    "engine_event",
+                    {"tool": "http_request", "code": "scope.target_out_of_scope", "hops": hops},
+                )
+                _observe_tool(ctx, "http_request")
+                return _blocked("scope.target_out_of_scope", str(exc))
+            current_url = nxt
+            # Redirects become GET (except 307/308 preserve); body dropped on GET.
+            if exchange.status in (301, 302, 303):
+                current_method = "GET"
+                body = None
+            hops += 1
+            if hops > 3:
+                break
     except ScopeViolation as exc:
+        ctx.emit("engine_event", {"tool": "http_request", "code": "scope.target_out_of_scope"})
         return _blocked("scope.target_out_of_scope", str(exc))
     except httpx.HTTPError as exc:
+        ctx.emit(
+            "engine_event",
+            {"tool": "http_request", "code": "http.transport_error", "url": current_url},
+        )
         return ToolOutcome(
             ok=False,
             code="http.transport_error",
             result_for_model=f"[ERROR tool] {method} {url} failed: {type(exc).__name__}: {exc}",
         )
+    assert exchange is not None
     ctx.emit(
-        "engine_event", {"tool": "http_request", "method": method, "url": url, "status": exchange.status}
+        "engine_event",
+        {"tool": "http_request", "method": method, "url": url, "status": exchange.status, "hops": hops},
     )
     _observe_tool(ctx, "http_request")
+    resp_body = exchange.response_body or ""
+    truncated = len(resp_body) > max_body
+    if truncated:
+        resp_body = resp_body[:max_body] + f"...[body truncated at {max_body} chars]"
+    data = exchange.to_dict()
+    data["response_body"] = resp_body
+    data["truncated"] = truncated or len(exchange.response_body or "") > max_body
     result = (
         f"{method} {url} -> {exchange.status} ({exchange.elapsed_ms} ms)\n"
-        f"response_body[:400]: {exchange.response_body[:400]!r}\n"
-        "evidence: this exchange is persisted by the loop as http_exchange evidence "
+        f"response_body[:400]: {resp_body[:400]!r}\n"
+        + ("[truncated]\n" if truncated else "")
+        + "evidence: this exchange is persisted by the loop as http_exchange evidence "
         "(its evidence_id is appended below)."
     )
     return ToolOutcome(
         result_for_model=result,
-        evidence={"kind": "http_exchange", "data": {**exchange.to_dict(), "purpose": purpose}},
+        evidence={"kind": "http_exchange", "data": {**data, "purpose": purpose}},
     )
 
 
@@ -669,6 +743,114 @@ def _endpoint_in_scope(ctx: ToolContext, endpoint: str) -> tuple[bool, str]:
     )
 
 
+# -- R2-B B1: R-spec version gate + R4c on-chain bind ------------------------------
+#
+# R_SPEC_VERSION defaults to 1 (v1 semantics preserved: old runs without a
+# version validate exactly as before). r_spec_version 2 unlocks web3
+# kind-fit (contract_call with replay evidence) but keeps storage/state-diff
+# behind advanced tier and requires a chain_scope + rpc_manifest. R4c binds
+# one on-chain read: exact lower-compare address, readonly method allowlist
+# (sends never bind), and rpc-host scope proof.
+
+R_SPEC_VERSION = 1
+
+_RSPEC_STORAGE_METHODS = frozenset({"eth_getStorageAt", "eth_getProof", "debug_traceCall"})
+_R4C_READONLY_METHODS = frozenset({"eth_call", "eth_getCode", "eth_getBalance", "eth_getStorageAt"})
+
+
+def _rspec_version(args: dict[str, Any], ctx: Any) -> int:
+    raw = args.get("r_spec_version")
+    if raw is None:
+        try:
+            raw = (getattr(ctx, "config", {}) or {}).get("r_spec_version", 1)
+        except Exception:
+            raw = 1
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1
+
+
+def validate_rspec_gate(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
+    """R-spec gate: v1 default; v2 needs manifest + advanced for storage reads."""
+    version = _rspec_version(args, ctx)
+    method = str(args.get("method", "") or "").strip()
+    if version < 2:
+        return {"ok": True, "blocked": False, "code": "ok", "sufficient": True,
+                "r_spec_version": 1,
+                "result_for_model": "R-spec v1 semantics: web2/http_exchange evidence sufficient."}
+    if method in _RSPEC_STORAGE_METHODS:
+        try:
+            tier = str((getattr(ctx, "config", {}) or {}).get("tier", "basic"))
+        except Exception:
+            tier = "basic"
+        if tier != "advanced":
+            return {"ok": False, "blocked": True, "code": "tier.capability_locked",
+                    "result_for_model":
+                    f"BLOCKED [tier.capability_locked] method '{method}' needs advanced tier (r_spec v2)."}
+    try:
+        cfg = getattr(ctx, "config", {}) or {}
+        chain_scope = cfg.get("chain_scope") or []
+        rpc_manifest = cfg.get("rpc_manifest") or {}
+    except Exception:
+        chain_scope, rpc_manifest = [], {}
+    if method and (not chain_scope or not (rpc_manifest or {}).get("hosts")):
+        return {"ok": False, "blocked": True, "code": "rspec.manifest_required",
+                "result_for_model":
+                "BLOCKED [rspec.manifest_required] r_spec_version 2 requires chain_scope + rpc_manifest."}
+    return {"ok": True, "blocked": False, "code": "ok", "sufficient": True,
+            "r_spec_version": 2, "result_for_model": "R-spec v2 gate passed."}
+
+
+def _r4c_onchain_bind(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
+    """R4c: bind one readonly on-chain read to scope + manifest."""
+    chain_id = args.get("chain_id")
+    address = str(args.get("address", "") or "").strip()
+    method = str(args.get("method", "") or "").strip()
+    rpc_url = str(args.get("rpc_url", "") or "").strip()
+    if method not in _R4C_READONLY_METHODS:
+        return {"ok": False, "blocked": True, "code": "r4c.method_not_allowlisted",
+                "result_for_model": f"BLOCKED [r4c.method_not_allowlisted] {method!r} is not readonly."}
+    try:
+        cid = int(chain_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "blocked": True, "code": "r4c.scope_mismatch",
+                "result_for_model": "BLOCKED [r4c.scope_mismatch] bad chain_id."}
+    allowed = False
+    try:
+        entries = (getattr(ctx, "config", {}) or {}).get("chain_scope", []) or []
+    except Exception:
+        entries = []
+    want = address.lower()
+    for entry in entries:
+        try:
+            if int(entry.get("chain_id")) == cid and str(entry.get("address", "")).strip().lower() == want:
+                allowed = True
+                break
+        except (TypeError, ValueError, AttributeError):
+            continue
+    if not allowed:
+        return {"ok": False, "blocked": True, "code": "r4c.scope_mismatch",
+                "result_for_model": "BLOCKED [r4c.scope_mismatch] address not in chain_scope."}
+    try:
+        ctx.scope.check_url(rpc_url)
+    except ScopeViolation as exc:
+        return {"ok": False, "blocked": True, "code": "scope.target_out_of_scope",
+                "result_for_model": f"BLOCKED [scope.target_out_of_scope] {exc}"}
+    try:
+        exchange = ctx.http.request("POST", rpc_url, headers={"Content-Type": "application/json"},
+                                    body=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method}))
+        _ = exchange.status
+    except ScopeViolation as exc:
+        return {"ok": False, "blocked": True, "code": "scope.target_out_of_scope",
+                "result_for_model": f"BLOCKED [scope.target_out_of_scope] {exc}"}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "blocked": False, "code": "http.transport_error",
+                "result_for_model": f"R4c bind transport error: {type(exc).__name__}"}
+    return {"ok": True, "blocked": False, "code": "ok",
+            "result_for_model": f"R4c bind ok: chain {cid} {want} via manifest host."}
+
+
 # -- lifecycle tools ----------------------------------------------------------
 
 
@@ -999,7 +1181,24 @@ def _browser_outcome(ctx: ToolContext, action: Any, selector: str = "") -> ToolO
     return ToolOutcome(result_for_model=result, evidence={"kind": "browser_event", "data": data})
 
 
+BROWSER_TIMEOUT_CODE = "browser.timeout"
+BROWSER_SCOPE_REDIRECT_BLOCKED_CODE = "browser.scope_redirect_blocked"
+
+
 def _browser_error(exc: Exception) -> ToolOutcome:
+    # Planner B T3 reliability codes: timeout is retryable (ok=False, blocked=False);
+    # out-of-scope redirect landings are BLOCKED under a distinct code.
+    if isinstance(exc, BrowserScopeRedirectBlocked):
+        return _blocked(
+            "browser.scope_redirect_blocked",
+            "browser redirect landing was outside the authorized scope.",
+        )
+    if isinstance(exc, (BrowserTimeout, TimeoutError)):
+        return ToolOutcome(
+            ok=False,
+            code="browser.timeout",
+            result_for_model="[ERROR tool] browser action timed out (retryable)",
+        )
     if isinstance(exc, ScopeViolation):
         return _blocked("scope.target_out_of_scope", "browser request was outside the authorized scope.")
     if isinstance(exc, BrowserInputError):
@@ -1013,6 +1212,14 @@ def _browser_error(exc: Exception) -> ToolOutcome:
         return _blocked(code, message[:300])
     if isinstance(exc, BrowserUnavailable):
         return _blocked("browser.unavailable", PLAYWRIGHT_INSTALL_HINT)
+    # Playwright-style timeouts surface as TimeoutError subclasses or "*timeout*"
+    # messages even when the optional dep is faked in tests.
+    if "timeout" in type(exc).__name__.lower() or "timed out" in str(exc).lower():
+        return ToolOutcome(
+            ok=False,
+            code="browser.timeout",
+            result_for_model="[ERROR tool] browser action timed out (retryable)",
+        )
     return ToolOutcome(
         ok=False,
         code="browser.action_error",
@@ -1177,7 +1384,9 @@ def build_registry(
             name="http_request",
             description=(
                 "Send one scope-checked HTTP request. GET/HEAD/OPTIONS at basic tier; other "
-                "methods require advanced. The exchange becomes http_exchange evidence."
+                "methods require advanced. follow_redirects defaults false (raw 3xx); when true "
+                "the tool walks manually (max 3 hops, per-hop scope gate). "
+                "The exchange becomes http_exchange evidence."
             ),
             parameters=_schema(
                 {
@@ -1186,6 +1395,9 @@ def build_registry(
                     "headers": {"type": "object", "additionalProperties": {"type": "string"}},
                     "body": {"type": "string"},
                     "purpose": {"type": "string"},
+                    "follow_redirects": {"type": "boolean"},
+                    "max_body_chars": {"type": "integer", "minimum": 1, "maximum": 40000},
+                    "timeout": {"type": "integer", "minimum": 1, "maximum": 30},
                 },
                 ["method", "url"],
             ),

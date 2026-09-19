@@ -46,10 +46,12 @@ def rich_style(role: str, *, bold: bool = False, dim: bool = False, italic: bool
     return Style(color=PALETTE[_role(role)], bold=bold, dim=dim, italic=italic)
 
 
-def make_theme() -> Any:
+def make_theme(skin: str | None = None) -> Any:
     from rich.theme import Theme
-    styles = {f"hunter.{name}": value for name, value in PALETTE.items()}
-    styles.update({f"hunter.{name}": PALETTE[target] for name, target in _ALIASES.items()})
+    source = SKINS.get(skin, PALETTE) if skin is not None else PALETTE
+    styles = {f"hunter.{name}": value for name, value in source.items()}
+    styles.update({f"hunter.{name}": source.get(target, PALETTE[target])
+                   for name, target in _ALIASES.items() if target in PALETTE})
     return Theme(styles)
 
 
@@ -84,5 +86,58 @@ def palette_css() -> str:
     return "\n".join(f"$hunter-{role}: {color};" for role, color in PALETTE.items()) + "\n"
 
 
-__all__ = ["ANSI256", "ANSI_FALLBACK", "ANSI_RESET", "PALETTE", "colorize", "make_console",
-           "make_theme", "palette_css", "palette_style", "rich_style"]
+# -- R2-C skins-as-data: single registry, no hardcoded hex at call sites ------
+
+SKINS: dict[str, dict[str, str]] = {
+    "teal": dict(PALETTE),
+    "midnight": {
+        "base": "#7DD3FC",
+        "highlight": "#93C5FD",
+        "highlight_soft": "#BFDBFE",
+        "highlight_pale": "#DBEAFE",
+        "highlight_faint": "#EFF6FF",
+        "deep": "#2563EB",
+        "dim": "#1E3A5F",
+    },
+    "amber": {
+        "base": "#FFB224",
+        "highlight": "#FFC95C",
+        "highlight_soft": "#FFD98A",
+        "highlight_pale": "#FFE9BC",
+        "highlight_faint": "#FFF6E3",
+        "deep": "#B45309",
+        "dim": "#7A4A12",
+    },
+}
+
+
+def get_token(token: str, skin: str = "teal") -> str:
+    """Consumer seam: resolve one skin token (defaults to teal)."""
+    canonical = _ALIASES.get(token, token)
+    mapping = SKINS.get(skin, SKINS["teal"])
+    if canonical in mapping:
+        return mapping[canonical]
+    return PALETTE[_role(token)]
+
+
+def get_skin_token(token: str, skin: str = "teal") -> str:
+    """Alias of get_token (legacy spelling)."""
+    return get_token(token, skin=skin)
+
+
+def skin_style(role: str, skin: str = "teal", *, bold: bool = False,
+               dim: bool = False, italic: bool = False) -> Any:
+    """Style builder through tokens (no hardcoded hex at call sites)."""
+    from rich.style import Style
+    return Style(color=get_token(role, skin=skin), bold=bold, dim=dim, italic=italic)
+
+
+def skin_css(skin: str = "teal") -> str:
+    """Per-skin CSS variables (hot-reload seam: differs per skin)."""
+    mapping = SKINS.get(skin, SKINS["teal"])
+    return "\n".join(f"$hunter-{role}: {color};" for role, color in mapping.items()) + "\n"
+
+
+__all__ = ["ANSI256", "ANSI_FALLBACK", "ANSI_RESET", "PALETTE", "SKINS", "colorize", "get_skin_token",
+           "get_token", "make_console", "make_theme", "palette_css", "palette_style", "rich_style",
+           "skin_css", "skin_style"]

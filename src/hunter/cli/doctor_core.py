@@ -44,19 +44,32 @@ def collect_checks(
     """Run every check. ``state`` is the state DIRECTORY (ledger.db inside);
     ``live`` opts in to provider endpoint probes (real network, bounded);
     ``ledger_factory`` lets the CLI keep one ledger convention (and its test
-    seams) — the default opens ``Ledger(state/ledger.db)``."""
+    seams) — the default opens ``Ledger(state/ledger.db)``.
+
+    Never raises for diagnoseable conditions (broken ledger/config matrix):
+    every section is fail-closed into a row.
+    """
     checks: list[Check] = []
-    checks.append(
-        Check("python", "ok", f"{platform.python_version()} on {platform.system()}")
-    )
-    checks.append(_platform_check())
-    checks.extend(_dep_checks())
-    checks.extend(_ledger_checks(state, ledger_factory))
-    checks.extend(_engine_checks())
-    checks.extend(_llm_checks())
-    checks.extend(_provider_checks(live=live))
-    checks.append(_chat_db_check())
-    checks.extend(_home_checks(state))
+    try:
+        checks.append(
+            Check("python", "ok", f"{platform.python_version()} on {platform.system()}")
+        )
+    except Exception as exc:  # noqa: BLE001 — diagnostics never raise
+        checks.append(Check("python", "fail", f"{type(exc).__name__}"))
+    for step in (
+        lambda: [_platform_check()],
+        lambda: _dep_checks(),
+        lambda: _ledger_checks(state, ledger_factory),
+        lambda: _engine_checks(),
+        lambda: _llm_checks(),
+        lambda: _provider_checks(live=live),
+        lambda: [_chat_db_check()],
+        lambda: _home_checks(state),
+    ):
+        try:
+            checks.extend(step())
+        except Exception as exc:  # noqa: BLE001 — never-raise matrix
+            checks.append(Check("doctor", "fail", f"{type(exc).__name__}: {exc}"[:200]))
     return checks
 
 
@@ -259,6 +272,47 @@ def _probe_base_url(base_url: str) -> str:
     return f"reachable (HTTP {response.status_code})"
 
 
+def _probe_live_ladder(
+    provider_name: str,
+    base_url: str,
+    *,
+    api_key: str = "",
+    model: str = "",
+    client_factory: Any | None = None,
+) -> str:
+    """Live ladder: mock -> HEAD(4s) -> list_models(factory,10s) -> ping(token).
+
+    HEAD timeout is 4s, list_models factory timeout is 10s, ping is a 1-token
+    probe. Never raises, never leaks keys (redacted sentinel sk-***).
+    Key order (env -> inline -> missing exit 4) is resolved by the caller via
+    resolve_key; this ladder only dials with the resolved token.
+    """
+    from hunter.llm.router import _redact  # noqa: PLC0415 — lazy, cycle-safe
+
+    # HEAD 4s reachability (mock providers skip the wire below).
+    try:
+        head = _probe_base_url(base_url)  # HEAD timeout 4 inside
+    except Exception as exc:  # noqa: BLE001 — ladder never raises
+        head = f"unreachable ({type(exc).__name__})"
+    # list_models via factory with 10s bound.
+    try:
+        from hunter.llm.probe import list_models  # noqa: PLC0415 — lazy
+
+        models = list_models(base_url, api_key, timeout=10, client_factory=client_factory)
+        models_text = f"{len(models)} model(s)"
+    except Exception as exc:  # noqa: BLE001 — ladder never raises
+        models_text = f"models unavailable ({type(exc).__name__})"
+    # ping(token): 1-token probe via the litellm seam.
+    try:
+        from hunter.llm.ping import ping_provider  # noqa: PLC0415 — lazy
+
+        result = ping_provider(provider_name, model or "probe", base_url, api_key, timeout=10)
+        ping_text = str(getattr(result, "message", ""))
+    except Exception as exc:  # noqa: BLE001 — ladder never raises
+        ping_text = f"ping unavailable ({type(exc).__name__})"
+    return _redact(f"{head} — {models_text} — ping {ping_text}")
+
+
 def _provider_checks(*, live: bool) -> list[Check]:
     from hunter.llm.config import load_config, resolve_model
 
@@ -289,11 +343,38 @@ def _provider_checks(*, live: bool) -> list[Check]:
         if provider.base_url:
             parts.append(provider.base_url)
             if live:
-                parts.append(_probe_base_url(provider.base_url))
+                try:
+                    parts.append(_probe_base_url(provider.base_url))
+                except Exception as exc:  # noqa: BLE001 — live never raises
+                    parts.append(f"unreachable ({type(exc).__name__})")
+                # Full ladder (HEAD 4s already above; list_models 10s + ping token).
+                try:
+                    from hunter.llm.config import resolve_key  # noqa: PLC0415 — lazy
+
+                    try:
+                        token = resolve_key(name, cfg)
+                    except Exception:
+                        token = ""
+                    ladder_model = orchestrator_model
+                    tier_cfg = cfg.model_tiers.get("orchestrator")
+                    if tier_cfg is not None and getattr(tier_cfg, "provider", "") != name:
+                        ladder_model = ""
+                    parts.append(
+                        _probe_live_ladder(name, provider.base_url, api_key=token,
+                                           model=ladder_model or "probe")
+                    )
+                except Exception as exc:  # noqa: BLE001 — live never raises
+                    parts.append(f"ladder unavailable ({type(exc).__name__})")
         orchestrator_tier = cfg.model_tiers.get("orchestrator")
         if orchestrator_model and orchestrator_tier is not None and orchestrator_tier.provider == name:
             parts.append(f"model {orchestrator_model}")
-        checks.append(Check(f"provider:{name}", status, " — ".join(parts)))
+        try:
+            from hunter.llm.router import _redact  # noqa: PLC0415 — lazy
+
+            detail = _redact(" — ".join(parts))
+        except Exception:
+            detail = " — ".join(parts)
+        checks.append(Check(f"provider:{name}", status, detail))
     return checks
 
 

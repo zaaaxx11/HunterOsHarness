@@ -347,6 +347,7 @@ class ProviderRouter:
     def __init__(self, config: HunterConfig, *, litellm_module: Any | None = None) -> None:
         self.config = config
         self._litellm = litellm_module
+        self._last_outcome: str | None = None
         if self._litellm is None:
             try:
                 import litellm as module
@@ -383,8 +384,14 @@ class ProviderRouter:
         for index, candidate in enumerate(candidates):
             outcome = self._attempt(candidate, messages, tools, stream_cb, budget, attempts)
             if isinstance(outcome, TurnResult):
+                self._last_outcome = _redact(f"ok via {candidate.provider}/{candidate.model}")
                 return outcome
             last = outcome
+            # Last-link: record the redacted outcome for describe_chain + /model.
+            try:
+                self._last_outcome = _redact(str(last.message or last.reason))
+            except Exception:
+                self._last_outcome = _redact(str(last.reason))
             has_next = index + 1 < len(candidates)
             if last.should_fallback:
                 if has_next:
@@ -396,6 +403,10 @@ class ProviderRouter:
 
         # Every route's attempts are exhausted with retryable failures.
         assert last is not None  # candidates is never empty
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self._last_outcome = _redact(str(last.message or last.reason))
         raise self._terminal_error(last)
 
     def classify(self, exc: BaseException) -> ClassifiedError:
@@ -773,6 +784,28 @@ class ProviderRouter:
         )
 
 
+def describe_chain(router: ProviderRouter, tier: str) -> str:
+    """Render the failover chain plus the last-link outcome for ``/model``.
+
+    Lists the ordered provider/model links (active first), then a ``last:``
+    line with the most recent redacted outcome (or ``no attempts recorded
+    yet`` before the first dial). Read-only: the router is never mutated.
+    """
+    tier_cfg = router._tier_config(tier)
+    model = resolve_model(tier, router.config)
+    chain = router._build_chain(tier_cfg, model)
+    lines = [f"chain for tier '{tier}' ({len(chain)} link(s)):"]
+    for index, candidate in enumerate(chain):
+        marker = "active" if index == 0 else f"fallback-{index}"
+        lines.append(f"  [{index}] {marker} {candidate.provider}/{candidate.model}")
+    last = getattr(router, "_last_outcome", None)
+    if last is None:
+        lines.append("last: no attempts recorded yet")
+    else:
+        lines.append(f"last: {_redact(str(last))}")
+    return "\n".join(lines)
+
+
 def provider_from_config(
     config: HunterConfig, *, litellm_module: Any | None = None
 ) -> ProviderRouter:
@@ -802,4 +835,5 @@ class _StreamFunction:
         self.arguments = arguments
 
 
-__all__ = ["ProviderRouter", "hunter_error_from_classified", "provider_from_config", "_wire_model"]
+__all__ = ["ProviderRouter", "describe_chain", "hunter_error_from_classified", "provider_from_config",
+           "_wire_model"]

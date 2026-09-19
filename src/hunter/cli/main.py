@@ -606,6 +606,27 @@ def demo(
     raise typer.Exit(0 if result.first_blood else 1)
 
 
+# ---------------------------------------------------------------------- eval ---
+
+@app.command("eval")
+def eval_cmd(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    json_out: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Run the regression eval (tmp per cell, ledger-only scoring)."""
+    import json as _json
+
+    from hunter.workflow.eval_cli import run_eval
+
+    payload = run_eval(cells=["cell-a", "cell-b"], state_dir=state, json_out=True)
+    data = _json.loads(str(payload)) if isinstance(payload, str) else payload
+    if json_out:
+        console.print_json(_json.dumps(data))
+    else:
+        console.print(f"eval ok: {data.get('ok')} — {len(data.get('cells', []))} cell(s)")
+    raise typer.Exit(0 if data.get("ok") else 1)
+
+
 # ---------------------------------------------------------------------- scan ---
 
 @app.command()
@@ -1560,6 +1581,180 @@ def main() -> None:
 from hunter.cli.daemon import register_daemon_commands  # noqa: E402
 
 register_daemon_commands(app)
+
+
+# --------------------------------------------------------------------- cron ---
+# R2-A: persisted cron jobs under <state>/cron/*.json + hunt cron verbs.
+# `hunter cron list/add/rm/tick` (and `hunter hunt cron` via the hunt verb
+# seam below) normalize targets and enforce finite budgets.
+
+cron_app = typer.Typer(help="Scheduled hunts (persisted cron jobs).")
+app.add_typer(cron_app, name="cron")
+
+
+def _cron_state(state: Path | None) -> Path:
+    from hunter.home import state_dir as _resolve
+
+    return _resolve(state)
+
+
+@cron_app.command("list")
+def cron_list(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
+) -> None:
+    """List persisted cron jobs under <state>/cron."""
+    import json as _json
+
+    from hunter.cron import scheduler as _cron
+
+    jobs = _cron.list_jobs(str(_cron_state(state)))
+    if json_out:
+        typer.echo(_json.dumps(jobs, indent=2))
+        return
+    if not jobs:
+        typer.echo("no cron jobs — `hunter cron add --id <id> --target <url>` to schedule one")
+        return
+    for job in jobs:
+        typer.echo(f"{job.get('id')} slot={job.get('slot', '')} target={job.get('target', '')}")
+
+
+@cron_app.command("add")
+def cron_add(
+    job_id: str = typer.Option("", "--id", help="Job id (required)."),
+    target: str = typer.Option("", "--target", help="Hunt target URL."),
+    slot: str = typer.Option("", "--slot", help="Cron slot label."),
+    time_text: str | None = typer.Option(None, "--time", help="Max wall time [Nh][Nm][Ns]."),
+    min_time_text: str | None = typer.Option(None, "--min-time", help="Min wall time floor."),
+    budget_text: str | None = typer.Option(None, "--budget", help="Max budget USD (finite)."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Persist one cron job (normalize target + finite budgets)."""
+    import math as _math
+
+    from hunter.cron import scheduler as _cron
+    from hunter.hunt import normalize_hunt_target
+
+    job_id = (job_id or "").strip()
+    if not job_id:
+        err_console.print("[hunter.error]BLOCKED:[/hunter.error] --id is required")
+        raise typer.Exit(2)
+    normalized_target = ""
+    if target:
+        normalized, kind = normalize_hunt_target(target)
+        if kind == "invalid" or normalized != target.strip():
+            err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid hunt target: {target!r}")
+            raise typer.Exit(3)
+        normalized_target = normalized
+    max_wall: float | None = None
+    min_wall: float | None = None
+    max_cost: float | None = None
+    if time_text is not None:
+        from hunter.cli.daemon import _parse_duration_or_exit as _parse
+
+        max_wall = _parse(time_text, option="--time")
+    if min_time_text is not None:
+        from hunter.cli.daemon import _parse_duration_or_exit as _parse2
+
+        min_wall = _parse2(min_time_text, option="--min-time")
+    if budget_text is not None:
+        try:
+            max_cost = float(budget_text)
+            if not _math.isfinite(max_cost) or max_cost < 0:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            err_console.print(
+                "[hunter.error]config error:[/hunter.error] --budget must be a finite non-negative USD value"
+            )
+            raise typer.Exit(8) from exc
+    for value, name in ((max_wall, "--time"), (min_wall, "--min-time"), (max_cost, "--budget")):
+        if value is not None and (not _math.isfinite(float(value)) or float(value) < 0):
+            err_console.print(
+                f"[hunter.error]config error:[/hunter.error] {name} must be finite and non-negative"
+            )
+            raise typer.Exit(8)
+    job: dict[str, Any] = {"id": job_id, "slot": slot or "", "target": normalized_target}
+    if max_wall is not None:
+        job["max_wall_seconds"] = float(max_wall)
+    if min_wall is not None:
+        job["min_wall_seconds"] = float(min_wall)
+    if max_cost is not None:
+        job["max_cost_usd"] = float(max_cost)
+    try:
+        _cron.add_job(str(_cron_state(state)), job)
+    except ValueError as exc:
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+        raise typer.Exit(2) from exc
+    typer.echo(f"cron job {job_id} saved")
+
+
+def _cron_remove_impl(job_id: str, state: Path | None) -> int:
+    from hunter.cron import scheduler as _cron
+
+    if not (job_id or "").strip():
+        err_console.print("[hunter.error]BLOCKED:[/hunter.error] job id is required")
+        return 2
+    ok = _cron.remove_job(str(_cron_state(state)), job_id.strip())
+    if not ok:
+        err_console.print(f"[hunter.error]unknown job:[/hunter.error] {job_id}")
+        return 1
+    typer.echo(f"cron job {job_id} removed")
+    return 0
+
+
+@cron_app.command("rm")
+def cron_rm(
+    job_id: str = typer.Argument("", help="Job id to remove."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Remove one persisted cron job."""
+    raise typer.Exit(_cron_remove_impl(job_id, state))
+
+
+@cron_app.command("remove")
+def cron_remove(
+    job_id: str = typer.Argument("", help="Job id to remove."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+) -> None:
+    """Alias for `cron rm`."""
+    raise typer.Exit(_cron_remove_impl(job_id, state))
+
+
+@cron_app.command("tick")
+def cron_tick(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    once: bool = typer.Option(True, "--once/--loop", help="Single tick (default) or loop."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would fire without executing."),
+) -> None:
+    """Fire due cron jobs (advance-first, delivery before teardown, ledger row)."""
+    from hunter.cron import scheduler as _cron
+
+    resolved = str(_cron_state(state))
+    if dry_run:
+        jobs = _cron.list_jobs(resolved)
+        if not jobs:
+            typer.echo("dry-run: no persisted jobs (default job would fire)")
+        else:
+            for job in jobs:
+                typer.echo(f"dry-run: would fire {job.get('id')}")
+        return
+    if once:
+        def _dispatch(job: Any) -> Any:
+            return _cron.run_one_job(
+                resolved,
+                job if isinstance(job, dict) else {"id": str(job)},
+                run_agent=lambda j: f"cron:{j.get('id') if isinstance(j, dict) else j}",
+                deliver=lambda result: typer.echo(f"delivered: {result}"),
+                teardown=lambda: None,
+                heartbeat=lambda j: None,
+            )
+
+        result = _cron.tick(resolved, dispatch=_dispatch)
+        typer.echo(f"tick: {result}")
+        return
+    # --loop (not used in tests): single tick today, loop is future work.
+    result = _cron.tick(resolved, dispatch=lambda job: None)
+    typer.echo(f"tick: {result}")
 
 
 if __name__ == "__main__":

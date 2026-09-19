@@ -815,10 +815,19 @@ class ChatEngine:
                     audit["http"].close()
                 finally:
                     ledger.close()
-        return (
+        base = (
             f"audit run {run_id} {status}: {len(findings)} finding(s) "
             f"(all claim-gated) — /report {run_id} renders the report"
         )
+        try:
+            from hunter.chat.notes import flush_notes  # noqa: PLC0415 — lazy, cycle-safe
+
+            flushed = flush_notes(self.store, self.session_id)
+            if "flushed 0" not in str(flushed):
+                return f"{base}\n{flushed}"
+        except Exception:
+            pass
+        return base
 
     def _build_budget(self) -> Any:
         from hunter.llm.budget import RunBudget
@@ -850,12 +859,17 @@ def banner(engine: ChatEngine) -> Panel:
     from hunter._data.branding import banner_lines
 
     cfg = engine.config
+    mode_opt = engine.options.get("mode") if isinstance(engine.options, dict) else None
+    if mode_opt in ("chat", "audit"):
+        mode = str(mode_opt)
+    else:
+        mode = "hunt" if engine.options.get("hunt_mode") else "chat"
     lines = banner_lines(
         version=__version__,
         tier=cfg.agent.tier if cfg is not None else "basic",
         model=default_model(cfg) if cfg is not None else "",
         session_id=engine.session_id,
-        mode="hunt" if engine.options.get("hunt_mode") else "chat",
+        mode=mode,
     )
     body = Text("\n".join(lines))
     return Panel(body, title="hunter chat", border_style=PALETTE["base"], subtitle="Evidence or Nothing")
