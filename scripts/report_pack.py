@@ -25,6 +25,11 @@ if str(_SRC) not in sys.path:
 EXIT_OK = 0
 EXIT_ERROR = 1
 
+# Attachment guards (media hardening): symlinks are never followed, a single
+# oversized file is refused, and the whole pack has a total size budget.
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # per-file cap
+MAX_PACK_BYTES = 50 * 1024 * 1024  # total attachments budget
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="report_pack", description=__doc__)
@@ -49,9 +54,56 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[ERROR disk] no report for run '{args.run_id}' at {report_path}", file=sys.stderr)
         return EXIT_ERROR
     attachments_dir = reports_dir / args.run_id
-    attachments = (
-        sorted(p for p in attachments_dir.iterdir() if p.is_file()) if attachments_dir.is_dir() else []
+    candidates = (
+        sorted(attachments_dir.iterdir()) if attachments_dir.is_dir() else []
     )
+
+    # -- attachment guards: symlinks, escape, size ---------------------------
+    state_resolved = state.resolve()
+    guarded: list[tuple[str, Path, bytes]] = []
+    total_bytes = 0
+    try:
+        report_data = report_path.read_bytes()
+    except OSError as exc:
+        print(f"[ERROR disk] could not read {report_path}: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    for member in candidates:
+        if member.is_symlink():
+            print(f"[ERROR disk] refusing symlink attachment: {member}", file=sys.stderr)
+            return EXIT_ERROR
+        if not member.is_file():
+            continue
+        try:
+            if not member.resolve().is_relative_to(state_resolved):
+                print(f"[ERROR disk] attachment escapes state dir: {member}", file=sys.stderr)
+                return EXIT_ERROR
+        except OSError as exc:
+            print(f"[ERROR disk] could not resolve {member}: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        try:
+            size = member.stat().st_size
+        except OSError as exc:
+            print(f"[ERROR disk] could not stat {member}: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        if size > MAX_ATTACHMENT_BYTES:
+            print(
+                f"[ERROR disk] attachment too large ({size} bytes > "
+                f"{MAX_ATTACHMENT_BYTES}): {member}",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        total_bytes += size
+        if total_bytes > MAX_PACK_BYTES:
+            print(
+                f"[ERROR disk] attachments exceed the {MAX_PACK_BYTES}-byte pack budget",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        try:
+            guarded.append((f"{args.run_id}/{member.name}", member, member.read_bytes()))
+        except OSError as exc:
+            print(f"[ERROR disk] could not read {member}: {exc}", file=sys.stderr)
+            return EXIT_ERROR
 
     output = Path(args.output) if args.output else state / "report_packs" / f"{args.run_id}.zip"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -59,10 +111,9 @@ def main(argv: list[str] | None = None) -> int:
     manifest_lines: list[str] = []
     try:
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-            for arcname, source in [((args.run_id + ".md"), report_path)] + [
-                (f"{args.run_id}/{p.name}", p) for p in attachments
-            ]:
-                data = source.read_bytes()
+            archive.writestr((args.run_id + ".md"), report_data)
+            manifest_lines.append(f"sha256  {(args.run_id + '.md')}  {_sha256(report_data)}")
+            for arcname, _source, data in guarded:
                 archive.writestr(arcname, data)
                 manifest_lines.append(f"sha256  {arcname}  {_sha256(data)}")
             archive.writestr("MANIFEST.txt", "\n".join(manifest_lines) + "\n")

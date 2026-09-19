@@ -807,19 +807,29 @@ class HunterTui(App[None]):
         ):
             if body:
                 table.add_row(label, Text(body))
-        label = f"evidence ({len(evidence_rows)})"
-        if not evidence_rows:
+        label = f"evidence ({len(finding.evidence_ids)})"
+        if not finding.evidence_ids:
             table.add_row(label, Text("none bound", style="dim italic"))
             return table
+        by_id = {item["id"]: item for item in evidence_rows}
         first = True
-        for item in evidence_rows:
+        for evidence_id in finding.evidence_ids:
+            item = by_id.get(evidence_id)
+            row_label = label if first else ""
+            first = False
+            if item is None:
+                # Bound-but-missing: render the binding, never silently drop
+                # it (converges with the markdown "? missing" placeholder).
+                table.add_row(
+                    row_label,
+                    Text(f"{evidence_id}  ? missing — evidence row missing from ledger"),
+                )
+                continue
             digest = Text(f"sha256={item['sha256'][:12]}…", style="dim")
             head = Text.assemble(
                 (f"{item['id']}  ", "bold"),
                 (f"{item['kind']}  ", "italic"),
             )
-            row_label = label if first else ""
-            first = False
             table.add_row(row_label, Text.assemble(head, "  ", digest))
             excerpt = json.dumps(item["data"], indent=2, sort_keys=True, default=str)
             if len(excerpt) > EVIDENCE_EXCERPT_CHARS:

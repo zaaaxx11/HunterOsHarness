@@ -1,4 +1,4 @@
-"""One-thread periodic scheduler — Hermes agent_periodic_scheduler port.
+"""One-thread periodic scheduler — Reference agent_periodic_scheduler port.
 
 WHY: per-child sleeping threads scale badly; one heap thread orders due
 times, each due body runs inline (tests) or on a short worker. A body

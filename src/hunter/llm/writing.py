@@ -378,7 +378,7 @@ def resolve_config_target(
     home: Path | None = None,
 ) -> Path:
     """Where a write lands: explicit ``path`` → ``$HUNTEROS_CONFIG`` →
-    ``~/.hunteros/config.yaml``. An env-var path outside the home directory is
+    ``~/.hunter/config.yaml``. An env-var path outside the home directory is
     refused unless ``force`` — a stray env var must not aim writes at
     arbitrary filesystem locations."""
     env = os.environ if env is None else env

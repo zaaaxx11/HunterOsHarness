@@ -1168,7 +1168,7 @@ def gateway_start(
         console.print("[dim]gateway stopped.[/dim]")
 
 
-# M11 (M5): the gateway gains the full Hermes verb set — stop/restart/status/
+# M11 (M5): the gateway gains the full reference verb set — stop/restart/status/
 # logs DELEGATE to the daemon verbs (the same single implementation), so
 # `hunter gateway restart` === `hunter restart`.
 

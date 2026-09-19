@@ -1,4 +1,4 @@
-"""Tool-call validation — Hermes agent_turn_tool_validation port (narrowed).
+"""Tool-call validation — Reference agent_turn_tool_validation port (narrowed).
 
 WHY: hallucinated names, duplicate ids, and malformed JSON must recover
 without voiding real work or breaking role alternation (assistant/tool

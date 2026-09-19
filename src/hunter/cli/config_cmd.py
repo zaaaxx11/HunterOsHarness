@@ -1,6 +1,6 @@
 """`hunter config` verbs — path/get/set/unset/edit/check + key set/list (M11).
 
-Hermes-grade config management (m11-hermes-ux §5): simple things are one
+Polished config management (m11-ux §5): simple things are one
 command, deep things are discoverable, and nothing ever prints a key VALUE
 (§3.5 masking rule — env var NAMES and set/not-set states only).
 

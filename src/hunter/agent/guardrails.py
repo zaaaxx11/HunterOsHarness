@@ -1,4 +1,4 @@
-"""Pure guardrail controller — Hermes agent_tool_guardrails port (narrowed).
+"""Pure guardrail controller — Reference agent_tool_guardrails port (narrowed).
 
 WHY: looping models (exact-args replay, same-tool thrash, identical-result
 stalls, tight A/B cycles, runaway web/probe caps) must halt as a partial

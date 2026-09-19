@@ -1,0 +1,16 @@
+# R2-C eval regression cells — TEST INPUT (untracked by design: tests/ never ships).
+# Each cell declares a name plus its expected finding-key set; the scorer
+# (hunter.workflow.eval_cli / bench.compare_run_to_key) stays ledger-only.
+# FIRST_BLOOD pins the first-blood gate: 7 of 9 planted issues @ ~0.77 recall.
+- name: FIRST_BLOOD
+  expected_keys:
+    - reflected-xss
+    - sql-error
+    - missing-headers
+    - open-redirect
+    - csrf-token
+    - clickjacking
+    - directory-listing
+  total: 9
+  min_hits: 7
+  recall: 0.77

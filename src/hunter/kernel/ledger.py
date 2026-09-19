@@ -219,6 +219,46 @@ BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: verified requires replay evidence (RULE-E2)');
 END;
 
+-- RULE-E1/RULE-E2 at the storage layer for evidence_ids rewrites: a raw-SQL
+-- UPDATE that touches evidence_ids is rejected unless the NEW list is a
+-- non-empty JSON array whose ids ALL exist in evidence, ALL belong to the
+-- finding's own run (no cross-run splice), and — when the row is currently
+-- verified — still contains the replay evidence bound to this finding id.
+-- Legitimate same-run extensions pass; set_finding_status (which appends the
+-- replay id when verifying) passes. Mirrors the claim gate for raw SQL.
+CREATE TRIGGER IF NOT EXISTS findings_update_evidence_ids_guard
+BEFORE UPDATE OF evidence_ids ON findings
+WHEN (
+        json_valid(NEW.evidence_ids) IS NOT 1
+        OR json_type(NEW.evidence_ids) != 'array'
+        OR json_array_length(NEW.evidence_ids) == 0
+        OR EXISTS (
+            SELECT 1 FROM json_each(NEW.evidence_ids) AS je
+            WHERE NOT EXISTS (SELECT 1 FROM evidence e WHERE e.id = je.value)
+        )
+        OR EXISTS (
+            SELECT 1 FROM json_each(NEW.evidence_ids) AS je
+            JOIN evidence e ON e.id = je.value
+            WHERE e.run_id != NEW.run_id
+        )
+        OR (
+            OLD.status = 'verified'
+            AND NOT EXISTS (
+                SELECT 1 FROM json_each(NEW.evidence_ids) AS je
+                WHERE EXISTS (
+                    SELECT 1 FROM evidence e
+                    WHERE e.id = je.value
+                      AND e.kind = 'http_exchange'
+                      AND json_extract(e.data, '$.replay') = 1
+                      AND json_extract(e.data, '$.finding_id') = NEW.id
+                )
+            )
+        )
+    )
+BEGIN
+    SELECT RAISE(ABORT, 'BLOCKED: evidence_ids update violates RULE-E1/RULE-E2');
+END;
+
 -- Run metadata feeds the report headers; it is written once and then only
 -- ended_ts/status may move (finish_run). Everything else is frozen.
 CREATE TRIGGER IF NOT EXISTS runs_protected_columns
@@ -483,10 +523,43 @@ class Ledger:
         return [self._row_to_event(r) for r in rows]
 
     def verify_chain(self, run_id: str | None = None) -> ChainReport:
-        """Recompute every stored hash and report the first break, if any."""
+        """Recompute every stored hash and report the first break, if any.
+
+        Global (``run_id is None``): single-chain contiguity — every row must
+        chain onto its predecessor. Per-run: the global chain interleaves runs,
+        so filtered contiguity is NOT required — each row must hash-verify and
+        its ``prev_hash`` must be GENESIS or reference an existing event
+        globally (a dangling/missing predecessor still fails).
+        """
         with self._lock:
             rows = self._fetch_events(self._conn, run_id)
         report = ChainReport(ok=True, checked=len(rows))
+        if run_id is not None:
+            for row in rows:
+                try:
+                    event = self._row_to_event(row)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    seq = row[0]
+                    report.ok = False
+                    if report.broken_at_seq is None:
+                        report.broken_at_seq = seq
+                    report.details.append(f"seq {seq}: row is not decodable (payload corrupt)")
+                    continue
+                problems: list[str] = []
+                if event.hash != event.recompute_hash():
+                    problems.append(
+                        f"seq {event.seq}: stored hash does not match recomputed content hash"
+                    )
+                if event.prev_hash != GENESIS_HASH and not self._hash_exists(event.prev_hash):
+                    problems.append(
+                        f"seq {event.seq}: prev_hash references no event and is not GENESIS_HASH"
+                    )
+                if problems:
+                    report.ok = False
+                    if report.broken_at_seq is None:
+                        report.broken_at_seq = event.seq
+                    report.details.extend(problems)
+            return report
         expected_prev = GENESIS_HASH
         for idx, row in enumerate(rows):
             try:
@@ -524,10 +597,51 @@ class Ledger:
 
     # -- evidence -----------------------------------------------------------
 
+    #: Closed vocabulary of evidence artifact kinds (media hardening: an
+    #: unknown kind is rejected instead of stored).
+    ALLOWED_EVIDENCE_KINDS = frozenset(
+        {
+            "http_exchange",
+            "http_response",
+            "note",
+            "tool_output",
+            "browser_event",
+            "local_read",
+            "dns_record",
+            "ct_entry",
+            "headers_audit",
+            "port_hint",
+            "dnssec_hint",
+            "tls_inventory",
+            "contract_call",
+            "contract_source",
+            "slither_audit",
+            "cast_call",
+        }
+    )
+
+    #: Largest single evidence blob accepted (canonical JSON, UTF-8 bytes).
+    EVIDENCE_MAX_BYTES = 1024 * 1024  # 1 MiB
+
     def add_evidence(self, run_id: str, kind: str, data: dict[str, Any]) -> str:
-        """Deep-redacts, stores, and returns the evidence id (e.g. 'EV-0007')."""
+        """Deep-redacts, stores, and returns the evidence id (e.g. 'EV-0007').
+
+        Rejects unknown ``kind`` values (allowlist) and oversized payloads
+        (size cap) with :class:`ClaimGateBlocked` — fail-closed, nothing is
+        persisted on rejection.
+        """
+        if kind not in self.ALLOWED_EVIDENCE_KINDS:
+            raise ClaimGateBlocked(
+                f"BLOCKED: evidence kind {kind!r} is not in the allowed "
+                f"vocabulary {sorted(self.ALLOWED_EVIDENCE_KINDS)}."
+            )
         redacted = redact_payload(data)
-        digest = sha256_hex(canonical_json(redacted))
+        blob = canonical_json(redacted)
+        if len(blob.encode("utf-8")) > self.EVIDENCE_MAX_BYTES:
+            raise ClaimGateBlocked(
+                f"BLOCKED: evidence blob exceeds the {self.EVIDENCE_MAX_BYTES}-byte cap."
+            )
+        digest = sha256_hex(blob)
         with self._write() as conn:
             evidence_id = self._next_id(conn, "evidence", "EV")
             stored = self._append_event(
@@ -539,7 +653,7 @@ class Ledger:
             conn.execute(
                 "INSERT INTO evidence (id, run_id, kind, data, sha256, created_seq)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                (evidence_id, run_id, kind, canonical_json(redacted), digest, stored.seq),
+                (evidence_id, run_id, kind, blob, digest, stored.seq),
             )
         return evidence_id
 

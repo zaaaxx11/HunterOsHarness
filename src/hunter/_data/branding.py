@@ -28,6 +28,8 @@ WELCOME_FOOTER = "home: ~/.hunter · config: hunter config show · doctor: hunte
 
 def welcome_lines(version: str) -> list[str]:
     """The bare-`hunter` welcome body (rendered by the CLI as a rich panel)."""
+    from hunter.cli.init_wizard import SCOPE_DISCLAIMER
+
     return [
         f"{WELCOME_TITLE} v{version} — {WELCOME_SUBTITLE}",
         "",
@@ -37,6 +39,8 @@ def welcome_lines(version: str) -> list[str]:
         *(f"  {line}" for line in WELCOME_NEXT_STEPS),
         "",
         WELCOME_FOOTER,
+        "",
+        SCOPE_DISCLAIMER,
     ]
 
 

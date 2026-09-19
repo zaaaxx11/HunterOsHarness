@@ -37,7 +37,7 @@ def normalize_tier(name: str) -> str:
 
 StreamCb = Callable[[str], None]
 
-# ClassifiedError.reason vocabulary (ported from hermes error_classifier)
+# ClassifiedError.reason vocabulary (ported from reference UX dossier error_classifier)
 ERROR_REASONS: tuple[str, ...] = (
     "auth", "auth_permanent", "billing", "rate_limit", "overloaded", "server_error",
     "timeout", "context_overflow", "model_not_found", "content_policy_blocked",
@@ -48,7 +48,7 @@ ERROR_REASONS: tuple[str, ...] = (
 @dataclass(frozen=True, slots=True)
 class ClassifiedError:
     """Provider failure, classified ONCE; the retry loop reads these fields
-    instead of re-matching strings (hermes pattern)."""
+    instead of re-matching strings (governed pattern)."""
 
     reason: str = "unknown"
     retryable: bool = False
@@ -85,7 +85,7 @@ class TurnResult:
 
 @dataclass
 class RunBudget:
-    """Iteration + wall-clock + cost governor for one agent run (hermes
+    """Iteration + wall-clock + cost governor for one agent run (reference
     IterationBudget + Strix usage hooks, merged). Implement logic in
     ``hunter.llm.budget``; this is the data contract.
 

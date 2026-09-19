@@ -382,7 +382,7 @@ def install_default_skill_selector() -> None:
 
 
 def _refused(message: str) -> HunterError:
-    return HunterError("skills.refused", "config", message, hint="use a simple lowercase skill name under ~/.hunteros/skills")
+    return HunterError("skills.refused", "config", message, hint="use a simple lowercase skill name under ~/.hunter/skills")
 
 
 def write_skill(draft: Any, *, home: Path | None = None) -> Path:

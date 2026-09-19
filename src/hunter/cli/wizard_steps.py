@@ -1,7 +1,7 @@
 """Shared wizard steps — ONE source for init, provider-add, and the model picker.
 
 Extracted from the v2 onboarding flow and ``provider_add`` so the two wizards
-CANNOT drift (m11-hermes-ux §7 change 1): the same numbered provider menu, the
+CANNOT drift (m11-ux §7 change 1): the same numbered provider menu, the
 same masked key capture, the same advisory endpoint probe, and the same model
 auto-detect run on every surface. Every step takes/returns plain data through
 the injectable ``ask`` / ``secret`` seams, and every step RE-ASKS on

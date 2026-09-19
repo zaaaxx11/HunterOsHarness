@@ -4,7 +4,7 @@ Every chat platform (Telegram long-poll, HTTP webhook, ...) adapts to three
 things: it produces :class:`InboundMessage`, it consumes
 ``ChatTransport.send`` calls, and it enforces its OWN authorization
 (fail-closed) before anything reaches the shared handler. The gateway app
-never sees platform specifics — hermes' surface-independence, applied to
+never sees platform specifics — reference surface-independence, applied to
 transports.
 """
 

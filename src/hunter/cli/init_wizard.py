@@ -7,7 +7,7 @@ timestamped pre-write backup, buffered writes (keys.env BEFORE config) so a
 Ctrl+C before the write truly changed nothing, and ``SCOPE_DISCLAIMER`` as the
 LAST line of every terminal path — cancels included.
 
-Doctrine (m11-hermes-ux §7):
+Doctrine (m11-ux §7):
 
 - every prompt goes through the injectable ``ask`` / ``secret`` callables;
   EOF falls back to the prompt's default — a piped wizard still completes;

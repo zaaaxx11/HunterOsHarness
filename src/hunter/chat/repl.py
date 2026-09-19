@@ -355,12 +355,10 @@ class ChatEngine:
             from hunter.agent.soul import soul_block  # noqa: PLC0415 — optional module
 
             soul = soul_block()
-        except ImportError:
+        except Exception:  # noqa: BLE001 — a broken soul module never breaks chat
             soul = ""
         if soul:
-            history.insert(
-                0, {"role": "system", "content": "You are the HunterOs chat agent. " + soul}
-            )
+            history.insert(0, {"role": "system", "content": soul})
         return history
 
     def _run_conversational(self, text: str, *, stream_cb: StreamCb | None) -> TurnOutput:

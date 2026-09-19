@@ -1,6 +1,6 @@
 """RunBudget — thread-safe iteration + cost + wall-clock governor for one run.
 
-Implements the ``hunter.llm.base.RunBudget`` data contract (hermes
+Implements the ``hunter.llm.base.RunBudget`` data contract (reference
 IterationBudget semantics + Strix-style staged cost warnings, merged):
 
 - ``consume_iteration()`` → False once ``max_iterations`` is hit; pairing tool

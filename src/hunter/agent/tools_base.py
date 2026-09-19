@@ -97,7 +97,7 @@ class ToolOutcome:
 
 
 class ToolRegistry:
-    """Registry of record for agent tools (hermes pattern)."""
+    """Registry of record for agent tools (governed pattern)."""
 
     def __init__(self) -> None:
         self._specs: dict[str, ToolSpec] = {}

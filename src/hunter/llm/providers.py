@@ -7,7 +7,7 @@ fully supported — ``hunter config provider add <name> --base-url ...`` accepts
 any OpenAI-compatible endpoint, and LiteLLM dials hundreds more by model
 prefix.
 
-M11 adds the Hermes per-host key-variable helpers (:func:`key_env_for_endpoint`
+M11 adds the reference per-host key-variable helpers (:func:`key_env_for_endpoint`
 derives the keys.env name from the endpoint host, :func:`is_local_endpoint`
 drives the local-server auto-probe messaging) — pure functions, no I/O.
 """
@@ -129,7 +129,7 @@ def is_local_endpoint(base_url: str) -> bool:
 
 
 def key_env_for_endpoint(base_url: str) -> str:
-    """Per-host(+port) keys.env variable name (the Hermes pattern).
+    """Per-host(+port) keys.env variable name (the governed pattern).
 
     host: dots/dashes → '_', upper; explicit non-default port appended;
     a leading digit is prefixed ``K_`` —

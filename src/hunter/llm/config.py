@@ -108,7 +108,7 @@ class ProviderConfig:
 
 @dataclass
 class FallbackEntry:
-    """One link of the failover chain (hermes ``fallback_providers`` shape),
+    """One link of the failover chain (reference ``fallback_providers`` shape),
     tried in order when the primary provider fails with a fallback-worthy
     error (auth, billing, model-not-found, ...)."""
 

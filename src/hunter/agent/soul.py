@@ -8,11 +8,13 @@ built by zaaaxx — that line comes from code, never from a file.
 
 Load order (first readable file wins, then stop):
 
-1. ``SOUL.md`` in the working directory (the user's own copy).
-2. the bundled character at ``hunter/_data/prompts/soul.md`` (kept
+1. ``$HUNTER_SOUL_FILE`` (or ``$HUNTEROS_SOUL``) — explicit env pin.
+2. ``~/.hunter/SOUL.md`` — the unified home copy (trusted).
+3. ``SOUL.md`` in the working directory — UNTRUSTED, always sanitized.
+4. the bundled character at ``hunter/_data/prompts/soul.md`` (kept
    byte-equal to the tracked root ``SOUL.md``; a static test guards the
    divergence).
-3. ``""`` — no persona; the core identity still renders.
+5. ``""`` — no persona; the core identity still renders.
 
 Sanitize-not-refuse: a user edit must never brick chat startup, so
 injection-shaped markers in the file are NEUTRALIZED (each occurrence is
@@ -23,6 +25,7 @@ every prompt.
 
 from __future__ import annotations
 
+import os
 import re
 from importlib import resources
 from pathlib import Path
@@ -45,7 +48,7 @@ __all__ = [
 CORE_IDENTITY = "You are Hunter, the HunterOS audit agent built by zaaaxx."
 
 SOUL_FILE_NAME = "SOUL.md"
-SOUL_MAX_CHARS = 4000
+SOUL_MAX_CHARS = 8000
 SOUL_TRUNCATION_MARKER = "...[soul truncated]"
 
 # Injection-shaped markers are neutralized, never executed and never refused:
@@ -57,7 +60,6 @@ INJECTION_MARKERS: tuple[str, ...] = (
     "system:",
     "<system>",
     "[system]",
-    "```",
     "assistant:",
     "</system>",
 )
@@ -96,26 +98,73 @@ def sanitize_soul(text: str) -> str:
 
     Every occurrence of every :data:`INJECTION_MARKERS` entry (case-insensitive)
     becomes ``[removed injection marker]``; text past :data:`SOUL_MAX_CHARS`
-    chars is cut and stamped with ``...[soul truncated]``. Never raises.
+    chars is cut at a line boundary and stamped with ``...[soul truncated]``.
+    The cut prefers the last ``"\\n## "`` heading boundary inside the window,
+    else the last ``"\\n"`` — but when that boundary sits more than 500 chars
+    before the cap the cut falls back to the cap itself so a pathological
+    header cannot eat the body. Never raises.
     """
     cleaned = str(text or "")
     for marker in INJECTION_MARKERS:
         cleaned = re.sub(re.escape(marker), _REMOVED, cleaned, flags=re.IGNORECASE)
     if len(cleaned) > SOUL_MAX_CHARS:
-        cleaned = cleaned[:SOUL_MAX_CHARS] + SOUL_TRUNCATION_MARKER
+        window = cleaned[:SOUL_MAX_CHARS]
+        cut: int | None = None
+        heading_at = window.rfind("\n## ")
+        if heading_at != -1 and SOUL_MAX_CHARS - heading_at <= 500:
+            cut = heading_at + 1
+        else:
+            newline_at = window.rfind("\n")
+            if newline_at != -1 and SOUL_MAX_CHARS - newline_at <= 500:
+                cut = newline_at + 1
+        if cut is None:
+            cut = SOUL_MAX_CHARS
+        cleaned = cleaned[:cut] + SOUL_TRUNCATION_MARKER
     return cleaned
 
 
+def _default_home_soul() -> Path:
+    """``~/.hunter/SOUL.md`` via the unified home when available."""
+    try:
+        from hunter.home import hunter_home as _hunter_home
+
+        return _hunter_home() / SOUL_FILE_NAME
+    except Exception:  # noqa: BLE001 — fall back to a plain home-derived path
+        return Path.home() / ".hunter" / SOUL_FILE_NAME
+
+
 def load_soul(*, repo_root: Path | None = None) -> str:
-    """Load the user-editable persona: working-dir SOUL.md → bundled → "".
+    """Load the user-editable persona, first readable file wins then stop.
+
+    Trust priority (highest first):
+
+    1. ``$HUNTER_SOUL_FILE`` (or ``$HUNTEROS_SOUL``) — explicit env pin,
+       returned verbatim.
+    2. ``~/.hunter/SOUL.md`` — the unified home copy, returned verbatim.
+    3. ``./SOUL.md`` in the working directory — UNTRUSTED: sanitized with
+       :func:`sanitize_soul` (and stamped when sanitization changed it) so a
+       hostile checkout can never inject prompts.
+    4. the bundled character — returned verbatim.
+    5. ``""`` — no persona; the core identity still renders.
 
     Never raises; unreadable files (including a directory where the file
     should be) are skipped and the next candidate is tried.
     """
     repo_root = Path.cwd() if repo_root is None else Path(repo_root)
-    text = _read_persona_file(repo_root / SOUL_FILE_NAME)
+    env_pinned = os.getenv("HUNTER_SOUL_FILE") or os.getenv("HUNTEROS_SOUL")
+    if env_pinned:
+        text = _read_persona_file(Path(env_pinned))
+        if text is not None:
+            return text
+    text = _read_persona_file(_default_home_soul())
     if text is not None:
         return text
+    text = _read_persona_file(repo_root / SOUL_FILE_NAME)
+    if text is not None:
+        cleaned = sanitize_soul(text)
+        if cleaned != text:
+            return "[UNTRUSTED cwd soul - sanitized]\n" + cleaned
+        return cleaned
     return _bundled_soul()
 
 

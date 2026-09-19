@@ -145,12 +145,16 @@ class AgentLoop:
         from .skills import is_default_skill_selector
         if skills_index is None or not is_default_skill_selector(current_skill_selector()):
             skills_index = resolve_skills_index(question=goal)
+        from .soul import soul_block as _soul_block
+
+        soul = _soul_block()  # pinned once: every turn shares one character
         system = build_system_prompt(
             target_url=ctx.target_url,
             scope_summary=ctx.scope.summary(),
             tier=self.tier,
             skills_index=str(skills_index),
             config_note=str(ctx.config.get("config_note", "")),
+            soul_block=soul,
         )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},

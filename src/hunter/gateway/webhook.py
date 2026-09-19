@@ -16,7 +16,7 @@ harness code runs:
 
 ``INSECURE_NO_AUTH`` disables checks 2-3 but is refused at construction
 unless the bind host is loopback — a dev convenience, never a deployment
-footgun (hermes pattern, tightened: refusal happens before any socket
+footgun (governed pattern, tightened: refusal happens before any socket
 exists).
 """
 

@@ -1,6 +1,6 @@
 """``~/.hunter`` — the one home for user-facing HunterOS state (M11).
 
-Locked decision 1 (m11-hermes-ux §2.1): ``~/.hunter`` holds ALL user-facing
+Locked decision 1 (m11-ux §2.1): ``~/.hunter`` holds ALL user-facing
 state — ``config.yaml``, ``keys.env``, ``chat.db``, the default ledger state
 dir, ``daemon/``, ``approvals/``, ``reports/``, ``sessions/``, ``skills/``.
 ``~/.hunteros`` remains ONLY plumbing (venv, ``bin/`` shims,

@@ -1,6 +1,6 @@
-"""Slash-command registry — one command set for every surface (hermes pattern).
+"""Slash-command registry — one command set for every surface (governed pattern).
 
-Surface independence invariant (ported from hermes ``slash_exec``): an
+Surface independence invariant (ported from reference UX dossier ``slash_exec``): an
 executor's output depends ONLY on ``ctx.args`` / ``ctx.options`` — never on
 which surface called it. The REPL, the Telegram adapter, and the webhook all
 build a :class:`CommandContext` over the same store and get byte-identical
@@ -43,7 +43,7 @@ __all__ = [
     "scope_for_target",
 ]
 
-NO_MODEL_HINT = "set HUNTEROS_MODEL env or create ~/.hunteros/config.yaml"
+NO_MODEL_HINT = "set HUNTEROS_MODEL env or create ~/.hunter/config.yaml"
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@
 One asyncio lock per session key (``transport:chat_id``). A second message
 for the same chat while a turn is in flight waits at most ``timeout``
 seconds, then FAILS CLOSED with :class:`LeaseBusy`: the caller answers
-"still working on your previous request" and NOTHING executes — hermes'
+"still working on your previous request" and NOTHING executes — reference
 turn-lease doctrine, minus the routing-key complexity our gateway does not
 have (key == session here, one engine per chat).
 """

@@ -223,7 +223,7 @@ def _llm_checks() -> list[Check]:
                 "llm-model",
                 "note",
                 "unset — set HUNTEROS_MODEL or model_tiers.orchestrator.model "
-                "in ~/.hunteros/config.yaml",
+                "in ~/.hunter/config.yaml",
             )
         )
     else:

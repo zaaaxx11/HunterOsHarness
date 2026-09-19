@@ -2,7 +2,7 @@
 
 Turns one :class:`hunter.llm.config.HunterConfig` into a working brain for ANY
 provider: model/key resolution, a failover chain (primary + configured
-fallbacks, deduped), bounded retries with exponential backoff, hermes-grade
+fallbacks, deduped), bounded retries with exponential backoff, polished
 error classification, and budget governance. Every provider failure becomes
 either a :class:`hunter.llm.base.TurnResult` or a
 :class:`hunter.errors.HunterError` — never a bare traceback.
@@ -200,7 +200,7 @@ _MAX_MESSAGE_CHARS = 300
 _REASON_TO_ERROR: dict[str, tuple[str, str, str]] = {
     "auth": (
         "auth", "provider.auth",
-        "set the API key (providers.<name>.key_env in ~/.hunteros/config.yaml) — "
+        "set the API key (providers.<name>.key_env in ~/.hunter/config.yaml) — "
         "`hunter doctor` reports what is missing",
     ),
     "auth_permanent": (
@@ -233,7 +233,7 @@ _REASON_TO_ERROR: dict[str, tuple[str, str, str]] = {
     ),
     "model_not_found": (
         "config", "config.model_not_found",
-        "check the model name in ~/.hunteros/config.yaml or via /model",
+        "check the model name in ~/.hunter/config.yaml or via /model",
     ),
     "content_policy_blocked": (
         "provider", "provider.content_policy_blocked",
@@ -410,7 +410,7 @@ class ProviderRouter:
         raise self._terminal_error(last)
 
     def classify(self, exc: BaseException) -> ClassifiedError:
-        """Classify ANY provider exception ONCE (hermes pattern): the retry
+        """Classify ANY provider exception ONCE (governed pattern): the retry
         loop reads the verdict instead of re-matching strings."""
         status = _status_of(exc)
         display = _message_of(exc)  # redacted — safe for logs and user display
@@ -758,13 +758,13 @@ class ProviderRouter:
             code="budget.exhausted",
             layer="usage",
             message=f"run budget stopped: {reason}",
-            hint="raise the budget in ~/.hunteros/config.yaml or via /model",
+            hint="raise the budget in ~/.hunter/config.yaml or via /model",
         )
 
     def _terminal_error(self, last: ClassifiedError) -> HunterError:
         detail = last.message or f"last failure: {last.reason}"
         chain_hint = (
-            "switch model with /model or add fallback_providers in ~/.hunteros/config.yaml — "
+            "switch model with /model or add fallback_providers in ~/.hunter/config.yaml — "
             "the whole fallback chain was exhausted"
         )
         if last.reason == "rate_limit":

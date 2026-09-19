@@ -1,4 +1,4 @@
-"""Agent tools — the ONLY capabilities the LLM brain has (hermes T1-T5).
+"""Agent tools — the ONLY capabilities the LLM brain has (agent T1-T5).
 
 Every capability is a :class:`ToolSpec`; the model never touches the ledger,
 network, or filesystem directly. Governance invariants implemented here:

@@ -82,7 +82,7 @@ the chat.
   fail-closed in the HTTP client; a prompt injection cannot open the socket.
 - **Deterministic engine** — 12 baseline-first probes run offline with zero
   keys; every signal is baseline-diffed and evidence-bound.
-- **Chat + gateway** — `hunter chat` REPL with sessions, 20 slash commands,
+- **Chat + gateway** — `hunter chat` REPL with sessions, 25 slash commands,
   unified chat, `/hunt`, `/audit`, and `/curate`; Telegram, Discord, WhatsApp,
   and HMAC-signed webhook front-ends with default-deny allowlists,
   anti-replay signatures, and turn leases.

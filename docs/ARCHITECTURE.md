@@ -68,7 +68,7 @@ Rules between layers:
    `api_key` > LiteLLM standard env vars when no provider block exists).
 2. **Dial** — `agent.api_max_retries` attempts (default 3) per route with
    bounded exponential backoff (1s → 8s cap).
-3. **Classify** — every provider exception is classified **once** (hermes
+3. **Classify** — every provider exception is classified **once** (reference
    pattern) into a verdict: auth, billing, rate_limit, timeout, context
    overflow, content policy, model-not-found, … Messages are redacted of
    anything credential-shaped before display.

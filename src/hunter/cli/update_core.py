@@ -15,7 +15,7 @@ freshness window — the CI/opt-out env gates do NOT live here, they gate the
 
 **The notify machinery** (:func:`start_background_check` /
 :func:`pop_pending_notice` / :func:`emit_notice`) mirrors the
-Strix/Hermes pattern: one fire-and-forget daemon thread per process, the
+Strix/reference pattern: one fire-and-forget daemon thread per process, the
 notice printed AFTER the command output via a click context-close hook —
 always on stderr so ``--json`` stdout stays machine-clean, never inside the
 long-lived ``chat``/``tui``/``gateway`` surfaces, and never blocking exit

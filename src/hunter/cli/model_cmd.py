@@ -1,4 +1,4 @@
-"""``hunter model`` — the Hermes-style model picker (M11 M4).
+"""``hunter model`` — the Polished model picker (M11 M4).
 
 One command to point every tier at a brain: a numbered provider menu
 (configured providers first, then known table rows), the advisory endpoint

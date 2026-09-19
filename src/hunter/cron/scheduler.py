@@ -1,4 +1,4 @@
-"""Cron tick scheduler — Hermes cron_scheduler tick port (narrowed).
+"""Cron tick scheduler — Reference cron_scheduler tick port (narrowed).
 
 WHY: exactly one ticker per <state> (file lock); ESTOP + can_dispatch
 gate BEFORE exec; advance-next-runs BEFORE exec (at-most-once: a crash

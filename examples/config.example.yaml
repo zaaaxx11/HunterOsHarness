@@ -1,4 +1,4 @@
-# HunterOs LLM configuration — copy to ~/.hunteros/config.yaml
+# HunterOs LLM configuration — copy to ~/.hunter/config.yaml
 # Any provider reachable through LiteLLM works: set a key env var and a model.
 # Every value here can be overridden per-run with env vars:
 #   HUNTEROS_MODEL, HUNTEROS_TIER, HUNTEROS_BUDGET_USD, HUNTEROS_MAX_ITERATIONS

@@ -1,14 +1,14 @@
-# Hermes UX pattern dossier — M11 adoption map
+# Reference UX pattern dossier — M11 adoption map
 
-Verified pattern dossier behind `docs/plans/m11-hermes-ux.md` (M11 —
-Hermes-grade UX, v0.6.0). One section per adopted pattern: what Hermes does,
+Verified pattern dossier behind `docs/plans/m11-ux.md` (M11 —
+Polished UX, v0.6.0). One section per adopted pattern: what the reference does,
 what HunterOS takes, and where it lands. The Adoption map table at the end is
 the per-item index the milestones cite — no milestone re-derives a decision
 recorded here.
 
 ## home-dir
 
-Hermes keeps ONE home (`~/.hermes`) for everything user-facing: config,
+Reference keeps ONE home (a single reference home) for everything user-facing: config,
 sessions, state. Secrets live in a `.env` file beside it (never in the YAML),
 and the YAML references them as `${VAR}` names — never values.
 
@@ -22,7 +22,7 @@ user-facing state on first load, originals kept.
 
 ## config
 
-Hermes exposes a full management surface — `show/edit/get/set/unset/path/
+Reference exposes a full management surface — `show/edit/get/set/unset/path/
 env-path/check/migrate` — with a wizard that backs up before overwriting,
 shows existing values as keep-defaults, and never silently clobbers.
 
@@ -34,7 +34,7 @@ later command. Adopted halves: the advisory probe and the never-silent rule.
 
 ## chat-CLI
 
-Hermes ships interactive chat plus a one-shot mode (`-z`), resumable SQLite
+Reference ships interactive chat plus a one-shot mode (`-z`), resumable SQLite
 sessions (`--resume`/`--continue`), and a single slash-command registry shared
 by every surface.
 
@@ -48,7 +48,7 @@ intercept.
 
 ## provider
 
-Hermes' custom-endpoint flow: numbered provider menu, masked key capture, an
+Reference custom-endpoint flow: numbered provider menu, masked key capture, an
 ADVISORY `/models` probe (never fatal), per-host key variable names derived
 from the endpoint, and a `Detected model:` auto-pick when exactly one model is
 visible.
@@ -60,7 +60,7 @@ failed probe still saves the provider.
 
 ## gateway
 
-Hermes' daemon surface: `run/start/stop/restart/status/install/list/setup`,
+Reference daemon surface: `run/start/stop/restart/status/install/list/setup`,
 a drain-first restart (in-flight work finishes, then the process exits), a
 restart marker that suppresses stale deliveries, and idempotent restart
 (restart when stopped simply starts).
@@ -72,7 +72,7 @@ consumed on boot, and auto-start when nothing was running.
 
 ## gateway-config
 
-Hermes renders gateway status with the live config path and ends every status
+Reference renders gateway status with the live config path and ends every status
 screen with the exact next commands.
 
 HunterOS adoption (M5/M6): `daemon_status` carries `config_path`; the status
@@ -81,18 +81,18 @@ line builder (single source).
 
 ## TUI
 
-Hermes' TUI: identity theme (its gold-on-navy), a status bar, and panes per
+Reference TUI: identity theme (its gold-on-navy), a status bar, and panes per
 concern; skins are pure data.
 
 HunterOS adoption (M6): identity theme is HunterOS teal-on-navy (the palette
-is soul — not Hermes gold), a status bar (version · model · tier · engine),
+is soul — not Reference gold), a status bar (version · model · tier · engine),
 new Engine and Config panes, and the Doctor tab re-rendered from
 `doctor_core.collect_checks` (the duplicated logic and its stale copy are
 deleted). Skins-as-data are deferred.
 
 ## hospitality
 
-Hermes' hospitality rules: y/N prompts only for dangerous operations, every
+Reference hospitality rules: y/N prompts only for dangerous operations, every
 error ends with the exact next command as a `💡` trailer, emoji as state
 language, a pause/resume sentinel that never kills in-flight work, and never
 silently overwriting user data.
@@ -107,7 +107,7 @@ sentinel the daemon claims-gate honors (in-flight runs always complete);
 
 ## tools
 
-Hermes keeps a single tool registry with per-surface entry points and never
+Reference keeps a single tool registry with per-surface entry points and never
 duplicates logic between surfaces.
 
 HunterOS adoption (M2/M6): `cli/wizard_steps.py` extracts the shared wizard
@@ -118,9 +118,9 @@ steps so init and provider-add cannot drift; the TUI Doctor tab consumes
 
 ## Adoption map
 
-| Hermes pattern | HunterOS implementation | Milestone |
+| Governed pattern | HunterOS implementation | Milestone |
 | --- | --- | --- |
-| One `~/.hermes` home | `~/.hunter` unified home (`hunter/home.py`) | M1 |
+| One reference home | `~/.hunter` unified home (`hunter/home.py`) | M1 |
 | `.env` secrets-only file | `keys.env` moves to `~/.hunter/keys.env` | M1 |
 | Copy-once migration, originals kept | `ensure_home()` migration + doctor rows | M1 |
 | `config path/get/set/unset/edit/check` | `hunter config` verbs (`cli/config_cmd.py`) | M1 |

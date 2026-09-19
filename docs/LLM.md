@@ -1,6 +1,6 @@
 # LLM — bring your own key (BYOK) guide
 
-## Fast path (Hermes-style)
+## Fast path (Polished)
 
 Use `hunter model` to pick a provider and model interactively, or set one directly:
 

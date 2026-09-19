@@ -1,7 +1,10 @@
 # scripts/ — HunterOs helper scripts
 
 Standalone Python helpers for audit, recon, daemon control, and session
-hygiene. All scripts are **offline-safe by construction and scope-gated**:
+hygiene. `scripts/` is exempt operator tooling, not the production surface:
+nothing here ships as product code, and the test suite lives only in `tests/`
+(`pyproject.toml` `testpaths = ["tests"]`) — no `test_*.py` belongs in this
+directory. All scripts are **offline-safe by construction and scope-gated**:
 the only network surface (`quick_recon.py`) runs through the harness
 `ScopeSet` gate and refuses out-of-scope targets with exit code 3 before a
 single byte leaves the machine. Scripts import only the Python standard

@@ -1,6 +1,6 @@
 """HunterError taxonomy — one error language for CLI, TUI, chat, and gateway.
 
-Rendering rules (ported from hermes' error UX, tightened by our doctrine):
+Rendering rules (ported from the reference error UX, tightened by our doctrine):
 - ``[BLOCKED]``  — scope-gate / claim-gate / approval refusals: name the rule,
   never suggest a "fix" that would widen scope. Always ledgered upstream.
 - ``[ERROR <layer>]`` — everything else: 2 lines max (what happened, what to
@@ -90,7 +90,7 @@ def build_error_surface(exc: BaseException) -> dict:
     """Structured descriptor for TUI/gateway rendering.
 
     MUST NEVER RAISE — surfacing diagnostics may not break the error path
-    they describe (hermes invariant, ported verbatim).
+    they describe (reference invariant, ported verbatim).
     """
     try:
         if isinstance(exc, HunterError):

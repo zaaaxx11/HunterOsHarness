@@ -15,12 +15,12 @@ dist/
 *.sqlite
 nul
 .zcode/
+.kilo/
 
-# v0.5 release posture: roadmap, plans, tests, and ALL testing
-# products stay untracked; state, logs, and artifacts never ship.
+# release posture: roadmap, plans stay untracked; tests/ IS tracked (CI/transparency)
+# package artifact still excludes tests via MANIFEST.in prune; state/logs never ship.
 docs/ROADMAP*.md
 docs/plans/
-tests/
 .hunter*/
 .hunter-cli-smoke/
 *.log
