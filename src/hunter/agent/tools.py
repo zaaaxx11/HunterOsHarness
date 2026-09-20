@@ -952,9 +952,9 @@ def _shell_cwd(args: dict[str, Any], ctx: ToolContext) -> tuple[str | None, str 
     """Resolve the execution directory inside the state-dir jail.
 
     Returns ``(cwd, error_code)``. A provided cwd must resolve (symlinks and
-    '..' included) strictly inside the resolved state dir. Opsi B: argv
-    paths in ``command`` get the same jail check via the shared approval
-    helper, so direct handler calls cannot bypass the gate."""
+    '..' included) strictly inside the resolved state dir. Q1: argv paths in
+    ``command`` are governed by the approval gate (readonly auto-allows,
+    approved runs) — never a cwd hard-block here."""
     state_raw = _shell_state_dir(ctx)
     if not state_raw:
         return None, "shell.cwd_outside_state"
@@ -964,32 +964,17 @@ def _shell_cwd(args: dict[str, Any], ctx: ToolContext) -> tuple[str | None, str 
         return None, "shell.cwd_outside_state"
     requested = args.get("cwd")
     if requested in (None, ""):
-        cwd_str = str(state_dir)
-    else:
-        candidate = Path(str(requested))
-        if not candidate.is_absolute():
-            candidate = state_dir / candidate
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            return None, "shell.cwd_outside_state"
-        if resolved != state_dir and state_dir not in resolved.parents:
-            return None, "shell.cwd_outside_state"
-        cwd_str = str(resolved)
+        return str(state_dir), None
+    candidate = Path(str(requested))
+    if not candidate.is_absolute():
+        candidate = state_dir / candidate
     try:
-        from .approval import _shell_argv_escapes_jail as _escapes
-
-        # Opsi B longgar: jail argv hanya untuk readonly (cat/head).
-        # Catastrophic/mutating tetap lewat approval gate-nya sendiri,
-        # bukan hard-block cwd — kalau tidak, `rm -rf /` yang sudah
-        # di-approve malah kepentok cwd_outside_state.
-        if classify_shell_command(str(args.get("command", ""))) == "readonly" and _escapes(
-            str(args.get("command", "")), state_raw, requested
-        ):
-            return None, "shell.cwd_outside_state"
-    except Exception:  # noqa: BLE001 — helper failure must not open the jail
-        pass
-    return cwd_str, None
+        resolved = candidate.resolve()
+    except OSError:
+        return None, "shell.cwd_outside_state"
+    if resolved != state_dir and state_dir not in resolved.parents:
+        return None, "shell.cwd_outside_state"
+    return str(resolved), None
 
 
 def _shell_event(

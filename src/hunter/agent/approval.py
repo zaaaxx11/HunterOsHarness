@@ -131,61 +131,6 @@ def _has_write_flag(argv: list[str]) -> bool:
     return False
 
 
-def _shell_argv_escapes_jail(
-    command: str, state_dir: str | Path | None, cwd_arg: str | None = None
-) -> bool:
-    """True when any argv path resolves outside the state-dir jail (Opsi B).
-
-    Parses with ``shlex.split`` (extra-spaces safe), normalizes ``\\`` to
-    ``/`` first so ``C:\\`` drives survive posix splitting, then resolves
-    each non-flag token against the jail (or an inside ``cwd`` override).
-    Absolute paths, ``..`` escapes, and symlinks pointing out all return
-    True. Missing/unresolvable state dir fails closed (True). Code blobs
-    (e.g. ``python -c "open(...)"``) resolve as single inside names, so
-    legit in-jail use is unaffected.
-    """
-    if not state_dir:
-        return True
-    try:
-        state = Path(state_dir).resolve()
-    except OSError:
-        return True
-    base = state
-    if cwd_arg not in (None, ""):
-        try:
-            cand = Path(str(cwd_arg))
-            if not cand.is_absolute():
-                cand = state / cand
-            resolved_cwd = cand.resolve()
-            if resolved_cwd == state or state in resolved_cwd.parents:
-                base = resolved_cwd
-        except OSError:
-            pass
-    raw = str(command or "").replace("\\", "/")
-    try:
-        argv = shlex.split(raw, posix=True)
-    except ValueError:
-        return False
-    if not argv:
-        return False
-    for token in argv[1:]:
-        if not token or token.startswith("-"):
-            continue
-        text = token.strip("'\"")
-        if not text:
-            continue
-        try:
-            path = Path(text)
-            if not path.is_absolute():
-                path = base / path
-            resolved = path.resolve()
-        except OSError:
-            continue
-        if resolved != state and state not in resolved.parents:
-            return True
-    return False
-
-
 def classify_shell_command(command: str) -> CommandClass:
     """Classify a local command conservatively without granting execution.
 
@@ -254,6 +199,10 @@ class ApprovalRequest:
     expires_ts: float
     decided_ts: float | None
     used_ts: float | None  # set when a decision is consumed (single-use)
+    scope: str = "once"  # §10 Q2/Q3: "once" | "session" | "always"
+    run_id: str = ""  # session binding (Q2); "" = unbound/legacy
+    command_class: str | None = None  # Q2 always key: tool + command_class
+    scope_id: str = ""  # informational key (always: tool:class; session: run:fp)
 
 
 def _summary_for(tool: str, args: dict[str, Any]) -> str:
@@ -294,15 +243,25 @@ class ApprovalStore:
     def _path(self, request_id: str) -> Path:
         return self.root / f"{request_id}.json"
 
+    def _path_for(self, request: ApprovalRequest) -> Path:
+        if (request.scope or "once") == "always":
+            return self.root / "always" / f"{request.request_id}.json"
+        return self._path(request.request_id)
+
     @staticmethod
     def _decode(data: Any) -> ApprovalRequest | None:
         """Corrupt/foreign/partial files decode to None — id forgery and
-        garbage JSON must never raise."""
+        garbage JSON must never raise. Legacy files without scope fields
+        decode tolerantly as ``scope="once"``."""
         if not isinstance(data, dict):
             return None
         if not set(APPROVAL_FILE_KEYS) <= set(data):
             return None
         try:
+            raw_scope = data.get("scope", "once") or "once"
+            scope = str(raw_scope) if str(raw_scope) in ("once", "session", "always") else "once"
+            raw_cc = data.get("command_class")
+            cc = str(raw_cc) if str(raw_cc) in ("readonly", "mutating", "catastrophic") else None
             return ApprovalRequest(
                 request_id=str(data["request_id"]),
                 tool=str(data["tool"]),
@@ -315,25 +274,48 @@ class ApprovalStore:
                 expires_ts=float(data["expires_ts"]),
                 decided_ts=(None if data["decided_ts"] is None else float(data["decided_ts"])),
                 used_ts=(None if data["used_ts"] is None else float(data["used_ts"])),
+                scope=scope,
+                run_id=str(data.get("run_id") or ""),
+                command_class=cc,
+                scope_id=str(data.get("scope_id") or ""),
             )
         except (TypeError, ValueError, KeyError):
             return None
 
-    def _load(self, request_id: str | None) -> ApprovalRequest | None:
-        if not request_id or not isinstance(request_id, str):
-            return None
-        path = self._path(request_id)
-        if not path.is_file():
-            return None
+    def _read_file(self, path: Path) -> ApprovalRequest | None:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, UnicodeDecodeError):
             return None
         return self._decode(data)
 
+    def _load(self, request_id: str | None) -> ApprovalRequest | None:
+        if not request_id or not isinstance(request_id, str):
+            return None
+        for path in (self._path(request_id), self.root / "always" / f"{request_id}.json"):
+            if path.is_file():
+                record = self._read_file(path)
+                if record is not None:
+                    return record
+        return None
+
+    def _iter_files(self) -> Any:
+        yield from self.root.glob("*.json")
+        always_dir = self.root / "always"
+        if always_dir.is_dir():
+            yield from always_dir.glob("*.json")
+
     def _store(self, request: ApprovalRequest) -> None:
+        # Pinned M8 format: default once requests persist exactly the 11
+        # APPROVAL_FILE_KEYS (old test_approval.py pin). Scope extras live
+        # only on session/always files, which tolerate legacy reads as once.
         payload = {key: asdict(request)[key] for key in APPROVAL_FILE_KEYS}
-        _write_json_atomic(self._path(request.request_id), payload)
+        if (request.scope or "once") != "once":
+            payload["scope"] = request.scope or "once"
+            payload["run_id"] = request.run_id or ""
+            payload["command_class"] = request.command_class
+            payload["scope_id"] = request.scope_id or ""
+        _write_json_atomic(self._path_for(request), payload)
 
     # -- public API ------------------------------------------------------------
 
@@ -344,14 +326,42 @@ class ApprovalStore:
         *,
         ttl_seconds: int = APPROVAL_TTL_SECONDS,
         surface: str = "",
+        scope: str = "once",
+        run_id: str = "",
+        command_class: str | None = None,
     ) -> ApprovalRequest:
+        """Create a pending request. §10 Q2/Q3/Q4: ``scope`` is one of
+        once|session|always; ``always`` is keyed tool+command_class and local
+        per state-dir; catastrophic+always is forced back to once."""
+        scope = str(scope or "once")
+        if scope not in ("once", "session", "always"):
+            scope = "once"
+        tool_name = str(tool)
+        run = str(run_id or "")
+        cc: str | None = None
+        if command_class in ("readonly", "mutating", "catastrophic"):
+            cc = str(command_class)
+        elif tool_name == "shell_exec" and isinstance(args, dict):
+            try:
+                cc = classify_shell_command(str(args.get("command", "")))
+            except Exception:  # noqa: BLE001 — inference never blocks creation
+                cc = None
+        if scope == "always" and cc == "catastrophic":
+            scope = "once"  # Q3: catastrophic NEVER always
+        fingerprint = sha256_hex(canonical_json({"tool": tool_name, "args": args}))
+        if scope == "always":
+            scope_id = f"{tool_name}:{cc or ''}"
+        elif scope == "session":
+            scope_id = f"{run}:{fingerprint}"
+        else:
+            scope_id = fingerprint
         with self._lock:
             now = time.time()
             request = ApprovalRequest(
                 request_id=f"A-{uuid.uuid4().hex[:8]}",
-                tool=str(tool),
-                fingerprint=sha256_hex(canonical_json({"tool": str(tool), "args": args})),
-                summary=_summary_for(str(tool), args),
+                tool=tool_name,
+                fingerprint=fingerprint,
+                summary=_summary_for(tool_name, args),
                 args=dict(args) if isinstance(args, dict) else {},
                 status="pending",
                 surface=str(surface or ""),
@@ -359,6 +369,10 @@ class ApprovalStore:
                 expires_ts=now + float(ttl_seconds),
                 decided_ts=None,
                 used_ts=None,
+                scope=scope,
+                run_id=run,
+                command_class=cc,
+                scope_id=scope_id,
             )
             self._store(request)
             return request
@@ -383,25 +397,47 @@ class ApprovalStore:
             self._store(record)
             return record
 
-    def find_approved(self, fingerprint: str) -> ApprovalRequest | None:
-        """Newest approved, unexpired, unconsumed record for ``fingerprint``;
-        does NOT consume."""
+    def find_approved(
+        self,
+        fingerprint: str,
+        *,
+        run_id: str | None = None,
+        tool: str | None = None,
+        command_class: str | None = None,
+    ) -> ApprovalRequest | None:
+        """Scope-aware approved lookup; does NOT consume.
+
+        once: exact fingerprint (legacy, run-agnostic). session: fingerprint
+        bound to ``run_id``. always (Q2): tool + command_class, fingerprint
+        ignored, local to this state-dir. Exact matches win over always.
+        """
         with self._lock:
-            best: ApprovalRequest | None = None
-            for path in self.root.glob("*.json"):
-                try:
-                    record = self._decode(json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, ValueError, UnicodeDecodeError):
+            best_exact: ApprovalRequest | None = None
+            best_always: ApprovalRequest | None = None
+            for path in self._iter_files():
+                record = self._read_file(path)
+                if record is None or record.status != "approved":
                     continue
-                if record is None or record.fingerprint != fingerprint:
+                if record.used_ts is not None or effective_status(record) == "expired":
                     continue
-                if record.status != "approved" or record.used_ts is not None:
+                scope = record.scope or "once"
+                if scope == "always":
+                    if tool is None:
+                        continue
+                    if record.tool != str(tool):
+                        continue
+                    if (record.command_class or None) != (command_class or None):
+                        continue
+                    if best_always is None or record.created_ts > best_always.created_ts:
+                        best_always = record
                     continue
-                if effective_status(record) == "expired":
+                if record.fingerprint != fingerprint:
                     continue
-                if best is None or record.created_ts > best.created_ts:
-                    best = record
-            return best
+                if scope == "session" and run_id is not None and record.run_id != run_id:
+                    continue
+                if best_exact is None or record.created_ts > best_exact.created_ts:
+                    best_exact = record
+            return best_exact if best_exact is not None else best_always
 
     def find_decided(self, fingerprint: str) -> ApprovalRequest | None:
         """Newest DECIDED (approved or denied) record for ``fingerprint``.
@@ -413,11 +449,8 @@ class ApprovalStore:
         never silently reused to auto-deny."""
         with self._lock:
             best: ApprovalRequest | None = None
-            for path in self.root.glob("*.json"):
-                try:
-                    record = self._decode(json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, ValueError, UnicodeDecodeError):
-                    continue
+            for path in self._iter_files():
+                record = self._read_file(path)
                 if record is None or record.fingerprint != fingerprint:
                     continue
                 if record.status not in ("approved", "denied"):
@@ -427,10 +460,13 @@ class ApprovalStore:
             return best
 
     def consume(self, request_id: str) -> None:
-        """Mark a decision used (single-use). Missing ids are a no-op."""
+        """Mark a once decision used (single-use). Session/always approvals
+        stay reusable; missing ids are a no-op."""
         with self._lock:
             record = self._load(request_id)
             if record is None or record.used_ts is not None:
+                return
+            if (record.scope or "once") != "once":
                 return
             record.used_ts = time.time()
             self._store(record)
@@ -476,9 +512,12 @@ def make_approval_gate(
             command_class = classify_shell_command(command)
             reason = is_catastrophic(command)
         fingerprint = sha256_hex(canonical_json({"tool": str(tool), "args": args}))
-        approved = store.find_approved(fingerprint)
+        approved = store.find_approved(
+            fingerprint, run_id=run_id, tool=str(tool), command_class=command_class
+        )
         if approved is not None:
-            store.consume(approved.request_id)
+            if (approved.scope or "once") == "once":
+                store.consume(approved.request_id)
             payload = {
                 "tool": str(tool),
                 "approval": f"consumed:{approved.request_id}",
@@ -496,7 +535,10 @@ def make_approval_gate(
         # Catastrophic commands are not permanently denied, but they never
         # consult either auto_allow or an interactive callback.
         if command_class == "catastrophic":
-            request = store.create(str(tool), args, surface=surface)
+            request = store.create(
+                str(tool), args, surface=surface, scope="once",
+                run_id=run_id, command_class=command_class,
+            )
             _gate_event(
                 ledger,
                 run_id,
@@ -515,19 +557,9 @@ def make_approval_gate(
                 f"Reply /approve {request.request_id} to permit exactly one execution.",
             )
 
-        # auto_allow is deliberately restricted to readonly shell commands.
-        # Opsi B: readonly that resolves outside the state-dir jail never
-        # auto-allows — it must fall through to approval.required.
-        can_auto_allow = auto_allow and (tool != "shell_exec" or command_class == "readonly")
-        if can_auto_allow and tool == "shell_exec" and command_class == "readonly":
-            try:
-                _cmd = str(args.get("command", "")) if isinstance(args, dict) else ""
-                _sdir = ctx.config.get("state_dir") if ctx is not None else None
-                _cwd = args.get("cwd") if isinstance(args, dict) else None
-                if _shell_argv_escapes_jail(_cmd, _sdir, _cwd):
-                    can_auto_allow = False
-            except Exception:  # noqa: BLE001 — fail closed to gated
-                can_auto_allow = False
+        # Q1 BOLEH AUTO: readonly + auto_allow -> gate None, even for
+        # outside paths. Never hard-block readonly on argv location.
+        can_auto_allow = bool(auto_allow) and (tool != "shell_exec" or command_class == "readonly")
         if can_auto_allow:
             payload = {"tool": str(tool), "approval": "auto_allowed", "fingerprint": fingerprint}
             if command_class is not None:
@@ -538,7 +570,10 @@ def make_approval_gate(
             return None
 
         if confirm_fn is not None and store.find_decided(fingerprint) is None:
-            request = store.create(str(tool), args, surface=surface)
+            request = store.create(
+                str(tool), args, surface=surface, scope="once",
+                run_id=run_id, command_class=command_class,
+            )
             payload = {
                 "tool": str(tool),
                 "approval": f"requested:{request.request_id}",
@@ -582,7 +617,10 @@ def make_approval_gate(
                 f"(request {request.request_id}). Do not retry the same call.",
             )
 
-        request = store.create(str(tool), args, surface=surface)
+        request = store.create(
+            str(tool), args, surface=surface, scope="once",
+            run_id=run_id, command_class=command_class,
+        )
         payload = {
             "tool": str(tool),
             "approval": f"requested:{request.request_id}",
