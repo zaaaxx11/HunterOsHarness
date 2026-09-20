@@ -131,6 +131,61 @@ def _has_write_flag(argv: list[str]) -> bool:
     return False
 
 
+def _shell_argv_escapes_jail(
+    command: str, state_dir: str | Path | None, cwd_arg: str | None = None
+) -> bool:
+    """True when any argv path resolves outside the state-dir jail (Opsi B).
+
+    Parses with ``shlex.split`` (extra-spaces safe), normalizes ``\\`` to
+    ``/`` first so ``C:\\`` drives survive posix splitting, then resolves
+    each non-flag token against the jail (or an inside ``cwd`` override).
+    Absolute paths, ``..`` escapes, and symlinks pointing out all return
+    True. Missing/unresolvable state dir fails closed (True). Code blobs
+    (e.g. ``python -c "open(...)"``) resolve as single inside names, so
+    legit in-jail use is unaffected.
+    """
+    if not state_dir:
+        return True
+    try:
+        state = Path(state_dir).resolve()
+    except OSError:
+        return True
+    base = state
+    if cwd_arg not in (None, ""):
+        try:
+            cand = Path(str(cwd_arg))
+            if not cand.is_absolute():
+                cand = state / cand
+            resolved_cwd = cand.resolve()
+            if resolved_cwd == state or state in resolved_cwd.parents:
+                base = resolved_cwd
+        except OSError:
+            pass
+    raw = str(command or "").replace("\\", "/")
+    try:
+        argv = shlex.split(raw, posix=True)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    for token in argv[1:]:
+        if not token or token.startswith("-"):
+            continue
+        text = token.strip("'\"")
+        if not text:
+            continue
+        try:
+            path = Path(text)
+            if not path.is_absolute():
+                path = base / path
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved != state and state not in resolved.parents:
+            return True
+    return False
+
+
 def classify_shell_command(command: str) -> CommandClass:
     """Classify a local command conservatively without granting execution.
 
@@ -461,7 +516,18 @@ def make_approval_gate(
             )
 
         # auto_allow is deliberately restricted to readonly shell commands.
+        # Opsi B: readonly that resolves outside the state-dir jail never
+        # auto-allows — it must fall through to approval.required.
         can_auto_allow = auto_allow and (tool != "shell_exec" or command_class == "readonly")
+        if can_auto_allow and tool == "shell_exec" and command_class == "readonly":
+            try:
+                _cmd = str(args.get("command", "")) if isinstance(args, dict) else ""
+                _sdir = ctx.config.get("state_dir") if ctx is not None else None
+                _cwd = args.get("cwd") if isinstance(args, dict) else None
+                if _shell_argv_escapes_jail(_cmd, _sdir, _cwd):
+                    can_auto_allow = False
+            except Exception:  # noqa: BLE001 — fail closed to gated
+                can_auto_allow = False
         if can_auto_allow:
             payload = {"tool": str(tool), "approval": "auto_allowed", "fingerprint": fingerprint}
             if command_class is not None:

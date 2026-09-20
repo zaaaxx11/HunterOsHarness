@@ -346,8 +346,10 @@ def render_block(selected: list[Skill], *, corpus_size: int, notes: Iterable[str
         lines.extend(f"note: {note}" for note in shadow_notes)
         lines.extend(_card_text(skill) for skill in current)
         rendered = "\n\n---\n\n".join(lines)
-        if len(rendered) <= MAX_BLOCK_CHARS or len(current) <= 1:
+        if len(rendered) <= MAX_BLOCK_CHARS:
             return rendered
+        if len(current) <= 1:
+            return rendered[:MAX_BLOCK_CHARS]
         current.pop()
 
 

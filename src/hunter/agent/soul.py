@@ -10,7 +10,8 @@ Load order (first readable file wins, then stop):
 
 1. ``$HUNTER_SOUL_FILE`` (or ``$HUNTEROS_SOUL``) — explicit env pin.
 2. ``~/.hunter/SOUL.md`` — the unified home copy (trusted).
-3. ``SOUL.md`` in the working directory — UNTRUSTED, always sanitized.
+3. ``<cwd>/.hunter/soul.md`` — project-local UNTRUSTED, always sanitized
+   and stamped; ``./SOUL.md`` at the cwd root is never loaded.
 4. the bundled character at ``hunter/_data/prompts/soul.md`` (kept
    byte-equal to the tracked root ``SOUL.md``; a static test guards the
    divergence).
@@ -25,6 +26,7 @@ every prompt.
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 from importlib import resources
@@ -68,8 +70,41 @@ SOUL_HEADER = "OPERATING CHARACTER (soul) — binds every turn:\n"
 _REMOVED = "[removed injection marker]"
 _BUNDLED_RESOURCE = "_data/prompts/soul.md"
 
+# Opsi B: whitespace-tolerant injection patterns (spasi-ganda/newline safe).
+_INJECTION_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"ignore\s+previous", re.IGNORECASE),
+    re.compile(r"disregard\s+all\s+previous", re.IGNORECASE),
+    re.compile(r"system\s*:", re.IGNORECASE),
+    re.compile(r"<\s*system\s*>", re.IGNORECASE),
+    re.compile(r"\[\s*system\s*\]", re.IGNORECASE),
+    re.compile(r"assistant\s*:", re.IGNORECASE),
+    re.compile(r"<\s*/\s*system\s*>", re.IGNORECASE),
+)
+_B64_RE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
+
+
+def _neutralize_base64_payloads(text: str) -> str:
+    """Decode base64 tokens and neutralize those hiding injections (Opsi B)."""
+
+    def _repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        try:
+            padded = token + "=" * (-len(token) % 4)
+            decoded = base64.b64decode(padded, validate=False).decode("utf-8", errors="ignore")
+            for pattern in _INJECTION_RES:
+                if pattern.search(decoded):
+                    return _REMOVED
+        except Exception:  # noqa: BLE001 — undecodable stays verbatim
+            pass
+        return token
+
+    try:
+        return _B64_RE.sub(_repl, text)
+    except Exception:  # noqa: BLE001 — sanitize never raises
+        return text
+
 # Sentinel for the loader-default: a BARE ``soul_block()`` call loads the
-# active soul (working-dir SOUL.md → bundled) so chat wiring can render it
+# active soul (.hunter/soul.md → bundled) so chat wiring can render it
 # without knowing the chain; an EXPLICIT ``None`` or ``""`` means "no soul"
 # and renders "" (pinned by tests on both behaviors).
 _UNSET: Any = object()
@@ -96,17 +131,19 @@ def _bundled_soul() -> str:
 def sanitize_soul(text: str) -> str:
     """Neutralize injection markers and cap the length.
 
-    Every occurrence of every :data:`INJECTION_MARKERS` entry (case-insensitive)
-    becomes ``[removed injection marker]``; text past :data:`SOUL_MAX_CHARS`
-    chars is cut at a line boundary and stamped with ``...[soul truncated]``.
-    The cut prefers the last ``"\\n## "`` heading boundary inside the window,
-    else the last ``"\\n"`` — but when that boundary sits more than 500 chars
-    before the cap the cut falls back to the cap itself so a pathological
-    header cannot eat the body. Never raises.
+    Every occurrence of every :data:`INJECTION_MARKERS` entry (case-insensitive,
+    whitespace-tolerant via ``\\s+``) becomes ``[removed injection marker]``;
+    base64 tokens decoding to an injection are neutralized the same way; text
+    past :data:`SOUL_MAX_CHARS` chars is cut at a line boundary and stamped
+    with ``...[soul truncated]``. The cut prefers the last ``"\\n## "``
+    heading boundary inside the window, else the last ``"\\n"`` — but when
+    that boundary sits more than 500 chars before the cap the cut falls back
+    to the cap itself so a pathological header cannot eat the body.
+    Never raises.
     """
-    cleaned = str(text or "")
-    for marker in INJECTION_MARKERS:
-        cleaned = re.sub(re.escape(marker), _REMOVED, cleaned, flags=re.IGNORECASE)
+    cleaned = _neutralize_base64_payloads(str(text or ""))
+    for pattern in _INJECTION_RES:
+        cleaned = pattern.sub(_REMOVED, cleaned)
     if len(cleaned) > SOUL_MAX_CHARS:
         window = cleaned[:SOUL_MAX_CHARS]
         cut: int | None = None
@@ -141,9 +178,11 @@ def load_soul(*, repo_root: Path | None = None) -> str:
     1. ``$HUNTER_SOUL_FILE`` (or ``$HUNTEROS_SOUL``) — explicit env pin,
        returned verbatim.
     2. ``~/.hunter/SOUL.md`` — the unified home copy, returned verbatim.
-    3. ``./SOUL.md`` in the working directory — UNTRUSTED: sanitized with
-       :func:`sanitize_soul` (and stamped when sanitization changed it) so a
-       hostile checkout can never inject prompts.
+    3. ``<cwd>/.hunter/soul.md`` — project-local UNTRUSTED: always
+       sanitized with :func:`sanitize_soul` and stamped ``[UNTRUSTED]`` so
+       a hostile checkout can never inject prompts; ``./SOUL.md`` at the
+       cwd root is never loaded. Mounted as user-block, never system
+       verbatim.
     4. the bundled character — returned verbatim.
     5. ``""`` — no persona; the core identity still renders.
 
@@ -159,12 +198,10 @@ def load_soul(*, repo_root: Path | None = None) -> str:
     text = _read_persona_file(_default_home_soul())
     if text is not None:
         return text
-    text = _read_persona_file(repo_root / SOUL_FILE_NAME)
-    if text is not None:
-        cleaned = sanitize_soul(text)
-        if cleaned != text:
-            return "[UNTRUSTED cwd soul - sanitized]\n" + cleaned
-        return cleaned
+    for candidate in (repo_root / ".hunter" / "soul.md", repo_root / ".hunter" / "SOUL.md"):
+        text = _read_persona_file(candidate)
+        if text is not None:
+            return "[UNTRUSTED] project soul - sanitized\n" + sanitize_soul(text)
     return _bundled_soul()
 
 

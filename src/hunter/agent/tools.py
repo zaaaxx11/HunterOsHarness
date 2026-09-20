@@ -952,7 +952,9 @@ def _shell_cwd(args: dict[str, Any], ctx: ToolContext) -> tuple[str | None, str 
     """Resolve the execution directory inside the state-dir jail.
 
     Returns ``(cwd, error_code)``. A provided cwd must resolve (symlinks and
-    '..' included) strictly inside the resolved state dir."""
+    '..' included) strictly inside the resolved state dir. Opsi B: argv
+    paths in ``command`` get the same jail check via the shared approval
+    helper, so direct handler calls cannot bypass the gate."""
     state_raw = _shell_state_dir(ctx)
     if not state_raw:
         return None, "shell.cwd_outside_state"
@@ -962,17 +964,26 @@ def _shell_cwd(args: dict[str, Any], ctx: ToolContext) -> tuple[str | None, str 
         return None, "shell.cwd_outside_state"
     requested = args.get("cwd")
     if requested in (None, ""):
-        return str(state_dir), None
-    candidate = Path(str(requested))
-    if not candidate.is_absolute():
-        candidate = state_dir / candidate
+        cwd_str = str(state_dir)
+    else:
+        candidate = Path(str(requested))
+        if not candidate.is_absolute():
+            candidate = state_dir / candidate
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            return None, "shell.cwd_outside_state"
+        if resolved != state_dir and state_dir not in resolved.parents:
+            return None, "shell.cwd_outside_state"
+        cwd_str = str(resolved)
     try:
-        resolved = candidate.resolve()
-    except OSError:
-        return None, "shell.cwd_outside_state"
-    if resolved != state_dir and state_dir not in resolved.parents:
-        return None, "shell.cwd_outside_state"
-    return str(resolved), None
+        from .approval import _shell_argv_escapes_jail as _escapes
+
+        if _escapes(str(args.get("command", "")), state_raw, requested):
+            return None, "shell.cwd_outside_state"
+    except Exception:  # noqa: BLE001 — helper failure must not open the jail
+        pass
+    return cwd_str, None
 
 
 def _shell_event(
@@ -1308,8 +1319,9 @@ def build_registry(
     ``min_tier="basic"`` and advanced content is refused INSIDE the handlers
     (``http_request`` non-passive methods -> ``tier.passive_only``;
     ``run_probe`` active checks -> ``tier.capability_locked`` via
-    PROBE_TIERS). The schema list the model sees is therefore identical for
-    basic and advanced tiers in v0.2.
+    PROBE_TIERS). The schema list differs by tier: basic exposes 16 tools,
+    advanced exposes 17 with ``shell_exec`` advanced-only (plus basic
+    ``runtime_inventory``).
     """
     if tier not in TIER_ORDER:
         raise ValueError(f"unknown tier {tier!r} (use basic|advanced)")
