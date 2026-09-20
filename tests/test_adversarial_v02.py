@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
-import os
 import re
 import sqlite3
 import time
@@ -605,20 +604,30 @@ def test_unauthorized_telegram_scan_is_completely_inert(tmp_path):
     assert store.list_sessions() == []
 
 
-@pytest.mark.skipif(
-    os.environ.get("CI") == "true",
-    reason="QUARANTINE on CI runners: PracticeVault documents a transient "
-    "client-error race (vault/server.py); under runner load A's http_request "
-    "can yield no evidence row (false alarm, not a bleed). Green locally; "
-    "track vault determinism separately.",
-)
 def test_two_chat_audits_do_not_bleed_state(vault, tmp_path):
     """Two sessions auditing the same target: separate runs, separate
     notes/recon/coverage state, disjoint evidence ids, chain still verifies.
     (Q3: arming goes through the hunt-intent path on a consented engine —
     the auto-drive turn IS the work turn, so the scripts stay two turns.
-    /audit finish closes each run.)"""
-    store = ChatStore(tmp_path / "chat.db")
+    /audit finish closes each run.)
+
+    Bounded retry (3x, fresh state per attempt): PracticeVault documents a
+    transient client-error race (vault/server.py); under runner load one
+    attempt's http_request can yield no evidence row (false alarm, not a
+    bleed). A genuine bleed fails deterministically on every attempt."""
+    errors: list = []
+    for attempt in range(3):
+        try:
+            _two_chat_audits_once(vault, tmp_path / f"attempt-{attempt}")
+            return
+        except AssertionError as exc:
+            errors.append(exc)
+    raise AssertionError(f"bleed gate failed 3/3 attempts: {errors[-1]}")
+
+
+def _two_chat_audits_once(vault, base):
+    base.mkdir(parents=True, exist_ok=True)
+    store = ChatStore(base / "chat.db")
     engine_a = _consented_audit_engine(
         store,
         FakeProvider([
@@ -628,7 +637,7 @@ def test_two_chat_audits_do_not_bleed_state(vault, tmp_path):
             ),
             turn(tool_call("respond_to_user", message="a done")),
         ]),
-        tmp_path,
+        base,
     )
     engine_b = _consented_audit_engine(
         store,
@@ -636,7 +645,7 @@ def test_two_chat_audits_do_not_bleed_state(vault, tmp_path):
             turn(tool_call("run_probe", check_id="missing-headers")),
             turn(tool_call("respond_to_user", message="b done")),
         ]),
-        tmp_path,
+        base,
     )
     try:
         intent = f"audit {vault.url}"
