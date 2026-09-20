@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import tomllib
-
 ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_REPO_URL = "https://github.com/zaaaxx11/HunterOsHarness.git"
@@ -37,10 +35,9 @@ BANNER_TAGLINE = "HunterOs Harness - evidence or nothing"
 
 def test_pyproject_declares_hunt_script():
     """A35: pyproject [project.scripts] gains `hunt` (and keeps `hunter`)."""
-    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    scripts = data["project"]["scripts"]
-    assert scripts["hunt"] == "hunter.cli.main:main"
-    assert scripts["hunter"] == "hunter.cli.main:main"
+    data = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'hunt = "hunter.cli.main:main"' in data
+    assert 'hunter = "hunter.cli.main:main"' in data
 
 
 def test_installer_static_contract():

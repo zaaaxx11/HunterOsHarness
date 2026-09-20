@@ -5,17 +5,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import tomllib
-
 ROOT = Path(__file__).parents[1]
 
 
 def test_browser_extra_is_optional_and_no_download_contract_is_documented():
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    optional = pyproject["project"]["optional-dependencies"]
-    assert optional["browser"] == ["playwright>=1.40"]
-    dependencies = pyproject["project"]["dependencies"]
-    assert not any(str(dependency).lower().startswith("playwright") for dependency in dependencies)
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'browser = ["playwright>=1.40"]' in text
+    deps_section = text.split("[project.optional-dependencies]")[0]
+    assert "playwright" not in deps_section.lower()
 
     plan = (ROOT / "docs" / "plans" / "v0.4" / "M6-browser-automation.md").read_text(encoding="utf-8")
     assert "pip install 'hunteros-harness[browser]'" in plan

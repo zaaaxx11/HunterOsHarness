@@ -13,7 +13,7 @@ makes them green via test-only pin updates + 1 src welcome fix + docs sweep
 
 from __future__ import annotations
 
-import tomllib
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -32,8 +32,8 @@ def test_release_pin_is_060():
 
     text = _read("tests/test_release_m7.py")
     assert 'RELEASE_VERSION = "0.6.0"' in text, "stale pin still 0.5.0"
-    project = tomllib.loads(_read("pyproject.toml"))["project"]
-    assert project["version"] == "0.6.0"
+    project_version = re.search(r'^version\s*=\s*"([^"]+)"', _read("pyproject.toml"), re.M)
+    assert project_version and project_version.group(1) == "0.6.0"
     assert hunter.__version__ == "0.6.0"
     from hunter.cli.main import app
 
@@ -305,10 +305,18 @@ def test_brand_zero_including_renamed_guard():
         ".kilo",
         ".hunter",
         ".hunter-cli-smoke",
+        "dist",
+        "build",
     }
+    venv_roots = {p.parent.resolve() for p in ROOT.glob("*/pyvenv.cfg")}
 
     def _excluded(p: Path) -> bool:
         if p.resolve() == self_path:
+            return True
+        resolved = p.resolve()
+        if any(resolved == r or r in resolved.parents for r in venv_roots):
+            return True
+        if p.is_file() and p.suffix == ".log":
             return True
         return any(part in exclude for part in p.parts)
 

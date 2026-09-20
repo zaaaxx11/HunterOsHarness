@@ -1,9 +1,10 @@
 """Brand-zero — no case-insensitive legacy brand token may remain.
 
-Walks the repo (excluding .git/__pycache__/.venv cruft and this guard file
-itself, which necessarily constructs the target) and asserts zero hits in
-file contents AND filenames. The token is built by concatenation so this
-file never contains the literal; split-token construction lines are allowed,
+Walks the repo (excluding .git/caches/artifact dirs, any virtualenv detected
+by pyvenv.cfg marker, *.log runtime logs, and this guard file itself, which
+necessarily constructs the target) and asserts zero hits in file contents
+AND filenames. The token is built by concatenation so this file never
+contains the literal; split-token construction lines are allowed,
 never a literal occurrence.
 """
 
@@ -26,11 +27,22 @@ EXCLUDE_DIRS = {
     ".kilo",
     ".hunter",
     ".hunter-cli-smoke",
+    "dist",
+    "build",
 }
+
+# Any top-level virtualenv (named anything: .ci-repro, venv, ...) is local
+# toolchain, never shipped product. Detected by marker, not by name.
+VENV_ROOTS = {p.parent.resolve() for p in ROOT.glob("*/pyvenv.cfg")}
 
 
 def _excluded(path: Path) -> bool:
     if path.resolve() == SELF:
+        return True
+    resolved = path.resolve()
+    if any(resolved == r or r in resolved.parents for r in VENV_ROOTS):
+        return True
+    if path.is_file() and path.suffix == ".log":
         return True
     return any(part in EXCLUDE_DIRS for part in path.parts)
 

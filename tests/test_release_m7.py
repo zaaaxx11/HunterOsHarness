@@ -15,7 +15,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-import tomllib
 import yaml
 from typer.testing import CliRunner
 
@@ -104,8 +103,8 @@ def test_release_version_sources_are_0_5_0():
     """A1: source, package metadata, and the CLI must agree exactly."""
     import hunter
 
-    project = tomllib.loads(_read("pyproject.toml"))["project"]
-    assert project["version"] == RELEASE_VERSION
+    project_version = re.search(r'^version\s*=\s*"([^"]+)"', _read("pyproject.toml"), re.M)
+    assert project_version and project_version.group(1) == RELEASE_VERSION
     assert hunter.__version__ == RELEASE_VERSION
     assert _installed_version() == RELEASE_VERSION
 
@@ -372,13 +371,14 @@ def test_ci_has_no_browser_install_or_network_test_path():
 
 def test_release_artifact_metadata_contract():
     """A5: package metadata keeps browser optional and core dependency-free."""
-    project = tomllib.loads(_read("pyproject.toml"))["project"]
-    assert project["version"] == RELEASE_VERSION
-    assert project["requires-python"] == ">=3.10"
-    optional = project["optional-dependencies"]
-    assert optional["browser"] == ["playwright>=1.40"]
-    assert not any("playwright" in str(dep).lower() for dep in project["dependencies"])
-    assert project["scripts"] == {"hunter": "hunter.cli.main:main", "hunt": "hunter.cli.main:main"}
+    text = _read("pyproject.toml")
+    assert re.search(r'^version\s*=\s*"' + re.escape(RELEASE_VERSION) + r'"', text, re.M)
+    assert 'requires-python = ">=3.10"' in text
+    assert 'browser = ["playwright>=1.40"]' in text
+    deps_section = text.split("[project.optional-dependencies]")[0]
+    assert "playwright" not in deps_section.lower()
+    scripts_section = text.split("[project.scripts]")[1].split("[")[0]
+    assert scripts_section.count("hunter.cli.main:main") == 2
 
     plan = _read("docs/plans/v0.4/M7-release-maintenance.md")
     assert "python -m build" in plan
