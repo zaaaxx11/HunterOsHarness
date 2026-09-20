@@ -41,7 +41,13 @@ jobs:
         shell: bash
         run: |
           if [ -d tests ] && find tests -type f -name 'test_*.py' -print -quit | grep -q .; then
-            python -m pytest
+            set +e
+            python -m pytest --tb=short -q -p no:warnings 2>&1 | tee pytest-output.log
+            code=${PIPESTATUS[0]}
+            grep -E "^(FAILED|ERROR)" pytest-output.log | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit $code
           else
             echo "tests/ is absent or contains no test files; skipping pytest"
           fi
