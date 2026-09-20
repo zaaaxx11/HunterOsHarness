@@ -979,7 +979,13 @@ def _shell_cwd(args: dict[str, Any], ctx: ToolContext) -> tuple[str | None, str 
     try:
         from .approval import _shell_argv_escapes_jail as _escapes
 
-        if _escapes(str(args.get("command", "")), state_raw, requested):
+        # Opsi B longgar: jail argv hanya untuk readonly (cat/head).
+        # Catastrophic/mutating tetap lewat approval gate-nya sendiri,
+        # bukan hard-block cwd — kalau tidak, `rm -rf /` yang sudah
+        # di-approve malah kepentok cwd_outside_state.
+        if classify_shell_command(str(args.get("command", ""))) == "readonly" and _escapes(
+            str(args.get("command", "")), state_raw, requested
+        ):
             return None, "shell.cwd_outside_state"
     except Exception:  # noqa: BLE001 — helper failure must not open the jail
         pass

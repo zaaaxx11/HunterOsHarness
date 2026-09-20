@@ -73,7 +73,9 @@ def _strict_gate(shell, surface="repl"):
 
 
 def _assert_gated(decision, cmd: str):
-    assert decision is not None, f"Opsi B: {cmd!r} luar-jail wajib GATED (gate return blocked), bukan None/auto-allow"
+    assert decision is not None, (
+        f"Opsi B: {cmd!r} luar-jail wajib GATED (blocked), bukan None"
+    )
     assert decision.blocked is True, f"Opsi B: {cmd!r} wajib blocked=True (approval-required)"
     assert "approval" in decision.code, f"Opsi B: {cmd!r} code wajib approval.* (got {decision.code})"
 

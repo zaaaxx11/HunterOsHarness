@@ -53,12 +53,16 @@ def test_core_identity_is_engine_hardcoded():
 def test_load_soul_user_file_then_bundled(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "SOUL.md").write_text("user edited soul", encoding="utf-8")
-    assert load_soul(repo_root=repo) == "user edited soul"
+    (repo / ".hunter").mkdir(parents=True)
+    proj = repo / ".hunter" / "soul.md"
+    proj.write_text("user edited soul", encoding="utf-8")
+    loaded = load_soul(repo_root=repo)
+    assert "user edited soul" in loaded
+    assert "[UNTRUSTED]" in loaded  # Opsi B: project-local selalu stamped
 
-    (repo / "SOUL.md").unlink()
+    proj.unlink()
     # unreadable entries (a directory where the file should be) are skipped
-    (repo / "SOUL.md").mkdir()
+    proj.mkdir()
     assert load_soul(repo_root=repo) == (BUNDLED.read_text(encoding="utf-8"))
 
 
