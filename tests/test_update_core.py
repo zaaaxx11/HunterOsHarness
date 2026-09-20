@@ -635,7 +635,7 @@ def test_detect_install_method_returns_known_member():
     assert update_core.detect_install_method() in {"dev", "installer", "pipx", "pip"}
 
 
-def test_build_install_plan_table():
+def test_build_install_plan_table(monkeypatch):
     """M3: the argv/fetch_url table (§5.3); unknown methods degrade to the pip plan."""
     from hunter.cli import update_core
 
@@ -644,11 +644,20 @@ def test_build_install_plan_table():
     assert installer.argv == ("bash", "{script}", "--skip-setup")
     assert installer.fetch_url == RAW_INSTALL_SH
 
+    # Hermetic: the src prefers a real pwsh 7 when present (shutil.which), so
+    # pin the fallback with which() stubbed out, then pin the preference.
+    monkeypatch.setattr(update_core.shutil, "which", lambda *a, **k: None)
     win = update_core.build_install_plan("installer", is_windows=True)
     assert win.argv == (
         "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{script}", "-SkipSetup",
     )
     assert win.fetch_url == RAW_INSTALL_PS1
+    monkeypatch.setattr(
+        update_core.shutil, "which", lambda name, *a, **k: "/usr/bin/pwsh" if name == "pwsh" else None
+    )
+    win7 = update_core.build_install_plan("installer", is_windows=True)
+    assert win7.argv[0] == "/usr/bin/pwsh"
+    assert win7.argv[1:] == win.argv[1:]
 
     pipx = update_core.build_install_plan("pipx", is_windows=False)
     assert pipx.argv == ("pipx", "upgrade", "hunteros-harness")

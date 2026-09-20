@@ -85,7 +85,7 @@ def test_gitignore_has_no_local_soul_entries():
     gitignore = _read(".gitignore")
     assert "SOUL.local.md" not in gitignore
     assert "soul.local.md" not in gitignore
-    for pattern in ("tests/", "docs/ROADMAP*.md", "docs/plans/", ".hunter-cli-smoke/"):
+    for pattern in ("docs/ROADMAP*.md", "docs/plans/", ".hunter-cli-smoke/"):
         assert pattern in gitignore, pattern
 
 

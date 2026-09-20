@@ -5,9 +5,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 
+needs_plan_m6 = pytest.mark.skipif(
+    not (ROOT / "docs" / "plans" / "v0.4" / "M6-browser-automation.md").is_file(),
+    reason="docs/plans/ untracked by design; absent on fresh clone/CI",
+)
 
+
+@needs_plan_m6
 def test_browser_extra_is_optional_and_no_download_contract_is_documented():
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'browser = ["playwright>=1.40"]' in text

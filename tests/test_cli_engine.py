@@ -7,6 +7,7 @@ patched so a test can never spawn, poll, or kill a process.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -194,8 +195,12 @@ def test_hunt_command_help_exposes_optional_start_target_and_queue_options():
     result = runner.invoke(app, ["hunt", "--help"])
 
     assert result.exit_code == 0, result.output
+    # Renderer-proof: strip ANSI and collapse all whitespace so wrapped
+    # option names ('--\ntarget' on narrow terminals / newer rich) still match.
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    compact = re.sub(r"\s+", "", clean)
     for option in ("--target", "--time", "--budget", "--min-time", "--state"):
-        assert option in result.output
+        assert option in compact, result.output
 
 
 def test_hunt_start_help_mentions_target_free_engine():
