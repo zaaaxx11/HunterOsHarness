@@ -23,7 +23,9 @@ Planted vulnerabilities (dedupe keys):
 from __future__ import annotations
 
 import posixpath
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -336,4 +338,13 @@ def start_server(host: str = "127.0.0.1", port: int = 0) -> tuple[VaultServer, i
     thread = threading.Thread(target=server.serve_forever, name="practicevault", daemon=True)
     thread.start()
     handle = VaultServer(server, thread)
+    # Readiness wait: serve_forever balik langsung, di runner sibuk request
+    # pertama bisa refused sebelum socket listen. Poll sampai connectable.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((handle.host, handle.port), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.02)
     return handle, handle.port
