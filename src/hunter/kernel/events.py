@@ -42,6 +42,20 @@ class EventKind(str, Enum):
     CLASSIFICATION_RECORDED = "classification_recorded"
     REPORT_RENDERED = "report_rendered"
     RETRO_RECORDED = "retro_recorded"
+    # v0.7 hunting-klass kinds (additive):
+    LEAD_ADDED = "lead_added"
+    LEAD_PARKED = "lead_parked"
+    LEAD_PROMOTED = "lead_promoted"
+    FOLLOWUP_ADDED = "followup_added"
+    FOLLOWUP_CLOSED = "followup_closed"
+    FINDING_PROMOTED = "finding_promoted"
+    FINDING_CHALLENGED = "finding_challenged"
+    PO_EXECUTED = "po_executed"
+    VERIFIER_RECORDED = "verifier_recorded"
+    WAVE_OPENED = "wave_opened"
+    WAVE_CLOSED = "wave_closed"
+    SIGNAL_CLASSIFIED = "signal_classified"
+    MEMORY_RECORDED = "memory_recorded"
 
 
 def canonical_json(obj: Any) -> str:

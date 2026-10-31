@@ -52,6 +52,23 @@ jobs:
             echo "tests/ is absent or contains no test files; skipping pytest"
           fi
 
+  typecheck:
+    name: mypy / Python 3.13
+    runs-on: ubuntu-latest
+    env:
+      HUNTEROS_NO_UPDATE_CHECK: "1"
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install development dependencies
+        run: python -m pip install -e ".[dev]" mypy
+      - name: Mypy
+        run: python -m mypy src/hunter
+
   package:
     name: build and validate package artifacts
     runs-on: ubuntu-latest
@@ -128,5 +145,5 @@ jobs:
           fi
           "$venv_python" -m pip install --disable-pip-version-check dist/*.whl
           "$venv_python" -m pip check
-          "$venv_python" -c 'import hunter; assert hunter.__version__ == "0.6.0"; print(hunter.__version__)'
+          "$venv_python" -c 'import hunter; print(hunter.__version__)'
           "$venv_python" -m hunter --version

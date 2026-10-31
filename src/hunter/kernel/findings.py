@@ -30,6 +30,7 @@ SEVERITY_ORDER: dict[str, int] = {
 
 
 class FindingStatus(str, Enum):
+    THEORETICAL = "theoretical"  # hypothesis recorded; not yet a claim (0 evidence legal)
     CANDIDATE = "candidate"  # probe observed a signal; single evidence bound
     VERIFIED = "verified"  # independent replay succeeded; second evidence bound
     RULED_OUT = "ruled_out"  # debunked; kept for the audit trail, never deleted
@@ -52,6 +53,12 @@ class Finding:
     remediation: str = ""
     status: FindingStatus = FindingStatus.CANDIDATE
     evidence_ids: tuple[str, ...] = field(default_factory=tuple)
+    # v0.7 taxonomy (additive, defaults keep old callers working):
+    klass: str = "unknown"          # bug class id from taxonomy (or "unknown")
+    falsifier: str = ""             # observation that would disprove this claim
+    action_class: str = "read"       # recon|read|auth-test|mutate
+    surface: str | None = None      # affected surface/row
+    poc_path: str | None = None     # path to the PoC artifact on disk
 
 
 def dedupe_key(check_id: str, method: str, endpoint: str, param: str | None) -> str:

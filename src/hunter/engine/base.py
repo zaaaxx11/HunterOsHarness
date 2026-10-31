@@ -64,6 +64,7 @@ class CandidateFinding:
     description: str = ""
     impact: str = ""
     remediation: str = ""
+    klass: str = "unknown"
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
 

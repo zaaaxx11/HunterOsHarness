@@ -13,6 +13,7 @@ resolve to ``""`` instead of raising KeyError.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from importlib import resources
 from typing import TYPE_CHECKING, Any
@@ -284,14 +285,87 @@ def build_chat_messages(
     return messages
 
 
-def build_goal(target: TargetSpec, tier: str) -> str:
-    """Build the user-role goal for one audit run of ``target``."""
+def build_goal(target: TargetSpec, tier: str, ledger=None, run_id=None) -> str:
+    """Build the user-role goal for one audit run of ``target``.
+
+    When ``ledger`` is provided, a computed ``## Ledger context`` block is
+    appended so the goal reflects current coverage/followups/negative memory
+    instead of being static.
+    """
     url = target.url.rstrip("/")
     notes = ", ".join(f"{k}={v}" for k, v in sorted(target.notes.items())) if target.notes else ""
     notes_line = f"\nTarget notes: {notes}" if notes else ""
-    return (
+    base = (
         f"Audit {url} (tier: {tier}). Map the surface, probe the priority "
         "vulnerability classes, record coverage as you go, and ship only "
         "evidence-backed findings through create_finding_request. Finish with "
         f"finish_scan when the audit is reconciled.{notes_line}"
     )
+    if ledger is None:
+        return base
+
+    # -- computed ledger context -------------------------------------------
+    def _status_value(value: Any) -> str:
+        return value.value if hasattr(value, "value") else str(value)
+
+    try:
+        findings = ledger.findings(run_id)
+    except Exception:
+        findings = []
+    by_status: dict[str, int] = {}
+    for finding in findings:
+        status = _status_value(getattr(finding, "status", ""))
+        by_status[status] = by_status.get(status, 0) + 1
+
+    # open followups: prefer event counts, fall back to the followups table
+    open_followups = 0
+    try:
+        events = ledger.events(run_id)
+        kv = lambda e: (  # noqa: E731
+            e.kind_value() if hasattr(e, "kind_value") and callable(e.kind_value)
+            else str(getattr(e, "kind", ""))
+        )
+        added = sum(1 for e in events if kv(e) == "followup_added")
+        closed = sum(1 for e in events if kv(e) == "followup_closed")
+        open_followups = added - closed
+    except Exception:
+        try:
+            with getattr(ledger, "_lock", threading.Lock()):
+                rows = ledger._conn.execute(
+                    "SELECT COUNT(*) FROM followups WHERE status = 'open' AND (? IS NULL OR run_id = ?)",
+                    (run_id, run_id),
+                ).fetchone()
+            open_followups = int(rows[0]) if rows else 0
+        except Exception:
+            open_followups = 0
+
+    # coverage gaps: import workflow.coverage if available, else inline
+    coverage_gaps: list[Any] = []
+    try:
+        from hunter.workflow.coverage import coverage_for_run
+
+        matrix = coverage_for_run(ledger, run_id)
+        coverage_gaps = list(matrix.gaps())
+    except Exception:
+        # inline fallback: treat non-covered finding cells as gaps
+        try:
+            coverage_gaps = [
+                (getattr(f, "klass", "unknown"), getattr(f, "surface", None) or getattr(f, "endpoint", ""))
+                for f in findings
+                if _status_value(getattr(f, "status", "")) not in {"candidate", "verified"}
+            ]
+        except Exception:
+            coverage_gaps = []
+
+    lines = [
+        "## Ledger context",
+        f"Findings: {len(findings)} total",
+        "Findings by status: " + (
+            ", ".join(f"{k}={v}" for k, v in sorted(by_status.items()))
+            if by_status else "none"
+        ),
+        f"Open followups: {open_followups}",
+        "Coverage gaps: " + (", ".join(str(g) for g in coverage_gaps) if coverage_gaps else "none"),
+        f"Negative memory (ruled out): {by_status.get('ruled_out', 0)}",
+    ]
+    return base + "\n\n" + "\n".join(lines)

@@ -30,6 +30,7 @@ from textual.widgets import (
     DataTable,
     Footer,
     Header,
+    Input,
     RichLog,
     Static,
     TabbedContent,
@@ -37,6 +38,7 @@ from textual.widgets import (
 )
 
 from hunter import __version__
+from hunter.branding import logo_text
 from hunter.cli.doctor_core import collect_checks
 from hunter.daemon import daemon_status, start_daemon, stop_daemon
 from hunter.kernel.events import Event
@@ -141,6 +143,44 @@ KIND_STYLES = {
 }
 
 CSS = palette_css() + """
+Screen {
+    background: $hunter-dim;
+    color: $hunter-highlight_pale;
+}
+Header {
+    background: $hunter-deep;
+    color: $hunter-highlight_faint;
+}
+Footer {
+    background: $hunter-deep;
+    color: $hunter-highlight_pale;
+}
+Footer > .footer--key {
+    background: $hunter-base;
+    color: $hunter-dim;
+    text-style: bold;
+}
+TabbedContent Tabs {
+    background: $hunter-dim;
+}
+Tab {
+    color: $hunter-highlight_soft;
+    background: $hunter-dim;
+}
+Tab.-active {
+    background: $hunter-base;
+    color: $hunter-dim;
+    text-style: bold;
+}
+Tab:hover {
+    background: $hunter-highlight;
+    color: $hunter-dim;
+}
+#logo {
+    height: auto;
+    padding: 0 2;
+    color: $hunter-highlight_soft;
+}
 #dashboard-empty, #findings-empty {
     display: none;
     height: 1fr;
@@ -150,6 +190,16 @@ CSS = palette_css() + """
 }
 #runs-table {
     height: 1fr;
+}
+#findings-filter {
+    height: 3;
+    margin: 0 1;
+    border: tall $hunter-deep;
+    background: $hunter-dim;
+    color: $hunter-highlight_faint;
+}
+#findings-filter:focus {
+    border: tall $hunter-base;
 }
 #findings-table {
     height: 1fr;
@@ -162,6 +212,11 @@ CSS = palette_css() + """
 }
 #events-log {
     height: 1fr;
+    padding: 0 1;
+}
+#status-bar {
+    background: $hunter-deep;
+    color: $hunter-highlight_pale;
     padding: 0 1;
 }
 #doctor-report {
@@ -410,6 +465,9 @@ class HunterTui(App[None]):
         Binding("d", "run_demo", "Run demo"),
         Binding("r", "refresh", "Refresh"),
         Binding("e", "config_copy", "Copy config"),
+        Binding("slash", "focus_filter", "Filter"),
+        Binding("question_mark", "help", "Help"),
+        Binding("l", "toggle_logo", "Logo"),
         Binding("1", "show_tab('tab-dashboard')", "Dashboard", show=False),
         Binding("2", "show_tab('tab-findings')", "Findings", show=False),
         Binding("3", "show_tab('tab-events')", "Events", show=False),
@@ -450,6 +508,7 @@ class HunterTui(App[None]):
         # Plain-text snapshots of rendered panels — handy for logging/debugging.
         self.doctor_summary = ""
         self.finding_detail_text = ""
+        self._finding_filter = ""
 
     # -- layout -------------------------------------------------------------
 
@@ -457,6 +516,7 @@ class HunterTui(App[None]):
         yield Header(show_clock=True)
         with TabbedContent():
             with TabPane("Dashboard", id="tab-dashboard"):
+                yield Static(logo_text("small"), id="logo")
                 yield Static(
                     "No runs yet — press [b]d[/b] to run the demo scan.",
                     id="dashboard-empty",
@@ -466,6 +526,7 @@ class HunterTui(App[None]):
                 )
 
             with TabPane("Findings", id="tab-findings"):
+                yield Input(placeholder="filter findings…  ( / to focus )", id="findings-filter")
                 yield Static(
                     "No findings yet — run a scan, then pick a run on the Dashboard.",
                     id="findings-empty",
@@ -487,7 +548,10 @@ class HunterTui(App[None]):
                 yield Static("config: checking…", id="config-report")
             with TabPane("Doctor", id="tab-doctor"), VerticalScroll():
                 yield Static("Checking environment…", id="doctor-report")
-        yield Static("hunter 0.6.0 · model (unset) · tier basic · engine stopped", id="status-bar")
+        yield Static(
+            f"hunter {__version__} · model (unset) · tier basic · engine stopped",
+            id="status-bar",
+        )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -615,6 +679,26 @@ class HunterTui(App[None]):
         detail += "\nApply via: hunter config set <key> <value>"
         self.notify(detail, title="Config", timeout=10)
 
+    def action_focus_filter(self) -> None:
+        self.query_one(TabbedContent).active = "tab-findings"
+        self.query_one("#findings-filter", Input).focus()
+
+    def action_help(self) -> None:
+        self.notify(
+            "d demo · r refresh · / filter · l logo · s start · x stop · 1-4 tabs · q quit",
+            title="Keys",
+            timeout=8,
+        )
+
+    def action_toggle_logo(self) -> None:
+        logo = self.query_one("#logo", Static)
+        logo.display = not logo.display
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "findings-filter":
+            self._finding_filter = event.value
+            self._populate_findings()
+
     @work(exclusive=True, group="demo", exit_on_error=False)
     async def action_run_demo(self) -> None:
         """Run the end-to-end demo scan in a worker; never block the UI."""
@@ -713,7 +797,17 @@ class HunterTui(App[None]):
 
     def _populate_findings(self) -> None:
         table = self.query_one("#findings-table", DataTable)
+        needle = self._finding_filter.strip().lower()
         shown = [f for f in self._findings if self._selected_run_id in (None, f.run_id)]
+        if needle:
+            shown = [
+                f
+                for f in shown
+                if needle in (
+                    f"{f.id} {f.key} {f.title} {f.endpoint} "
+                    f"{_value(f.severity)} {_value(f.status)}"
+                ).lower()
+            ]
         table.clear()
         for finding in shown:
             table.add_row(

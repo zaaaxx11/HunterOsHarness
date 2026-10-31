@@ -538,6 +538,11 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
     confidence = _as_str(args.get("confidence", "")).strip().lower()
     severity = _as_str(args.get("severity", "")).strip().lower()
     cwe = _as_str(args.get("cwe", "")).strip()
+    klass = _as_str(args.get("klass", "")).strip()
+    falsifier = _as_str(args.get("falsifier", "")).strip()
+    surface = _as_str(args.get("surface", "")).strip() or None
+    poc_path = _as_str(args.get("poc_path", "")).strip() or None
+    action_class = _as_str(args.get("action_class", "read")).strip() or "read"
 
     # R1 — required prose and structural fields present.
     missing = [
@@ -550,9 +555,27 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
             ("impact", impact),
             ("severity_justification", severity_justification),
             ("counterevidence", counterevidence),
+            ("falsifier", falsifier),
         )
         if not value
     ]
+    if not klass:
+        try:
+            from hunter.taxonomy import klass_for_check_id
+
+            klass = klass_for_check_id(check_id)
+        except Exception:
+            klass = "unknown"
+    try:
+        from hunter.taxonomy import validate_klass as _vk
+
+        if not _vk(klass):
+            return _blocked(
+                "finding.r7_klass_invalid",
+                f"RULE-E5: klass {klass!r} is not in the taxonomy (allowed: a taxonomy id or 'unknown').",
+            )
+    except Exception:
+        pass
     if missing:
         return _blocked(
             "finding.r1_required_fields",
@@ -654,6 +677,11 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
         description=full_description,
         impact=impact,
         evidence_ids=tuple(evidence_ids),
+        klass=klass,
+        falsifier=falsifier,
+        action_class=action_class,
+        surface=surface,
+        poc_path=poc_path,
     )
     try:
         created = ctx.ledger.create_finding(claim)
@@ -1444,6 +1472,7 @@ def build_registry(
             parameters=_schema(
                 {
                     "check_id": {"type": "string"},
+                    "klass": {"type": "string"},
                     "title": {"type": "string"},
                     "severity": {"type": "string", "enum": list(SEVERITIES)},
                     "cwe": {"type": "string"},
@@ -1455,6 +1484,8 @@ def build_registry(
                     "impact": {"type": "string"},
                     "severity_justification": {"type": "string"},
                     "counterevidence": {"type": "string"},
+                    "falsifier": {"type": "string"},
+                    "surface": {"type": "string"},
                     "confidence": {"type": "string", "enum": list(CONFIDENCES)},
                     "evidence_ids": {"type": "array", "items": {"type": "string"}},
                 },
@@ -1469,6 +1500,7 @@ def build_registry(
                     "impact",
                     "severity_justification",
                     "counterevidence",
+                    "falsifier",
                     "confidence",
                     "evidence_ids",
                 ],

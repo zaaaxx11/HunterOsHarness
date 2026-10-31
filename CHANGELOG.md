@@ -6,6 +6,32 @@ Compare releases: `v0.3.1...v0.6.0`.
 
 ## [Unreleased]
 
+## 0.7.0 - 2026-10-31
+
+### Taxonomy and evidence ladder
+
+- Added the bug-class taxonomy (`hunter.taxonomy` + `_data/taxonomy/klasses.json`,
+  18 classes with minimum proof, N/A patterns and overclaim traps).
+- Findings now carry `klass`, `falsifier`, `action_class`, `surface`, `poc_path`;
+  the ledger migrates v1 → v2 (schema `user_version = 2`) in place.
+- Added the `theoretical` finding status (0-evidence hypotheses), RULE-E5 klass
+  validation, and new ledger tables for leads, followups, waves and hunt memory.
+
+### Hunting effectiveness
+
+- Exchange signal classifier (`engine.signals`): clean/signal/ambiguous/waf/
+  soft-404/ratelimit/transport/crash.
+- Coverage matrix (`workflow.coverage`), lane fan-out with per-lane budgets
+  (`agent.lanes`), learning loop (`agent.learning`), challenger wiring in
+  `debunk`, and ledger-as-context injection in `build_goal`.
+
+### Operator surface
+
+- TUI: tosca gradient theme, ASCII emblem, findings filter (`/`), help (`?`),
+  logo toggle (`l`); CLI welcome shows the emblem.
+- Honest eval harness: per-cell PracticeVault demo with ledger-only scoring and
+  drift gates (no fabricated `ok: True`).
+
 ## 0.6.0 - 2026-09-16
 
 ### Operator experience

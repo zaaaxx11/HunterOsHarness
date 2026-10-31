@@ -182,12 +182,14 @@ class GatewayApp:
                 config=self.config,
                 options=options,
             )
-        except Exception:
+        except Exception as exc:
             # Test seam (object() config) and broken-config surfaces must
             # still yield an isolated, closeable engine — never crash the
             # cache. The stub mirrors the ChatEngine lifecycle (close ==
-            # audit-finish) so LRU/TTL accounting stays honest.
-            engine = self._stub_engine()
+            # audit-finish) so LRU/TTL accounting stays honest. The
+            # underlying reason is surfaced (never silently echoed) so a
+            # degraded engine is observable.
+            engine = self._stub_engine(exc)
         with contextlib.suppress(Exception):
             self.store.set_title(getattr(engine, "session_id", ""), session_key)
         self._engines[session_key] = engine
@@ -208,24 +210,36 @@ class GatewayApp:
                     old_engine.close()
         return engine
 
-    def _stub_engine(self) -> Any:
-        """Minimal closeable engine for dummy configs (tests)."""
+    def _stub_engine(self, error: Any = None) -> Any:
+        """Minimal closeable engine for dummy configs (tests).
+
+        Surfaces the underlying construction error in every reply and on the
+        instance (``engine_reason``) instead of silently echoing input, so a
+        degraded engine is never mistaken for a working one.
+        """
         store = self.store
         session_id = store.create_session()
+        reason = str(error) if error is not None else "unknown"
+        with contextlib.suppress(Exception):
+            self._last_engine_error = reason
 
         class _Stub:
-            def __init__(self, sid: str) -> None:
+            def __init__(self, sid: str, reason: str) -> None:
                 self.session_id = sid
+                self.engine_reason = reason
 
             def handle_text(self, text: str) -> Any:
                 from hunter.chat.repl import TurnOutput as _Out
 
-                return _Out(text=f"stub:{text}", kind="message")
+                return _Out(
+                    text=f"stub:{text} (degraded: {reason})",
+                    kind="message",
+                )
 
             def close(self) -> None:
                 return None
 
-        return _Stub(session_id)
+        return _Stub(session_id, reason)
 
     def cache_stats(self) -> dict[str, Any]:
         """Bounded-cache counters (size cap + evictions pin the LRU)."""

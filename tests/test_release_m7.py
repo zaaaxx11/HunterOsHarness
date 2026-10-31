@@ -22,7 +22,7 @@ import hunter.cli.main as cli_main
 from hunter.cli.main import app
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "0.6.0"
+RELEASE_VERSION = "0.7.0"
 
 # docs/plans/ is untracked by design (never pushed); plan-backed gates run
 # locally but skip on a fresh clone/CI. Precedent: the ROADMAP skip below.
@@ -34,7 +34,7 @@ CURL_ONE_LINER = (
     "curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.sh | bash"
 )
 IRM_ONE_LINER = "irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 | iex"
-NOTICE = "A new version of hunter is available: 0.3.1 → 0.6.0. Run: hunter update"
+NOTICE = f"A new version of hunter is available: 0.3.1 → {RELEASE_VERSION}. Run: hunter update"
 RUNNER = CliRunner()
 
 CURRENT_DOCS = (
@@ -546,7 +546,7 @@ def test_update_release_path_is_github_first_and_hermetic(tmp_path):
         seen.append(str(request.url))
         if str(request.url) == update_core.GITHUB_RELEASES_URL:
             assert request.headers["accept"] == "application/vnd.github+json"
-            return httpx.Response(200, json={"tag_name": "v0.6.0"})
+            return httpx.Response(200, json={"tag_name": f"v{RELEASE_VERSION}"})
         return httpx.Response(404, json={})
 
     result = update_core.check_for_newer_version(

@@ -23,6 +23,7 @@ or an explicit path).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -93,7 +94,51 @@ CREATE TABLE IF NOT EXISTS findings (
     impact       TEXT NOT NULL DEFAULT '',
     remediation  TEXT NOT NULL DEFAULT '',
     status       TEXT NOT NULL,
-    evidence_ids TEXT NOT NULL DEFAULT '[]'
+    evidence_ids TEXT NOT NULL DEFAULT '[]',
+    klass        TEXT NOT NULL DEFAULT 'unknown',
+    falsifier    TEXT NOT NULL DEFAULT '',
+    action_class TEXT NOT NULL DEFAULT 'read',
+    surface      TEXT,
+    poc_path     TEXT
+);
+
+-- v0.7 hunting-klass tables (append-only, trigger-protected below).
+CREATE TABLE IF NOT EXISTS leads (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    klass       TEXT NOT NULL DEFAULT 'unknown',
+    surface     TEXT,
+    status      TEXT NOT NULL DEFAULT 'open',
+    retrigger   TEXT,
+    created_seq INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS followups (
+    id           TEXT PRIMARY KEY,
+    finding_id   TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'variant',
+    status       TEXT NOT NULL DEFAULT 'open',
+    evidence_ids TEXT NOT NULL DEFAULT '[]',
+    created_seq  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS waves (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT NOT NULL,
+    budget      INTEGER NOT NULL DEFAULT 0,
+    verdict     TEXT,
+    created_seq INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS hunt_memory (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT,
+    kind        TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    payload     TEXT NOT NULL DEFAULT '{}',
+    created_seq INTEGER
 );
 
 -- I1/I7: the ledger is append-only; direct SQL tampering must fail loudly.
@@ -168,6 +213,11 @@ WHEN OLD.id IS NOT NEW.id
     OR OLD.description IS NOT NEW.description
     OR OLD.impact IS NOT NEW.impact
     OR OLD.remediation IS NOT NEW.remediation
+    OR OLD.klass IS NOT NEW.klass
+    OR OLD.falsifier IS NOT NEW.falsifier
+    OR OLD.action_class IS NOT NEW.action_class
+    OR OLD.surface IS NOT NEW.surface
+    OR OLD.poc_path IS NOT NEW.poc_path
 BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: append-only');
 END;
@@ -175,9 +225,12 @@ END;
 -- RULE-E1 at the storage layer: no finding row may come into existence
 -- unless it references at least one evidence artifact that exists, and none
 -- of its references is dangling. Mirrors ledger.create_finding for raw SQL.
+-- Theoretical findings are hypotheses (0 evidence legal).
 CREATE TRIGGER IF NOT EXISTS findings_insert_requires_evidence
 BEFORE INSERT ON findings
-WHEN NOT EXISTS (
+WHEN NEW.status != 'theoretical'
+  AND (
+    NOT EXISTS (
         SELECT 1 FROM json_each(COALESCE(NEW.evidence_ids, '[]')) AS je
         WHERE je.type = 'text'
           AND EXISTS (SELECT 1 FROM evidence e WHERE e.id = je.value)
@@ -186,6 +239,7 @@ WHEN NOT EXISTS (
         SELECT 1 FROM json_each(COALESCE(NEW.evidence_ids, '[]')) AS je
         WHERE NOT EXISTS (SELECT 1 FROM evidence e WHERE e.id = je.value)
     )
+  )
 BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: finding requires existing bound evidence (RULE-E1)');
 END;
@@ -217,6 +271,22 @@ WHEN NEW.status = 'verified'
     )
 BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: verified requires replay evidence (RULE-E2)');
+END;
+
+-- RULE-E1 (v0.7): a raw UPDATE that flips a theoretical finding to a claim
+-- status requires bound evidence; theoretical -> candidate with 0 evidence is
+-- blocked. Mirrors the claim gate for raw SQL.
+CREATE TRIGGER IF NOT EXISTS findings_update_theoretical_requires_evidence
+BEFORE UPDATE OF status ON findings
+WHEN OLD.status = 'theoretical'
+  AND NEW.status != 'theoretical'
+  AND (
+        json_valid(NEW.evidence_ids) IS NOT 1
+        OR json_type(NEW.evidence_ids) != 'array'
+        OR json_array_length(NEW.evidence_ids) == 0
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'BLOCKED: theoretical promotion requires evidence (RULE-E1)');
 END;
 
 -- RULE-E1/RULE-E2 at the storage layer for evidence_ids rewrites: a raw-SQL
@@ -259,6 +329,51 @@ BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: evidence_ids update violates RULE-E1/RULE-E2');
 END;
 
+-- Append-only protection for v0.7 hunting-klass tables.
+CREATE TRIGGER IF NOT EXISTS leads_no_update
+BEFORE UPDATE ON leads
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+CREATE TRIGGER IF NOT EXISTS leads_no_delete
+BEFORE DELETE ON leads
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+CREATE TRIGGER IF NOT EXISTS leads_no_replace
+BEFORE INSERT ON leads
+WHEN EXISTS (SELECT 1 FROM leads WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS followups_no_update
+BEFORE UPDATE ON followups
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+CREATE TRIGGER IF NOT EXISTS followups_no_delete
+BEFORE DELETE ON followups
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+CREATE TRIGGER IF NOT EXISTS followups_no_replace
+BEFORE INSERT ON followups
+WHEN EXISTS (SELECT 1 FROM followups WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS waves_no_update
+BEFORE UPDATE ON waves
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+CREATE TRIGGER IF NOT EXISTS waves_no_delete
+BEFORE DELETE ON waves
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+CREATE TRIGGER IF NOT EXISTS waves_no_replace
+BEFORE INSERT ON waves
+WHEN EXISTS (SELECT 1 FROM waves WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS hunt_memory_no_update
+BEFORE UPDATE ON hunt_memory
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+CREATE TRIGGER IF NOT EXISTS hunt_memory_no_delete
+BEFORE DELETE ON hunt_memory
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+CREATE TRIGGER IF NOT EXISTS hunt_memory_no_replace
+BEFORE INSERT ON hunt_memory
+WHEN EXISTS (SELECT 1 FROM hunt_memory WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'BLOCKED: append-only'); END;
+
 -- Run metadata feeds the report headers; it is written once and then only
 -- ended_ts/status may move (finish_run). Everything else is frozen.
 CREATE TRIGGER IF NOT EXISTS runs_protected_columns
@@ -292,7 +407,8 @@ class Ledger:
 
     _FINDING_COLS = (
         "id, run_id, key, title, severity, cwe, endpoint, method, param, payload_used,"
-        " description, impact, remediation, status, evidence_ids"
+        " description, impact, remediation, status, evidence_ids, klass, falsifier,"
+        " action_class, surface, poc_path"
     )
 
     def __init__(self, path: str | Path | None = None) -> None:
@@ -309,7 +425,43 @@ class Ledger:
         # Fire delete-side triggers even for REPLACE-shaped writes on this
         # connection (belt and braces on top of the *_no_replace triggers).
         self._conn.execute("PRAGMA recursive_triggers=ON")
+        # v0.7 migration: add new columns / drop stale trigger defs before
+        # re-running the (IF NOT EXISTS) schema script.
+        self._migrate_v07()
         self._conn.executescript(_SCHEMA)
+        # Stamp schema version.
+        try:
+            v = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+        except Exception:
+            v = 0
+        if v < 2:
+            self._conn.execute("PRAGMA user_version = 2")
+
+    def _migrate_v07(self) -> None:
+        # Drop findings triggers we redefine (so stale defs get replaced).
+        for trig in (
+            "findings_protected_columns",
+            "findings_insert_requires_evidence",
+            "findings_insert_verified_requires_replay",
+            "findings_update_verified_requires_replay",
+            "findings_update_evidence_ids_guard",
+            "findings_update_theoretical_requires_evidence",
+        ):
+            with contextlib.suppress(sqlite3.Error):
+                self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+        # Add new columns to findings if missing (old DBs).
+        new_cols = [
+            ("klass", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("falsifier", "TEXT NOT NULL DEFAULT ''"),
+            ("action_class", "TEXT NOT NULL DEFAULT 'read'"),
+            ("surface", "TEXT"),
+            ("poc_path", "TEXT"),
+        ]
+        existing = {r[1] for r in self._conn.execute("PRAGMA table_info(findings)").fetchall()}
+        for col, decl in new_cols:
+            if col not in existing:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    self._conn.execute(f"ALTER TABLE findings ADD COLUMN {col} {decl}")
 
     @staticmethod
     def _resolve_path(path: str | Path | None) -> Path:
@@ -431,10 +583,14 @@ class Ledger:
 
     @staticmethod
     def _row_to_finding(row: tuple[Any, ...]) -> Finding:
+        # Back-compat: old rows may lack the v0.7 columns.
+        # Pad row to full width if needed.
+        row = tuple(row) + (None,) * (20 - len(row))
         (
             fid, run_id, key, title, severity, cwe, endpoint, method, param,
             payload_used, description, impact, remediation, status, evidence_ids,
-        ) = row
+            klass, falsifier, action_class, surface, poc_path,
+        ) = row[:20]
         return Finding(
             id=fid,
             run_id=run_id,
@@ -451,6 +607,11 @@ class Ledger:
             remediation=remediation,
             status=_enum_member(FindingStatus, status),
             evidence_ids=tuple(json.loads(evidence_ids)),
+            klass=klass or "unknown",
+            falsifier=falsifier or "",
+            action_class=action_class or "read",
+            surface=surface,
+            poc_path=poc_path,
         )
 
     @staticmethod
@@ -617,6 +778,8 @@ class Ledger:
             "contract_source",
             "slither_audit",
             "cast_call",
+            "poc_run",
+            "verifier_transcript",
         }
     )
 
@@ -697,8 +860,9 @@ class Ledger:
             created = replace(finding, id=new_id, status=FindingStatus.CANDIDATE)
             conn.execute(
                 "INSERT INTO findings (id, run_id, key, title, severity, cwe, endpoint, method,"
-                " param, payload_used, description, impact, remediation, status, evidence_ids)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " param, payload_used, description, impact, remediation, status, evidence_ids,"
+                " klass, falsifier, action_class, surface, poc_path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     created.id,
                     created.run_id,
@@ -715,6 +879,11 @@ class Ledger:
                     created.remediation,
                     _enum_value(created.status),
                     canonical_json(list(created.evidence_ids)),
+                    created.klass,
+                    created.falsifier,
+                    created.action_class,
+                    created.surface,
+                    created.poc_path,
                 ),
             )
             self._append_event(
@@ -726,6 +895,68 @@ class Ledger:
                     "key": created.key,
                     "title": created.title,
                     "severity": _enum_value(created.severity),
+                    "evidence_ids": list(created.evidence_ids),
+                },
+            )
+        return created
+
+    def create_theoretical_finding(self, finding: Finding) -> Finding:
+        """Record a hypothesis (0 evidence legal). Status forced THEORETICAL."""
+        from dataclasses import replace as _replace
+
+        finding = _replace(finding, status=FindingStatus.THEORETICAL)
+        evidence_ids = list(finding.evidence_ids)
+        with self._write() as conn:
+            for evidence_id in evidence_ids:
+                known = conn.execute(
+                    "SELECT 1 FROM evidence WHERE id = ?", (evidence_id,)
+                ).fetchone()
+                if known is None:
+                    raise ClaimGateBlocked(
+                        f"BLOCKED: evidence '{evidence_id}' bound to finding"
+                        f" '{finding.key}' does not exist in the ledger (RULE-E1)."
+                    )
+            validate_finding_insert(finding, len(evidence_ids))
+            new_id = self._next_id(conn, "findings", "F")
+            created = _replace(finding, id=new_id, status=FindingStatus.THEORETICAL)
+            conn.execute(
+                "INSERT INTO findings (id, run_id, key, title, severity, cwe, endpoint, method,"
+                " param, payload_used, description, impact, remediation, status, evidence_ids,"
+                " klass, falsifier, action_class, surface, poc_path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    created.id,
+                    created.run_id,
+                    created.key,
+                    created.title,
+                    _enum_value(created.severity),
+                    created.cwe,
+                    created.endpoint,
+                    created.method,
+                    created.param,
+                    created.payload_used,
+                    created.description,
+                    created.impact,
+                    created.remediation,
+                    _enum_value(created.status),
+                    canonical_json(list(created.evidence_ids)),
+                    created.klass,
+                    created.falsifier,
+                    created.action_class,
+                    created.surface,
+                    created.poc_path,
+                ),
+            )
+            self._append_event(
+                conn,
+                created.run_id,
+                EventKind.FINDING_CREATED,
+                {
+                    "finding_id": created.id,
+                    "key": created.key,
+                    "title": created.title,
+                    "severity": _enum_value(created.severity),
+                    "status": _enum_value(created.status),
                     "evidence_ids": list(created.evidence_ids),
                 },
             )
@@ -758,7 +989,9 @@ class Ledger:
                     )
                 if replay_id not in evidence_ids:
                     evidence_ids.append(replay_id)
-                validate_status_change(current, new_status, len(evidence_ids))
+            # Validate all transitions (RULE-E1 for theoretical promotion, RULE-E2
+            # for verified, RULE-E5 klass already fixed at insert).
+            validate_status_change(current, new_status, len(evidence_ids))
             conn.execute(
                 "UPDATE findings SET status = ?, evidence_ids = ? WHERE id = ?",
                 (_enum_value(new_status), canonical_json(evidence_ids), finding_id),

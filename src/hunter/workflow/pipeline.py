@@ -80,7 +80,7 @@ def _ledger_db_path(state_dir: str | Path | None) -> str | Path | None:
     """Map the ``state_dir`` argument onto the Ledger db path convention.
 
     ``None`` keeps the Ledger default convention (env HUNTER_STATE_DIR or
-    CWD/.hunter); otherwise the state directory holds ``ledger.db``.
+    ~/.hunter); otherwise the state directory holds ``ledger.db``.
     """
     if state_dir is None:
         return None

@@ -30,7 +30,15 @@ def welcome_lines(version: str) -> list[str]:
     """The bare-`hunter` welcome body (rendered by the CLI as a rich panel)."""
     from hunter.cli.init_wizard import SCOPE_DISCLAIMER
 
+    try:
+        from hunter.branding import wordmark_lines
+
+        logo = wordmark_lines()
+    except Exception:  # noqa: BLE001 — the emblem is decorative, never fatal
+        logo = []
     return [
+        *logo,
+        "",
         f"{WELCOME_TITLE} v{version} — {WELCOME_SUBTITLE}",
         "",
         WELCOME_LEDGER_LINE,

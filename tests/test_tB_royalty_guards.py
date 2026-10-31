@@ -67,7 +67,7 @@ def test_royal_r2_forged_evidence_blocked_rehash_verified():
     base = {
         "check_id": "reflected-xss", "title": "T", "severity": "high", "cwe": "CWE-79",
         "endpoint": "/search", "method": "GET", "description": "D", "impact": "I",
-        "severity_justification": "J", "counterevidence": "C", "confidence": "high",
+        "severity_justification": "J", "counterevidence": "C", "falsifier": "F", "confidence": "high",
         "evidence_ids": ["EV-9999"],
     }
     out = registry.dispatch("create_finding_request", dict(base), ctx)
@@ -88,7 +88,7 @@ def test_royal_rule_e1_e4_claim_gate_matrix():
     base = {
         "check_id": "c", "title": "T", "severity": "high", "cwe": "CWE-79",
         "endpoint": "http://evil.example.net/x", "method": "GET", "description": "D",
-        "impact": "I", "severity_justification": "J", "counterevidence": "C",
+        "impact": "I", "severity_justification": "J", "counterevidence": "C", "falsifier": "F",
         "confidence": "high", "evidence_ids": [],
     }
     assert registry.dispatch("create_finding_request", dict(base), ctx).blocked  # E1: no ids

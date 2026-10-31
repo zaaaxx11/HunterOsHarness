@@ -115,6 +115,7 @@ class SimpleEnv:
             "impact": "Attacker-controlled script executes in victims' browsers.",
             "severity_justification": "Raw HTML reflection with no CSP; session theft is trivial.",
             "counterevidence": "Baseline /search does not reflect; encoding would kill the signal.",
+            "falsifier": "Reflection is HTML-encoded in the response (no alert fires).",
             "confidence": "high",
             "evidence_ids": [],
         }

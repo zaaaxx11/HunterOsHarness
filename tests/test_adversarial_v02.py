@@ -187,6 +187,7 @@ class GovernanceEnv:
             "impact": "Script execution in victims' browsers.",
             "severity_justification": "Raw reflection, no CSP.",
             "counterevidence": "Baseline does not reflect.",
+            "falsifier": "Reflection is HTML-encoded (no script execution).",
             "confidence": "high",
             "evidence_ids": [],
         }
@@ -1154,7 +1155,7 @@ def test_budget_exhaustion_mid_loop_leaves_ledger_consistent(vault, tmp_path):
                 "create_finding_request",
                 check_id="missing-headers", title="t", severity="low", cwe="CWE-0",
                 endpoint="/", method="GET", description="d", impact="i",
-                severity_justification="s", counterevidence="c", confidence="low",
+                severity_justification="s", counterevidence="c", falsifier="f", confidence="low",
                 evidence_ids=ids,
             )
         )

@@ -3,8 +3,8 @@
 Every command reads/writes through the ledger; reports render only from
 ledger rows; the claim gate cannot be bypassed from here (enforced below it).
 
-State directory: ``--state`` option, env ``HUNTER_STATE_DIR``, or ``.hunter``
-under the current directory (in that order of precedence per invocation).
+State directory: ``--state`` option, env ``HUNTER_STATE_DIR``, or ``~/.hunter``
+(the unified home) (in that order of precedence per invocation).
 
 Error doctrine: per-command handlers cover the classified paths; everything
 that still escapes is rendered by :mod:`hunter.cli.handle` — one line plus a
@@ -516,7 +516,7 @@ def init(
 @app.command()
 def doctor(
     state: Path | None = typer.Option(
-        None, "--state", help="State directory (default: .hunter or $HUNTER_STATE_DIR)."
+        None, "--state", help="State directory (default: ~/.hunter or $HUNTER_STATE_DIR)."
     ),
     json_out: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
     live: bool = typer.Option(

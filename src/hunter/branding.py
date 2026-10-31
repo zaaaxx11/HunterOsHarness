@@ -10,9 +10,22 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from hunter.palette import SKINS  # noqa: E402 — single source, identity-preserved
+
+_LOGO_DIR = Path(__file__).resolve().parent / "_data" / "branding"
+_LOGO_RAMP = " .:-=+*#%@"
+# Tosca gradient stops (dark -> light), used to tint the ASCII emblem.
+_TOSCA_STOPS = (
+    "#0a282d",
+    "#10464e",
+    "#186e78",
+    "#28969b",
+    "#5ac8c8",
+    "#aaebe6",
+)
 
 # Keep this mapping small and immutable-by-convention: every renderer consumes
 # the same seven values rather than inventing a nearby shade.
@@ -148,6 +161,53 @@ def ansi256(role: str) -> int:
     return ANSI256[_palette_role(role)]
 
 
+def logo_lines(variant: str = "small") -> list[str]:
+    """Read the HunterOS ASCII emblem (grayscale). ``variant``: small|full."""
+    suffix = "_small" if variant == "small" else ""
+    try:
+        raw = (_LOGO_DIR / f"logo{suffix}.txt").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return raw.rstrip("\n").splitlines()
+
+
+def wordmark_lines() -> list[str]:
+    """Read the big 3D HUNTEROS wordmark (grayscale block font)."""
+    try:
+        raw = (_LOGO_DIR / "wordmark.txt").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return raw.rstrip("\n").splitlines()
+
+
+def wordmark_text() -> Any:
+    """Return the 3D wordmark as Rich Text with the tosca gradient."""
+    return _tint_lines(wordmark_lines())
+
+
+def logo_text(variant: str = "small") -> Any:
+    """Return the emblem as a Rich Text tinted along the tosca gradient."""
+    return _tint_lines(logo_lines(variant))
+
+
+def _tint_lines(lines: list[str]) -> Any:
+    try:
+        from rich.text import Text
+    except ImportError:  # pragma: no cover - rich is a hard runtime dep
+        return "\n".join(lines)
+    text = Text()
+    span = max(1, len(_LOGO_RAMP) - 1)
+    stops = len(_TOSCA_STOPS)
+    for row, line in enumerate(lines):
+        for ch in line:
+            lum = _LOGO_RAMP.index(ch) if ch in _LOGO_RAMP else 0
+            idx = min(int(lum / span * (stops - 1)), stops - 2)
+            text.append(ch, style=_TOSCA_STOPS[idx])
+        if row != len(lines) - 1:
+            text.append("\n")
+    return text
+
+
 __all__ = [
     "ANSI256",
     "ANSI_FALLBACK",
@@ -156,9 +216,13 @@ __all__ = [
     "SKINS",
     "ansi256",
     "colorize",
+    "logo_lines",
+    "logo_text",
     "make_console",
     "make_theme",
     "palette_css",
     "palette_style",
     "rich_style",
+    "wordmark_lines",
+    "wordmark_text",
 ]

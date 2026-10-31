@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="410" viewBox="0 0 1100 410">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#04191c"/>
+      <stop offset="55%" stop-color="#062a2e"/>
+      <stop offset="100%" stop-color="#031215"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#b8fff7"/>
+      <stop offset="35%" stop-color="#5ad8d0"/>
+      <stop offset="70%" stop-color="#1faeaa"/>
+      <stop offset="100%" stop-color="#0a5f63"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1100" height="410" rx="16" fill="url(#bg)"/>
+  <rect x="16" y="16" width="1068" height="378" rx="10" fill="none" stroke="#0f6b6f" stroke-width="1.5"/>
+  <circle cx="44" cy="44" r="6" fill="#22bfb8"/><circle cx="64" cy="44" r="6" fill="#159e9c"/><circle cx="84" cy="44" r="6" fill="#0d7f80"/>
+  <text x="108" y="49" font-family="Consolas,monospace" font-size="14" fill="#7fd9d4">hunter · ~/.hunter · evidence or nothing</text>
+  <g transform="translate(40,90)">
+    <text x="0" y="0" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">.....           ..::. ..............:--:</text>
+<text x="0" y="11" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">....         .-=++**+=:              .:.</text>
+<text x="0" y="22" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">...        .-+*********-.            ...</text>
+<text x="0" y="33" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">:..       :+*++++++++++*+-.           ..</text>
+<text x="0" y="44" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">:.       -*+++*+++**+++++*+-. ..........</text>
+<text x="0" y="55" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">...  . .=*+++++++*%%***++++*+:   .....::</text>
+<text x="0" y="66" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">.......=*+++++**+++##+*+++++**+:. ....::</text>
+<text x="0" y="77" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">::::.:+*+**+*+-+**++##+*+:=*+***+-:..:::</text>
+<text x="0" y="88" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">:::..=+*+*##%%%%%%#++*##%%%%#*****=:::::</text>
+<text x="0" y="99" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">::.....-=**#%%%%%%%%%###%%%%%##+=-------</text>
+<text x="0" y="110" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">::.......+%*%%%%%%%##%%%%%%%###---------</text>
+<text x="0" y="121" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">:::::....-%+*%%%%%%%#%%%%%@#*%+::-------</text>
+<text x="0" y="132" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">:::::::...#==*%%%%%%%%%%%%#**#:::-------</text>
+<text x="0" y="143" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">--:::::::.=+:+*#%%%##%%%#**+*=:::-------</text>
+<text x="0" y="154" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">-::::::::::+-++**#%%%%#**++=+-:-----==--</text>
+<text x="0" y="165" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">=-::::::----=---=**##**=--:==:--------::</text>
+<text x="0" y="176" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">==----------===--*###*+----=----::::::::</text>
+<text x="0" y="187" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">==--------=======+****====---------::---</text>
+<text x="0" y="198" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">=--------===================------------</text>
+<text x="0" y="209" font-family="Consolas,Monaco,monospace" font-size="11" fill="#3ad8d0" xml:space="preserve">------=================---=------------=</text>
+  </g>
+  <g transform="translate(360,120)" filter="url(#glow)">
+    <text x="3" y="3" font-family="Consolas,Monaco,monospace" font-size="20" fill="#052e31" xml:space="preserve"> **      ** **     ** ****     ** ********** ******** *******     *******    ********</text>
+<text x="3" y="23" font-family="Consolas,Monaco,monospace" font-size="20" fill="#052e31" xml:space="preserve">/**     /**/**    /**/**/**   /**/////**/// /**///// /**////**   **/////**  **////// </text>
+<text x="3" y="43" font-family="Consolas,Monaco,monospace" font-size="20" fill="#052e31" xml:space="preserve">/**     /**/**    /**/**//**  /**    /**    /**      /**   /**  **     //**/**       </text>
+<text x="3" y="63" font-family="Consolas,Monaco,monospace" font-size="20" fill="#052e31" xml:space="preserve">/**********/**    /**/** //** /**    /**    /******* /*******  /**      /**/*********</text>
+<text x="3" y="83" font-family="Consolas,Monaco,monospace" font-size="20" fill="#052e31" xml:space="preserve">/**//////**/**    /**/**  //**/**    /**    /**////  /**///**  /**      /**////////**</text>
+<text x="3" y="103" font-family="Consolas,Monaco,monospace" font-size="20" fill="#052e31" xml:space="preserve">/**     /**/**    /**/**   //****    /**    /**      /**  //** //**     **        /**</text>
+<text x="3" y="123" font-family="Consolas,Monaco,monospace" font-size="20" fill="#052e31" xml:space="preserve">/**     /**//******* /**    //***    /**    /********/**   //** //*******   ******** </text>
+<text x="3" y="143" font-family="Consolas,Monaco,monospace" font-size="20" fill="#052e31" xml:space="preserve">//      //  ///////  //      ///     //     //////// //     //   ///////   ////////  </text>
+<text x="0" y="0" font-family="Consolas,Monaco,monospace" font-size="20" fill="url(#brand)" xml:space="preserve"> **      ** **     ** ****     ** ********** ******** *******     *******    ********</text>
+<text x="0" y="20" font-family="Consolas,Monaco,monospace" font-size="20" fill="url(#brand)" xml:space="preserve">/**     /**/**    /**/**/**   /**/////**/// /**///// /**////**   **/////**  **////// </text>
+<text x="0" y="40" font-family="Consolas,Monaco,monospace" font-size="20" fill="url(#brand)" xml:space="preserve">/**     /**/**    /**/**//**  /**    /**    /**      /**   /**  **     //**/**       </text>
+<text x="0" y="60" font-family="Consolas,Monaco,monospace" font-size="20" fill="url(#brand)" xml:space="preserve">/**********/**    /**/** //** /**    /**    /******* /*******  /**      /**/*********</text>
+<text x="0" y="80" font-family="Consolas,Monaco,monospace" font-size="20" fill="url(#brand)" xml:space="preserve">/**//////**/**    /**/**  //**/**    /**    /**////  /**///**  /**      /**////////**</text>
+<text x="0" y="100" font-family="Consolas,Monaco,monospace" font-size="20" fill="url(#brand)" xml:space="preserve">/**     /**/**    /**/**   //****    /**    /**      /**  //** //**     **        /**</text>
+<text x="0" y="120" font-family="Consolas,Monaco,monospace" font-size="20" fill="url(#brand)" xml:space="preserve">/**     /**//******* /**    //***    /**    /********/**   //** //*******   ******** </text>
+<text x="0" y="140" font-family="Consolas,Monaco,monospace" font-size="20" fill="url(#brand)" xml:space="preserve">//      //  ///////  //      ///     //     //////// //     //   ///////   ////////  </text>
+  </g>
+  <text x="360" y="314" font-family="Consolas,monospace" font-size="22" fill="#b8fff7">Taxonomy · Evidence ladder · Hunting effectiveness</text>
+  <text x="360" y="348" font-family="Consolas,monospace" font-size="15" fill="#6ea8a6">$ hunter demo   →   FIRST BLOOD: 9/9 (100%) — verified 9, candidates 0</text>
+  <text x="360" y="372" font-family="Consolas,monospace" font-size="13" fill="#4d8f8d">v0.7.0 · MIT · Python 3.10+ · offline deterministic core</text>
+</svg>

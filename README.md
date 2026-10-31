@@ -1,306 +1,394 @@
-# HunterOs Harness
+# HunterOS Harness
 
-![ci](https://github.com/zaaaxx11/HunterOsHarness/actions/workflows/ci.yml/badge.svg)
+<p align="center">
+  <img src="docs/assets/hunteros-banner.svg" alt="HunterOS Harness" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/zaaaxx11/HunterOsHarness/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zaaaxx11/HunterOsHarness/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="version" src="https://img.shields.io/badge/version-0.7.0-16b8b0">
+  <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-16b8b0">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-16b8b0">
+  <img alt="offline core" src="https://img.shields.io/badge/deterministic%20core-offline-16b8b0">
+</p>
+
+```text
+ **      ** **     ** ****     ** ********** ******** *******     *******    ********
+/**     /**/**    /**/**/**   /**/////**/// /**///// /**////**   **/////**  **//////
+/**     /**/**    /**/**//**  /**    /**    /**      /**   /**  **     //**/**
+/**********/**    /**/** //** /**    /**    /******* /*******  /**      /**/*********
+/**//////**/**    /**/**  //**/**    /**    /**////  /**///**  /**      /**////////**
+/**     /**/**    /**/**   //****    /**    /**      /**  //** //**     **        /**
+/**     /**//******* /**    //***    /**    /********/**   //** //*******   ********
+//      //  ///////  //      ///     //     //////// //     //   ///////   ////////
+```
 
 **The security-audit harness whose LLM cannot fabricate findings.**
 Every finding must be backed by tamper-evident evidence in a hash-chained
-ledger — the database is the only ledger, reports render only from it, and
-the claim gate vetoes any claim the ledger cannot prove. A vulnerability you
-cannot replay is a vulnerability you cannot bill, defend, or trust:
-**evidence or nothing**.
+ledger. The database is the only ledger; reports render only from it; the
+claim gate vetoes any claim the ledger cannot prove.
 
-## First run
+> **Scope discipline** — scan only systems you own or are explicitly authorized
+> to test. Authorization is your responsibility; enforcement is the harness's.
+> The scope gate is fail-closed and lives in the HTTP client, before the socket
+> opens.
 
-The first command opens a small, guided welcome surface and points to the next
-safe action. This preview was captured in a throwaway sandbox with no provider
-key and no external target:
+---
 
-![HunterOS startup preview](docs/assets/hunteros-startup.svg)
+## Contents
 
-The shortest operator path is:
+- [Why HunterOS](#why-hunteros)
+- [Quick start](#quick-start)
+- [Framework](#framework)
+- [Workflow](#workflow)
+- [Bug-class taxonomy](#bug-class-taxonomy)
+- [Hunting effectiveness](#hunting-effectiveness)
+- [Operator surface](#operator-surface)
+- [Commands](#commands)
+- [Architecture](#architecture)
+- [Safety](#safety)
+- [Development](#development)
+- [Docs](#docs)
+- [Status](#status)
+- [License](#license)
 
-```bash
-hunter                 # welcome panel and next steps
-hunter init            # configure a provider and model
-hunter chat            # interactive chat with saved sessions
-hunter chat "hello"   # one-shot chat
-hunter where           # show the unified ~/.hunter layout
-hunter config edit     # open the active YAML config
-hunter gateway status  # inspect the 24/7 engine
-```
+---
 
-HunterOS keeps behavior in `~/.hunter/config.yaml`, secrets in
-`~/.hunter/keys.env`, and runtime state under `~/.hunter`. Legacy state under
-`~/.hunteros` is migrated (copied forward) on first run without deleting the
-originals.
+## Why HunterOS
 
-## User skills and curator
+Prompt-only agents are *asked* not to fabricate. HunterOS makes fabrication
+**structurally impossible**:
 
-Local methodology cards live under `~/.hunter/skills/<name>/SKILL.md`. The merged bundled/user corpus shows `[bundled]`, `[user]`, and `[quarantined]` source markers; relevance matching selects at most five skills. `hunter skills` lists the merged corpus, while `hunter skills --view NAME` shows one card. The `/skills` and `hunter skills` surfaces mark each effective card with its source; `/curate` and `hunter curate` preview retro-derived cards before an explicit y/N save. Duplicate drafts are skipped, flagged drafts are saved with quarantined semantics, and quarantined cards remain inert until manually reviewed and are never mounted into a prompt.
+- The LLM's only write path is a machine-validated `create_finding_request`.
+  Evidence ids are re-resolved and re-hashed against the ledger.
+- A self-written note can never carry a finding — at least one real
+  `http_exchange` is required.
+- `verified` is decided by a deterministic replay, never by the model.
+- Findings carry a bug-class `klass`, a `falsifier` (what would disprove it),
+  and an evidence ladder: `theoretical → candidate → verified`.
 
-## Why it matters
-
-Prompt-only agents are asked not to fabricate; HunterOs makes fabrication
-structurally impossible. The LLM's only write path is a machine-validated
-finding request — evidence ids are re-resolved and re-hashed against the
-ledger, a self-written note can never carry a finding, and "verified" is
-decided by a deterministic replay, never by the model. Trust the chain, not
-the chat.
-
-## Features
-
-- **The HunterOS phase pipeline, enforced** (v0.4) — every run walks
-  `score → recon → classify → hunting → verify → report → retro`. Canonical
-  phases are hash-chained ledger events, order is enforced in code (no
-  skipping, no re-ordering), and each phase closes through a deterministic
-  gate that reads only the ledger. Gate failures are recorded facts, never
-  crashes.
-- **Governed LLM agent** — the brain ships with the body (LiteLLM is a core
-  dependency; you bring only the API key). BYOK against OpenAI, Anthropic,
-  OpenRouter, DeepSeek, Groq, Together, Ollama, LM Studio, vLLM, or any
-  OpenAI-compatible endpoint, with model-tier routing
-  (orchestrator/hunter/verifier/utility), a budget governor with staged spend
-  warnings, and a cross-provider fallback chain. The configured provider is
-  loaded consistently from `$HUNTEROS_CONFIG` or `~/.hunter/config.yaml` for
-  chat, `hunter hunt`, and the LLM engine; an implicit hunt falls back to
-  deterministic when no config exists, while explicit `--engine llm` records a
-  governed failed run instead of silently switching providers.
-  [docs/LLM.md](docs/LLM.md).
-- **15 core tools by default** — `create_finding_request` is machine-validated
-  (R1–R6: prose, evidence resolution + hash integrity, http_exchange
-  required, endpoint match, dedupe, scales); a debunk replay — deterministic,
-  no LLM argument — decides what becomes verified. Optional browser support adds
-  four narrow, hunt-only tools. Capability tiers (basic/advanced) are
-  structural: out-of-tier actions are refused by the handlers.
-- **Hash-chained ledger** — append-only SQLite store; every event chains
-  `sha256(prev_hash + canonical row)`; `hunter verify` recomputes the chain
-  at any time.
-- **Claim gate** — findings without bound evidence are structurally
-  impossible to insert (RULE-E1); verification requires an independent
-  replay (RULE-E2); evidence is deep-redacted before storage (RULE-E3).
-- **Scope gate in code, not prompts** — out-of-scope requests are rejected
-  fail-closed in the HTTP client; a prompt injection cannot open the socket.
-- **Deterministic engine** — 12 baseline-first probes run offline with zero
-  keys; every signal is baseline-diffed and evidence-bound.
-- **Chat + gateway** — `hunter chat` REPL with sessions, 25 slash commands,
-  unified chat, `/hunt`, `/audit`, and `/curate`; Telegram, Discord, WhatsApp,
-  and HMAC-signed webhook front-ends with default-deny allowlists,
-  anti-replay signatures, and turn leases.
-  [docs/GATEWAY.md](docs/GATEWAY.md).
-- **Errors that tell you where** — every failure is notified as
-  `[BLOCKED]` / `[ERROR <layer>]` with a `where: file:line` location, an
-  actionable `Hint:`, and a stable exit code; `--verbose` prints the full
-  traceback to stderr. The REPL and gateway never die from unexpected
-  errors.
-- **Doctor that actually diagnoses** — `hunter doctor` checks the
-  environment, ledger chain, engines, config, per-provider keys and
-  reachability, and the chat DB; `--json` for scripts.
-- **Beautiful TUI** (`hunter tui`) — runs with a live phase column, findings,
-  event tail, doctor; `d` runs the demo from inside the dashboard.
-- **One-command safe demo** (`hunter demo`) — boots the deliberately
-  vulnerable PracticeVault only on `127.0.0.1`, runs deterministic probes with
-  no API key or external target, records evidence in the ledger, and tears the
-  server down. The first-blood gate requires at least 7/9 planted issues.
+Trust the chain, not the chat.
 
 ## Quick start
 
+**Install (macOS / Linux):**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.sh | bash
-# Windows (PowerShell):
+```
+
+**Install (Windows / PowerShell):**
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 | iex"
 ```
 
-The installer registers `hunter` and `hunt` shims (installer venv plumbing) in
-`~/.hunteros/bin` (installer venv shims) and starts the onboarding wizard on an
-interactive first run.
-Run `hunter` for the welcome panel, or run `hunter init` explicitly at any
-time. The wizard writes `~/.hunter/config.yaml`; a pasted key is stored in
-`~/.hunter/keys.env`,
-never echoed and never written to YAML. Auto mode assigns one model to the
-`orchestrator`, `hunter`, `verifier`, and `utility` roles; Advanced mode lets
-you choose each role. A key is optional for `hunter demo`, deterministic scans,
-reports, and the TUI. Run `hunter doctor` to check the environment.
+Both installers create a dedicated venv at `~/.hunteros/venv`, register
+`hunter` and `hunt` shims, and start the onboarding wizard on first run. State
+lives in `~/.hunter` (`config.yaml`, `keys.env`, `ledger.db`); legacy
+`~/.hunteros` state is migrated (copy-forward) on first run and the originals
+are never deleted.
 
-From a checkout, run `./install.sh` (Windows:
-`powershell -ExecutionPolicy Bypass -File install.ps1`) instead, then:
+**First blood in one command — no API key, fully offline:**
 
 ```bash
-hunter                       # welcome panel + next steps
-hunter demo                  # first blood in ~10s — no API key needed
-hunter report                # markdown + SARIF rendered from the ledger only
-hunter retro --run <id>      # deterministic retrospective: stats, gaps, lessons
-hunter tui                   # interactive dashboard
+hunter                 # welcome panel + next steps
+hunter demo            # boots PracticeVault on 127.0.0.1, scans, scores
+hunter report          # markdown + SARIF, rendered from the ledger only
+hunter tui             # interactive dashboard
 ```
 
-Bring a key for the interactive brain (the brain library is already
-installed — LiteLLM ships in the core install):
+`hunter demo` expects **≥ 7/9 first-blood** on the planted practice target and
+shuts the server down afterwards.
+
+**Bring a brain (optional):**
 
 ```bash
-export OPENAI_API_KEY=sk-...      # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+export OPENAI_API_KEY=sk-...       # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
 export HUNTEROS_MODEL=gpt-4o
-hunter chat                       # normal chat; hunt intent offers a governed audit
+hunter chat                        # governed audit on hunt intent
+hunter hunt http://127.0.0.1:8941/ # one-shot governed hunt
 ```
 
-Chat is ordinary free text until you say something like `audit http://127.0.0.1:8941/`; target-bearing hunt intent requires explicit confirmation when mode is off. `/hunt on` and `/hunt off` control process-local hunt mode. Use `/audit <target>` or `/hunt <target>` inside chat for a one-shot governed hunt, and `hunter hunt <target>` from the shell for URLs, hosts, or local directories. `hunter scan <target>` remains the manifest-required pipeline command for non-localhost targets. For `hunter hunt`, localhost needs no prompt; a non-localhost target with `--scope scope.json` uses that manifest, while without `--scope` the CLI prints a minimal exact-host manifest and asks for authorization. Refusal exits 3 and nothing runs; `--yes` accepts the proposed exact-host scope. A local directory is served temporarily on loopback and shuts down when the command ends. Authorization is your responsibility and enforcement is fail-closed.
-
-Browser automation is optional and hunt-only. Install explicitly with
-`pip install 'hunteros-harness[browser]'` and then separately run
-`python -m playwright install chromium`. Browser actions are scope-gated and
-available only inside an authorized hunt; normal chat remains browser-free. The
-onboarding `agent.browser` flag is usable without the extra, but enabling it
-does not authorize a hunt by itself. HunterOs never automatically installs
-Chromium.
-
-`hunter hunt` accepts a live localhost URL or a local directory. For the
-self-contained PracticeVault walkthrough, use `hunter demo` above; its port is
-ephemeral and the server is shut down when the demo ends.
-
-Add any third-party provider:
-
-```bash
-hunter config provider add lab-vllm --base-url http://10.0.0.9:8000/v1
-hunter config provider test lab-vllm --model mistralai/Mistral-7B-Instruct-v0.4.0
-hunter config provider list
-```
-
-The same group is available as `hunter provider`. Providers feed the four
-model roles: `orchestrator`, `hunter`, `verifier`, and `utility`. Legacy
-`planner`, `exploit`, and `verify` names are accepted on load and canonicalized
-on the next config write. The interactive provider wizard can probe chat versus
-responses endpoints, list models, and assign one model to every role or assign
-roles individually.
-
-Scan a real target (authorized only — the scope gate is fail-closed):
+Non-localhost targets require an authorized scope manifest:
 
 ```bash
 hunter scan https://target.example.com --scope scope.manifest.json
 ```
 
-Details, scope manifests, and troubleshooting: [QUICKSTART.md](QUICKSTART.md).
-Platform support, shell-specific install commands, and diagnostics: [docs/PORTABILITY.md](docs/PORTABILITY.md).
-First-run transcripts: [docs/FIRST-RUN.md](docs/FIRST-RUN.md).
+### Providers, roles, and the optional browser
 
-## Updating
-
-```bash
-hunter update
-```
-
-`hunter update` detects how the harness was installed (installer venv,
-`pipx`, or plain `pip`) and asks for confirmation before upgrading (`--yes`
-for automation). A git checkout is never auto-mutated: it gets
-`git pull && pip install -e .` advice instead. The GitHub-first check falls
-back silently to PyPI, using a 24-hour cache. It prints one-line notices only
-on stderr (never into `--json` stdout and never in long-lived `chat`/`tui`/
-`gateway` surfaces). Disable it with `HUNTEROS_NO_UPDATE_CHECK=1`; CI
-environments are skipped automatically. If the check is offline or
-rate-limited, the manual installer command is printed and the command exits
-1. Config migration notes appear on the next command. Manual install, any time:
+Model roles are `orchestrator`, `hunter`, `verifier`, and `utility` (legacy
+`planner` / `exploit` / `verify` names are accepted on load and canonicalized on
+the next config write). Add any OpenAI-compatible provider:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.sh | bash
-# Windows (PowerShell):
-irm https://raw.githubusercontent.com/zaaaxx11/HunterOsHarness/main/install.ps1 | iex
+hunter config provider add lab-vllm --base-url http://10.0.0.9:8000/v1
+hunter config provider test lab-vllm --model mistralai/Mistral-7B-Instruct-v0.4.0
 ```
 
-## Architecture in four lines
+Browser automation is optional and hunt-only: `pip install 'hunteros-harness[browser]'`
+then `python -m playwright install chromium`. Browser actions are scope-gated
+and available only inside an authorized hunt; normal chat stays browser-free.
 
-1. **Kernel (L0)** — the append-only, hash-chained event ledger with the
-   claim gate; the single source of truth.
-2. **Phase pipeline (L1)** — the enforced `score..retro` machine; every
-   gate reads the ledger, nothing else.
-3. **Engines** — pluggable brains behind the `EngineDriver` protocol
-   (deterministic probes and the governed LLM agent; the brain changes, the
-   evidence contract does not).
-4. **Scope gate** — fail-closed, structural, enforced in the HTTP client
-   before the socket opens.
+The 24/7 engine boots once with `hunt start` (no target needed) and is managed
+with `hunt status`, `hunt logs`, and `hunt stop`; queue hunts with
+`hunt start --target <url> --time 2h`.
 
-Full layer diagram, governance flow, invariants, and the L1–L5 framing:
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## Framework
 
-## v0.6.0 additions
+<p align="center">
+  <img src="docs/assets/hunteros-tui.svg" alt="HunterOS TUI" width="100%">
+</p>
 
-- **24/7 engine** — `hunt start` boots the persistent engine once (no target
-  needed; it stays on for ordinary chat); `hunt status`, `hunt logs`,
-  `hunt stop` manage it. Queue hunts from any surface with
-  `/hunt <target> [<target> ...] --time 30m [--budget 2]` (or
-  `hunt start --target URL --time 2h --min-time 30m` for a legacy one-shot):
-  time is a minimum per target, `0 = unlimited` for every budget key.
-- **Shell approval** — `shell_exec` classifies every command as readonly /
-  mutating / catastrophic; anything that modifies the local system needs an
-  explicit `/approve <id>` (single-use, expires after 300 seconds) in every
-  mode, auto-allow covers read-only recon in hunter mode only. Output is
-  redacted and capped at 16k, the cwd is locked inside the state directory,
-  and every run is ledgered.
-- **Brand palette** — `#00FFE5` base with a brighter gradient (`#4DFFF0` →
-  `#80FFF6` → `#B3FFFC` → `#E6FFFE`), deep/dim companions, one `hunter.palette`
-  source of truth for CLI, REPL, TUI, and daemon output.
-- **Browser cloak** — on by default (`agent.browser_cloak`): plausible
-  user-agent/viewport/locale/timezone pools, non-automation launch args,
-  and one masking init script. The scope interceptor and redaction are
-  untouched; `cloak: false` restores stock behavior exactly.
-- **Soul** — `SOUL.md` is the user-editable operating character (silent,
-  precise, patient, evidence-or-nothing; no levels, no scoring). It binds
-  every turn; the engine-hardcoded core identity (`You are Hunter, the
-  HunterOS audit agent built by zaaaxx.`) is always prepended before it
-  reaches a prompt. Persona text is sanitized and capped before render.
-- **Session compression** — `/compress` and automatic 24k-char compaction
-  keep head and tail verbatim and summarize the middle extractively;
-  evidence ids are never dropped or invented; the store stays append-only.
-- **Discord + WhatsApp gateways** — the same default-deny allowlists as
-  Telegram: `HUNTEROS_DISCORD_TOKEN` + `HUNTEROS_DISCORD_ALLOWED_USERS`,
-  or the `HUNTEROS_WHATSAPP_TOKEN` / `HUNTEROS_WHATSAPP_PHONE_NUMBER_ID` /
-  `HUNTEROS_WHATSAPP_ALLOWED_USERS` trio. WhatsApp inbound payloads are
-  HMAC-verified against the Meta app secret or refused with 403.
-  See [docs/GATEWAY.md](docs/GATEWAY.md).
-- **Development notes** — roadmaps, plans, tests, and testing products
-  stay untracked from the public release and are not part of the release package.
-  Install the package, then edit your own `SOUL.md` copy to tune the
-  operating character.
+```mermaid
+flowchart TB
+    subgraph Surfaces["Operator surfaces"]
+        CLI["hunter CLI"]
+        TUI["hunter tui"]
+        CHAT["hunter chat"]
+        GW["gateway: Telegram / Discord / WhatsApp / webhook"]
+    end
+
+    subgraph Pipeline["Phase pipeline (L1) — order enforced in code"]
+        S["score"] --> R["recon"] --> C["classify"] --> H["hunting"] --> V["verify"] --> RP["report"] --> RT["retro"]
+    end
+
+    subgraph Engines["Engines — pluggable brains"]
+        DET["deterministic probes<br/>(offline, 12 checks)"]
+        LLM["governed LLM agent<br/>(BYOK, tiered roles)"]
+    end
+
+    subgraph Kernel["Kernel (L0) — the only source of truth"]
+        LEDGER[("hash-chained ledger<br/>events · evidence · findings")]
+        GATE["claim gate<br/>RULE-E1..E5"]
+        TAX["taxonomy klass<br/>minimum proof · N/A · overclaim"]
+    end
+
+    CLI --> Pipeline
+    TUI --> Pipeline
+    CHAT --> Pipeline
+    GW --> Pipeline
+    Pipeline --> DET
+    Pipeline --> LLM
+    DET --> GATE
+    LLM --> GATE
+    GATE --> LEDGER
+    TAX --> GATE
+    LEDGER --> RP
+    LEDGER --> RT
+```
+
+ASCII fallback:
+
+```text
+surfaces ──► phase pipeline ──► engines ──► claim gate ──► ledger
+  CLI          score  recon      deterministic   RULE-E1..E5    events
+  TUI          classify hunting  LLM agent       taxonomy       evidence
+  CHAT         verify  report                    klass          findings
+  GATEWAY      retro                            falsifier      (append-only)
+                                                      │
+                                                      └──► report / retro (ledger-only)
+```
+
+## Workflow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Operator
+    participant CLI as hunter CLI
+    participant Pipe as Phase pipeline
+    participant Probe as Deterministic probe
+    participant Gate as Claim gate
+    participant Ledger as Hash-chained ledger
+
+    Operator->>CLI: hunter hunt <target>
+    CLI->>CLI: scope check (fail-closed)
+    CLI->>Pipe: run_scan(target, scope)
+    Pipe->>Probe: recon → probe(check_id)
+    Probe->>Probe: baseline vs payload diff
+    Probe-->>Pipe: CandidateFinding + http_exchange
+    Pipe->>Gate: create_finding_request(evidence_ids)
+    Gate->>Ledger: resolve ids + verify sha256
+    Gate->>Gate: R1..R7 (prose, evidence, klass, dedupe)
+    Gate->>Ledger: INSERT finding (candidate) + event
+    Pipe->>Probe: replay(check_id)
+    alt replay reproduces
+        Pipe->>Gate: promote → verified (RULE-E2)
+    else replay diverges
+        Pipe->>Ledger: needs_follow_up / ruled_out (fail-closed)
+    end
+    Pipe->>Ledger: retro + coverage + learning
+    Ledger-->>CLI: report (markdown + SARIF)
+```
+
+## Bug-class taxonomy
+
+`src/hunter/_data/taxonomy/klasses.json` defines the vocabulary every finding
+is filed under. Each class carries anti-fabrication substance: **minimum proof**,
+**common N/A patterns**, and **overclaim traps** — so the hunter and the agent
+share one definition of "what counts".
+
+| klass | CWE | lane | severity hint |
+| --- | --- | --- | --- |
+| `missing-headers` | CWE-693 | web2 | info |
+| `info-disclosure` | CWE-200 | web2 | medium |
+| `reflected-xss` | CWE-79 | web2 | high |
+| `sql-injection` | CWE-89 | web2 | high |
+| `path-traversal` | CWE-22 | web2 | high |
+| `open-redirect` | CWE-601 | web2 | medium |
+| `access-control` | CWE-862 | web2 | high |
+| `csrf` | CWE-352 | web2 | medium |
+| `ssrf` | CWE-918 | web2 | high |
+| `ssti` | CWE-1336 | web2 | high |
+| `xxe` | CWE-611 | web2 | high |
+| `race-condition` | CWE-362 | web2 | high |
+| `cors` | CWE-942 | web2 | medium |
+| `reentrancy` | CWE-841 | web3 | critical |
+| `oracle-manipulation` | CWE-346 | web3 | critical |
+| `access-control-web3` | CWE-284 | web3 | critical |
+| `signature-replay` | CWE-294 | web3 | high |
+| `network-exposure` | CWE-200 | network | medium |
+
+The ledger validates every klass (`RULE-E5`) and refuses unknown values; the
+probe registry maps each deterministic `check_id` onto its class.
+
+## Hunting effectiveness
+
+Five mechanisms make the deterministic core effective without lowering the
+evidence bar:
+
+1. **Signal classification** (`engine.signals`) — every exchange is classified
+   `clean · signal · ambiguous · waf · soft-404 · ratelimit · transport ·
+   crash`. A WAF block or a soft-404 can no longer masquerade as a clean
+   response (the main source of false negatives).
+2. **Coverage matrix** (`workflow.coverage`) — `klass × surface` gaps are
+   computed from ledger events, so "done" is honest and blind spots surface
+   first.
+3. **Learning loop** (`agent.learning`) — post-hunt review promotes patterns
+   seen on ≥2 targets, records negative results as facts, and tracks skill use.
+4. **Adversary in the loop** — an optional challenger argues against each
+   candidate before the deterministic replay; the replay remains final.
+5. **Lane fan-out** (`agent.lanes`) — seven lanes (recon, web2, web3, network,
+   chainer, verifier, curator) with independent budgets; the ledger is injected
+   as context into `build_goal`, never typed by hand.
+
+### Skills and curator
+
+Local methodology cards live under `~/.hunter/skills/<name>/SKILL.md`. The
+merged corpus marks every card with its source — `[bundled]`, `[user]`, or
+`[quarantined]` — matches at most five per turn, and never mounts a quarantined
+card into a prompt. `/curate` and `hunter curate` preview retro-derived cards
+before an explicit y/N save; flagged drafts stay inert until reviewed.
+
+## Operator surface
+
+The Textual dashboard is a **view over the ledger**, never a second source of
+truth:
+
+- tabs: Dashboard · Findings · Events · Engine · Config · Doctor
+- `d` demo · `r` refresh · `/` filter findings · `l` logo · `s`/`x` engine
+  start/stop · `1–4` tabs · `?` help · `q` quit
+- live event tail, severity/status color language, evidence drill-down
+- tosca palette (`#00FFE5` base) with a seven-step gradient shared by CLI,
+  REPL, TUI, and daemon output
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `hunter` | welcome panel + next steps |
+| `hunter init` | configure provider, key, and model in one wizard |
+| `hunter demo` | offline first blood on PracticeVault |
+| `hunter hunt <target>` | one-shot governed hunt (auth gate) |
+| `hunter scan <target> --scope <json>` | manifest-required pipeline scan |
+| `hunter report` | markdown + SARIF from the ledger |
+| `hunter retro --run <id>` | deterministic retrospective |
+| `hunter tui` | interactive dashboard |
+| `hunter chat` | REPL with sessions and 25 slash commands |
+| `hunter doctor` | environment, ledger chain, providers, chat DB |
+| `hunter verify` | recompute the hash chain |
+| `hunter gateway status` | inspect the 24/7 engine |
+| `hunt start --target <url> --time 2h` | boot the engine and queue a hunt |
+| `hunt status` / `hunt logs` / `hunt stop` | manage the 24/7 engine |
+| `hunter update` | GitHub-first, PyPI-fallback upgrade |
+
+Exit codes are stable: `0` clean, `1` error, `2` findings, `3` refused/usage.
+
+## Architecture
+
+1. **Kernel (L0)** — append-only, hash-chained event ledger + claim gate.
+   Findings without bound evidence are structurally impossible to insert.
+2. **Phase pipeline (L1)** — `score → recon → classify → hunting → verify →
+   report → retro`; every gate reads the ledger, nothing else.
+3. **Engines** — pluggable brains behind `EngineDriver`: deterministic probes
+   (offline, 12 checks) and the governed LLM agent. The brain changes; the
+   evidence contract does not.
+4. **Scope gate** — fail-closed, structural, enforced in the HTTP client before
+   the socket opens.
+
+```text
+src/hunter/
+  kernel/     ledger · events · findings · claimgate · redaction
+  workflow/   phases · pipeline · bench · eval_cli · coverage · reporting
+  engine/     base · deterministic/probes · signals · llm
+  agent/      tools · loop · debunk · lanes · learning · skills · curator
+  tui/        Textual dashboard
+  cli/        typer commands · doctor · daemon · config
+  _data/      branding · doctrine · taxonomy
+```
+
+Deeper invariants and the L1–L5 framing: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Safety
+
+- Scope manifests, a fail-closed scope gate, and a target-required
+  authorization prompt for non-localhost hosts.
+- Evidence is deep-redacted before storage (`RULE-E3`); raw secrets never enter
+  the ledger.
+- `shell_exec` classifies commands (`readonly` / `mutating` / `catastrophic`);
+  mutating actions need an explicit `/approve <id>` (single-use, 300-second TTL).
+- The gateway is default-deny with allowlists, HMAC-signed webhooks, anti-replay
+  signatures, and turn leases.
+- No DoS, no credential bruteforce, no mass PII, no social engineering.
+
+## Development
+
+```bash
+python -m venv .venv
+.venv/Scripts/pip install -e ".[dev]"      # Windows
+# source .venv/bin/activate && pip install -e ".[dev]"   # macOS / Linux
+
+python -m pytest tests -q                  # offline suite
+python -m ruff check src tests
+python -m mypy src/hunter
+```
+
+`tests/regression.yaml` drives the honest eval (`hunter.workflow.eval_cli`):
+each cell runs the PracticeVault demo in its own tmp state dir and is scored
+ledger-only against `answer_key.json`.
+
+## Docs
+
+| Doc | Contents |
+| --- | --- |
+| [QUICKSTART.md](QUICKSTART.md) | 60-second setup |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | layers, invariants, governance |
+| [docs/LLM.md](docs/LLM.md) | providers, roles, budgets |
+| [docs/GATEWAY.md](docs/GATEWAY.md) | Telegram / Discord / WhatsApp / webhook |
+| [docs/PORTABILITY.md](docs/PORTABILITY.md) | platforms, shells, WSL2 |
+| [docs/FIRST-RUN.md](docs/FIRST-RUN.md) | first-run transcripts |
+| [checks/PRE-REPORT.md](checks/PRE-REPORT.md) | pre-report gate |
+| [CHANGELOG.md](CHANGELOG.md) | release history |
 
 ## Status
 
-**v0.6.0** — operator workflow improvements, unified home/config, session-aware chat, provider/model setup, gateway lifecycle, pause/resume, and the target-plus-time hunt flow. v0.5.0 shipped the approval-gated shell, the 24/7 hunt daemon, minimum-time
-budgets with unlimited-credit semantics, the browser cloak, the operating
-character, session compression, Discord and WhatsApp gateways, and the
-`scripts/` toolkit are shipped. v0.4.0 shipped the phase pipeline, governed
-provider roles, unified chat and `hunter hunt`, advisory GitHub-first/
-PyPI-fallback updates, dynamic skills and curator, and optional hunt-only
-browser tools. Release quality is tracked by the offline test matrix and
-Ruff gates; see [CHANGELOG.md](CHANGELOG.md).
-
-## v0.4.0 current contracts
-
-- Exit codes are stable: `0` clean, `1` error, `2` findings, and `3`
-  refused/usage for `hunter hunt`; other classified CLI errors remain documented
-  in the architecture and LLM references.
-- Provider roles are `orchestrator`, `hunter`, `verifier`, and `utility`;
-  legacy `planner`, `exploit`, and `verify` names are accepted on load and
-  rewritten to canonical names on the next config write.
-- Browser support is optional and explicit: `pip install 'hunteros-harness[browser]'`
-  then `python -m playwright install chromium`. `agent.browser` remains
-  loadable without the extra; browser actions require an explicitly authorized
-  governed hunt, are scope-gated, normal chat is browser-free, and HunterOs
-  never installs Chromium automatically.
-- Skills live at `~/.hunter/skills/<name>/SKILL.md`; the merged corpus uses
-  `[bundled]`, `[user]`, and `[quarantined]` markers, matches at most five, and
-  `/curate`/`hunter curate` require preview plus explicit confirmation to save.
-  Quarantined cards are inert until review.
-- Scan only systems you own or are explicitly authorized to test. Authorization
-  is your responsibility; enforcement is the harness's. Non-localhost targets
-  require an authorized scope manifest.
-
-## Doctrine
-
-1. Evidence or Nothing — a finding without evidence cannot exist in the ledger.
-2. The database is the only ledger — reports render from rows, never prose.
-3. Scope is enforced by code, not by prompts.
-4. Every phase is earned — gates read the ledger, order is enforced, and a
-   phase that fails its gate is recorded, never papered over.
-5. Every error is notified — location, hint, exit code; silence is not a
-   failure mode.
-6. The ledger predates the harness and outlives it.
+**v0.7.0** — bug-class taxonomy and evidence ladder, in-place ledger migration
+(`user_version = 2`), signal classification, coverage matrix, lane fan-out,
+learning loop, challenger wiring, ledger-as-context, an honest eval harness,
+and a tosca-gradient TUI with the HunterOS emblem.
 
 ## License
 
-MIT (see the `license` field in [pyproject.toml](pyproject.toml)).
+MIT — see the `license` field in [pyproject.toml](pyproject.toml).

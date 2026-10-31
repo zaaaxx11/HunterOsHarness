@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hunteros-harness"
-version = "0.6.0"
+version = "0.7.0"
 description = "HunterOs — evidence-first security-audit harness. Deterministic engine today, pluggable LLM brain tomorrow."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,7 +42,7 @@ hunt = "hunter.cli.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-hunter = ["_data/**/*.md", "_data/**/*.jinja", "_data/**/*.j2", "_data/**/*.yaml", "vault/*.json"]
+hunter = ["_data/**/*.md", "_data/**/*.json", "_data/**/*.txt", "_data/**/*.jinja", "_data/**/*.j2", "_data/**/*.yaml", "vault/*.json"]
 
 # Release-artifact hygiene: the source distribution must never carry the local
 # development kitchen (tests, plans, caches, or user state). The wheel already

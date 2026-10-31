@@ -227,6 +227,7 @@ def test_finding_request_creates_ledger_finding(env):
                 impact="Script execution in browsers.",
                 severity_justification="No escaping, no CSP.",
                 counterevidence="Baseline does not reflect.",
+                falsifier="Reflection is HTML-encoded (no script execution).",
                 confidence="high",
                 evidence_ids=ids,
             )

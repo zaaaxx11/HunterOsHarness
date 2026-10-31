@@ -1,4 +1,4 @@
-# QUICKSTART — HunterOs Harness v0.6.0 in 60 seconds
+# QUICKSTART — HunterOs Harness v0.7.0 in 60 seconds
 
 Supported platforms, Python versions, shell-specific commands, WSL2 guidance,
 and portability troubleshooting: **[docs/PORTABILITY.md](docs/PORTABILITY.md)**.
@@ -74,7 +74,7 @@ hunter doctor
 ```
 
 Checks Python version, package version, dependencies (textual, rich, httpx,
-typer), the state directory (`HUNTER_STATE_DIR` or `./.hunter`), the ledger
+typer), the state directory (`HUNTER_STATE_DIR` or `~/.hunter`), the ledger
 hash chain, available engines, your LLM config (with YAML line numbers when a
 file is broken), per-provider key status, and the chat database. Everything
 green → continue. (LLM items are opt-in notes — they never block the
@@ -94,7 +94,7 @@ What it does — all against a **local practice target** it boots itself:
 2. Runs the deterministic engine through the scan pipeline: recon → probes →
    evidence binding. No LLM, no API keys, fully offline.
 3. Writes everything — events, evidence, findings — into the hash-chained
-   ledger at `./.hunter/ledger.db`.
+   ledger at `~/.hunter/ledger.db`.
 4. Verifies the ladder: findings enter as **candidates** and are promoted to
    **verified** only by an independent replay (claim gate RULE-E2). Expect
    **≥ 7/9 first-blood** (first-pass detections) on the practice target.

@@ -109,16 +109,16 @@ def test_no_y_n_prompt_in_hunt_start_path():
 
 
 def test_changelog_and_version_bumped():
-    """M8: CHANGELOG gains ## 0.6.0 and the versions agree."""
+    """M8: CHANGELOG gains ## 0.7.0 and the versions agree."""
     changelog = _read("CHANGELOG.md")
-    assert "## 0.6.0" in changelog
+    assert "## 0.7.0" in changelog
     pyproject = _read("pyproject.toml")
     match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
     assert match, "pyproject version not found"
-    assert match.group(1) == "0.6.0"
+    assert match.group(1) == "0.7.0"
     from hunter import __version__
 
-    assert __version__ == "0.6.0"
+    assert __version__ == "0.7.0"
 
 
 # -- 6 (M8) ----------------------------------------------------------------------

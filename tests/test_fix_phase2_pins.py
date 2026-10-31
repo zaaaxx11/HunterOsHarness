@@ -31,15 +31,15 @@ def test_release_pin_is_060():
     import hunter
 
     text = _read("tests/test_release_m7.py")
-    assert 'RELEASE_VERSION = "0.6.0"' in text, "stale pin still 0.5.0"
+    assert 'RELEASE_VERSION = "0.7.0"' in text, "stale pin still 0.6.0"
     project_version = re.search(r'^version\s*=\s*"([^"]+)"', _read("pyproject.toml"), re.M)
-    assert project_version and project_version.group(1) == "0.6.0"
-    assert hunter.__version__ == "0.6.0"
+    assert project_version and project_version.group(1) == "0.7.0"
+    assert hunter.__version__ == "0.7.0"
     from hunter.cli.main import app
 
     result = RUNNER.invoke(app, ["version"])
     assert result.exit_code == 0, (result.stdout, result.exception)
-    assert result.stdout.strip() == "hunter 0.6.0"
+    assert result.stdout.strip() == "hunter 0.7.0"
 
 
 def test_registry_len_25_no_stale_pins():
@@ -303,6 +303,8 @@ def test_brand_zero_including_renamed_guard():
         ".mypy_cache",
         ".ruff_cache",
         ".kilo",
+        ".zcode",
+        ".commandcode",
         ".hunter",
         ".hunter-cli-smoke",
         "dist",

@@ -15,14 +15,16 @@ Outcomes:
 - "needs_follow_up" — transport error or no replay handler for the check_id;
   the finding stays CANDIDATE and a needs_follow_up coverage row is appended.
 
-P1 hook: ``provider`` (a ChatProvider) is accepted for a future adversarial
-LLM challenger pass ("argue why this finding is wrong") but is deliberately
-UNUSED in v0.2 core — verification is deterministic only, so a model can
-never talk a finding into (or out of) the verified state.
+P1 hook: ``provider`` (a ChatProvider or challenger callable) may be passed
+to produce an adversarial review note ("argue why this finding is wrong")
+before the replay runs. The note is recorded (coverage row + run notes) but
+the replay remains the final authority — a model can never talk a finding
+into (or out of) the verified state.
 """
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import httpx
@@ -85,19 +87,159 @@ def _coverage_row(
     )
 
 
-def debunk_pass(finding: Finding, ctx: ToolContext, provider: Any = None) -> str:
+def _normalize_challenger_result(result: Any) -> str:
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result
+    text = getattr(result, "text", None)
+    if isinstance(text, str):
+        return text
+    if isinstance(result, dict):
+        for key in ("note", "review", "text", "output", "message", "content"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return str(result)
+
+
+def _invoke_challenger(challenger: Any, finding: Finding, ctx: ToolContext, check_id: str) -> str:
+    """Invoke a provider/challenger callable (or ChatProvider) and return its
+    adversarial review note as text. Never raises: failures become a note."""
+    # ChatProvider-style object (has .complete, not itself callable).
+    complete = getattr(challenger, "complete", None)
+    if callable(complete) and not callable(challenger):
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an adversarial reviewer. Argue why the following "
+                        "finding is wrong or a false positive. Be concise."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"check_id={check_id}\nfinding_id={finding.id}\n"
+                        f"key={finding.key}\ntitle={finding.title}\n"
+                        f"endpoint={finding.endpoint}\nmethod={finding.method}"
+                    ),
+                },
+            ]
+            result = complete("verifier", messages, tools=None)
+            return _normalize_challenger_result(result)
+        except Exception as exc:  # noqa: BLE001 - challenger must not break replay
+            return f"challenger error: {type(exc).__name__}: {exc}"
+
+    if not callable(challenger):
+        return str(challenger)
+
+    available = {
+        "finding": finding,
+        "ctx": ctx,
+        "context": ctx,
+        "check_id": check_id,
+        "finding_id": finding.id,
+    }
+
+    # Prefer an explicit signature match when possible.
+    try:
+        sig = inspect.signature(challenger)
+        params = list(sig.parameters.values())
+        # Build kwargs from named parameters.
+        kwargs: dict[str, Any] = {}
+        for p in params:
+            if p.name in available:
+                kwargs[p.name] = available[p.name]
+            elif p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                continue
+            else:
+                kwargs = {}
+                break
+        filtered = [
+            p for p in params
+            if p.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        ]
+        if kwargs and len(kwargs) == len(filtered):
+            try:
+                return _normalize_challenger_result(challenger(**kwargs))
+            except TypeError:
+                pass
+    except (TypeError, ValueError):
+        pass
+
+    # Fall back to common calling conventions (exactly one invocation).
+    attempts = (
+        lambda: challenger(finding, ctx),
+        lambda: challenger(finding),
+        lambda: challenger(ctx, finding),
+        lambda: challenger(ctx),
+        lambda: challenger(),
+    )
+    for attempt in attempts:
+        try:
+            return _normalize_challenger_result(attempt())
+        except TypeError:
+            continue
+    # Last resort: pass everything positionally.
+    try:
+        return _normalize_challenger_result(challenger(finding, ctx, check_id))
+    except Exception as exc:  # noqa: BLE001
+        return f"challenger error: {type(exc).__name__}: {exc}"
+
+
+def _record_challenger_note(ctx: ToolContext, note: str) -> None:
+    if not note:
+        return
+    notes: list[dict[str, Any]] = ctx.state.setdefault("notes", [])
+    seq = int(ctx.state.get("note_seq", 0)) + 1
+    ctx.state["note_seq"] = seq
+    notes.append({"id": f"N-{seq:04d}", "text": note, "tags": ["challenger", "debunk"]})
+    ctx.state["challenger_note"] = note
+    ctx.state.setdefault("challenger_notes", []).append(note)
+
+
+def debunk_pass(
+    finding: Finding,
+    ctx: ToolContext,
+    provider: Any = None,
+    challenger: Any = None,
+    *args: Any,
+    **kwargs: Any,
+) -> str:
     """Deterministically challenge one finding. Returns "verified",
     "ruled_out", or "needs_follow_up" (see module docstring).
 
-    ``provider`` is reserved for the P1 adversarial challenger and is unused
-    in v0.2 core.
+    ``provider`` / ``challenger`` (optional) is invoked before the replay to
+    produce an adversarial review note. The replay remains the final authority.
     """
+    # Allow challenger to be passed positionally under either name or via kwargs.
+    if challenger is None:
+        challenger = kwargs.pop("challenger", None)
+    if challenger is None:
+        challenger = provider
+    if challenger is None and args:
+        challenger = args[0]
+    if challenger is None:
+        challenger = kwargs.pop("provider", None)
+
     check_id = finding.key.split("|", 1)[0]
+
+    # Invoke the adversarial challenger (if any) BEFORE the replay.
+    challenger_note = ""
+    if challenger is not None:
+        challenger_note = _invoke_challenger(challenger, finding, ctx, check_id)
+        _record_challenger_note(ctx, challenger_note)
+
     recheck = RECHECKS.get(check_id)
     if recheck is None:
+        note = f"no replay handler for check '{check_id}'; stays candidate"
+        if challenger_note:
+            note = f"{note} (challenger: {challenger_note})"
         _coverage_row(
             ctx, finding, check_id, "needs_follow_up",
-            f"no replay handler for check '{check_id}'; stays candidate",
+            note,
             [],
         )
         return "needs_follow_up"
@@ -107,9 +249,12 @@ def debunk_pass(finding: Finding, ctx: ToolContext, provider: Any = None) -> str
     try:
         reproduced = bool(recheck(engine_ctx, ctx.target_url.rstrip("/"), finding))
     except httpx.HTTPError as exc:
+        note = f"replay transport error: {type(exc).__name__}: {exc}"
+        if challenger_note:
+            note = f"{note} (challenger: {challenger_note})"
         _coverage_row(
             ctx, finding, check_id, "needs_follow_up",
-            f"replay transport error: {type(exc).__name__}: {exc}",
+            note,
             [],
         )
         return "needs_follow_up"
@@ -129,15 +274,20 @@ def debunk_pass(finding: Finding, ctx: ToolContext, provider: Any = None) -> str
                 "replay": True,
                 "finding_id": finding.id,
             }
+        if challenger_note:
+            data["challenger_note"] = challenger_note
         evidence_id = ctx.ledger.add_evidence(ctx.run_id, "http_exchange", data)
         ctx.emit(
             "evidence_stored",
             {"evidence_id": evidence_id, "kind": "http_exchange", "tool": "debunk_pass"},
         )
         ctx.ledger.set_finding_status(finding.id, FindingStatus.VERIFIED, "independent replay succeeded")
+        note = "debunk replay reproduced the signal; finding verified"
+        if challenger_note:
+            note = f"{note} (challenger: {challenger_note})"
         _coverage_row(
             ctx, finding, check_id, "reported",
-            "debunk replay reproduced the signal; finding verified",
+            note,
             [evidence_id],
         )
         return "verified"
@@ -153,6 +303,8 @@ def debunk_pass(finding: Finding, ctx: ToolContext, provider: Any = None) -> str
             "finding_id": finding.id,
             "purpose": "debunk replay — signal did not reproduce",
         }
+        if challenger_note:
+            data["challenger_note"] = challenger_note
         evidence_id = ctx.ledger.add_evidence(ctx.run_id, "http_exchange", data)
         ctx.emit(
             "evidence_stored",
@@ -162,9 +314,12 @@ def debunk_pass(finding: Finding, ctx: ToolContext, provider: Any = None) -> str
     ctx.ledger.set_finding_status(
         finding.id, FindingStatus.RULED_OUT, "debunk replay did not reproduce the signal"
     )
+    note = "debunk replay did not reproduce the signal"
+    if challenger_note:
+        note = f"{note} (challenger: {challenger_note})"
     _coverage_row(
         ctx, finding, check_id, "ruled_out",
-        "debunk replay did not reproduce the signal",
+        note,
         evidence_ids,
     )
     return "ruled_out"

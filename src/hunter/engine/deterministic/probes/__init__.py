@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from hunter.kernel.findings import Severity, dedupe_key
+from hunter.taxonomy import CHECK_KLASS, klass_for_check_id
 from hunter.tools.http_client import Exchange
 
 from ...base import CandidateFinding, Evidence
@@ -36,10 +37,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "CHECK_IDS",
+    "CHECK_KLASS",
     "PROBES",
     "RECHECKS",
     "_finding",
     "guarded_run",
+    "klass_for_check_id",
 ]
 
 
@@ -76,6 +79,7 @@ def _finding(
         description=description,
         impact=impact,
         remediation=remediation,
+        klass=klass_for_check_id(check_id),
         evidence=evidence,
     )
 
