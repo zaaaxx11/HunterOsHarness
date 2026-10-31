@@ -410,21 +410,37 @@ class RagLoop:
 
         deadline = time.monotonic() + float(self.config.time_budget_s)
         last_finding_count = 0
+        cycles = 0
+        total_enqueued = 0
         while True:
             if stop_flag_path(self.state_dir).exists():
+                print(f"[rag] stop flag present — winding down after {cycles} cycle(s)",
+                      flush=True)
                 break
             if time.monotonic() >= deadline:
                 break
             enqueued = self._cycle()
-            # Track new findings for extend prompt.
+            cycles += 1
+            total_enqueued += len(enqueued)
+            # Track new findings for the closing report.
             try:
                 ledger = self._ledger()
                 current_count = len(ledger.findings())
                 ledger.close()
             except Exception:  # noqa: BLE001
                 current_count = last_finding_count
-            new_findings = current_count > last_finding_count
+            delta = current_count - last_finding_count
             last_finding_count = current_count
+
+            # Every cycle reports itself. A silent loop is indistinguishable
+            # from a dead one, and the operator cannot tell "nothing found"
+            # from "nothing ran" without it.
+            pending = len(list(queue_dir(self.state_dir).glob("task-*.json")))
+            line = (f"[rag] cycle {cycles}: enqueued={len(enqueued)} "
+                    f"pending={pending} findings={current_count}")
+            if delta > 0:
+                line += f" (+{delta} new)"
+            print(line, flush=True)
 
             if self.config.once:
                 break
@@ -440,6 +456,21 @@ class RagLoop:
                 drain_daemon(self.state_dir, timeout=15.0)
             except Exception:  # noqa: BLE001
                 pass
+
+        # Closing summary, printed in EVERY mode including --once. Without it
+        # a single-cycle run exits 0 with no output at all, which reads as
+        # "nothing happened" whether or not tasks were queued.
+        try:
+            ledger = self._ledger()
+            final_findings = len(ledger.findings())
+            ledger.close()
+        except Exception:  # noqa: BLE001
+            final_findings = last_finding_count
+        print(
+            f"[rag] done: cycles={cycles} enqueued={total_enqueued} "
+            f"findings={final_findings} state={self.state_dir}",
+            flush=True,
+        )
 
         # Deadline reached. Report honestly rather than prompting for an
         # extension this loop cannot honour: the deadline is a monotonic
