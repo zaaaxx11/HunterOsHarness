@@ -375,10 +375,14 @@ class RagLoop:
 
     def run(self) -> int:
         if self.config.manage_daemon and not self.config.dry_run:
+            # A daemon that fails to start must be LOUD. Swallowing it here
+            # produced a RAG loop that enqueued tasks into a queue nothing
+            # was consuming — the operator saw a running process and an
+            # idle ledger with no way to tell which half was broken.
             try:
                 from hunter.daemon import daemon_running
 
-                running, _ = daemon_running(self.state_dir)
+                running, detail = daemon_running(self.state_dir)
                 if not running:
                     start_daemon(
                         self.state_dir,
@@ -390,8 +394,19 @@ class RagLoop:
                         min_wall_seconds=0.0,
                         force=False,
                     )
-            except Exception:  # noqa: BLE001
-                pass
+                    running, detail = daemon_running(self.state_dir)
+                    if not running:
+                        print(
+                            f"[rag] BLOCKED: daemon did not start ({detail}) — "
+                            f"tasks will be queued but nothing will run them. "
+                            f"check: hunt status --state {self.state_dir}",
+                            flush=True,
+                        )
+                        return 3
+            except Exception as exc:  # noqa: BLE001
+                print(f"[rag] BLOCKED: daemon start raised {type(exc).__name__}: {exc}",
+                      flush=True)
+                return 3
 
         deadline = time.monotonic() + float(self.config.time_budget_s)
         last_finding_count = 0
