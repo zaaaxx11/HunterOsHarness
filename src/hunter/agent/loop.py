@@ -37,7 +37,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from hunter.errors import HunterError
-from hunter.llm.base import ChatProvider, RunBudget
+from hunter.llm.base import ChatProvider, RunBudget as RunBudgetContract
+from hunter.llm.budget import RunBudget
 
 from .prompts import build_system_prompt, resolve_skills_index
 from .tools_base import TIER_ORDER, ToolContext, ToolRegistry
@@ -62,8 +63,8 @@ def _budget_governed(budget: Any) -> bool:
     bare base-contract dataclass (whose exhausted() is a docstring-only stub
     returning None and whose add_cost raises NotImplementedError)."""
     klass = type(budget)
-    exhausted_overridden = getattr(klass, "exhausted", None) is not RunBudget.__dict__["exhausted"]
-    add_cost_overridden = getattr(klass, "add_cost", None) is not RunBudget.__dict__["add_cost"]
+    exhausted_overridden = getattr(klass, "exhausted", None) is not RunBudgetContract.__dict__["exhausted"]
+    add_cost_overridden = getattr(klass, "add_cost", None) is not RunBudgetContract.__dict__["add_cost"]
     return exhausted_overridden and add_cost_overridden
 
 
@@ -90,7 +91,7 @@ class AgentLoop:
         registry: ToolRegistry,
         *,
         tier: str = "basic",
-        budget: RunBudget | None = None,
+        budget: RunBudgetContract | None = None,
         max_text_nudges: int = 3,
         max_time_nudges: int = 50,
         interrupt_check: Callable[[], bool] | None = None,
