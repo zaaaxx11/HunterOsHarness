@@ -139,6 +139,50 @@ def recognize(provider: Any, target: str) -> dict[str, Any]:
     return _deterministic(target)
 
 
+def extract_targets(provider: Any, description: str) -> list[str]:
+    """Ask the LLM to extract concrete hunt targets from a free-form description.
+
+    Returns a list of target strings. Falls back to regex URL extraction when
+    the LLM is unavailable or answers something unusable.
+    """
+    import json as _json
+    import re
+
+    urls = re.findall(r"https?://[^\s,;)\]]+", description or "")
+    if provider is not None:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You extract concrete hunt targets from a free-form description. "
+                    "Return ONLY a JSON array of target strings (URLs, hosts, repo "
+                    "URLs, local paths). No prose."
+                ),
+            },
+            {"role": "user", "content": f"Description: {description}\nReturn JSON array only."},
+        ]
+        try:
+            turn = provider.complete("utility", messages, budget=None)
+            text = (getattr(turn, "text", "") or "").strip()
+            if text.startswith("```"):
+                lines = text.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                text = "\n".join(lines).strip()
+            start = text.find("[")
+            end = text.rfind("]")
+            if start != -1 and end != -1 and end > start:
+                text = text[start : end + 1]
+            data = _json.loads(text)
+        except Exception:  # noqa: BLE001
+            data = []
+        if isinstance(data, list) and data:
+            return [str(x).strip() for x in data if str(x).strip()]
+    return urls
+
+
 def recognize_scope(provider: Any, target: str) -> ScopeSet:
     """Convenience: return a :class:`ScopeSet` for ``target``."""
     manifest = recognize(provider, target)

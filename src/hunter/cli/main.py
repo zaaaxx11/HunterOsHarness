@@ -237,7 +237,7 @@ def resume(
 
 @app.command()
 def hunt(
-    targets: list[str] = typer.Argument(None, help="URL, host[:port], repo, or local directory. Multiple targets enable RAG mode."),
+    targets: list[str] = typer.Argument(None, help="URL, host[:port], repo, local directory, or a free-form description."),
     scope: Path | None = typer.Option(None, "--scope", help="Scope manifest JSON."),
     engine: str | None = typer.Option(None, "--engine", help="deterministic | mock | llm."),
     state: Path | None = typer.Option(None, "--state", help="State directory."),
@@ -260,9 +260,6 @@ def hunt(
     ),
     lines: int | None = typer.Option(
         None, "--lines", help="Daemon verb: line count for `hunt logs` (ignored for plain hunts)."
-    ),
-    rag_flag: bool = typer.Option(
-        False, "--rag", help="Run RAG (continuous hunting) after the initial hunt."
     ),
 ) -> None:
     """One-command hunt with Strix exit codes: 0 clean, 1 error, 2 findings, 3 refused.
@@ -294,8 +291,32 @@ def hunt(
                 lines=lines,
             )
         )
-    # RAG mode: multiple targets or --rag -> recognize scopes, enqueue tasks, run loop.
-    if len(targets or []) > 1 or rag_flag:
+    # Free-form description: if the single argument is not a URL/dir, ask the
+    # LLM to extract concrete targets from it.
+    if len(targets or []) == 1:
+        from hunter.hunt import normalize_hunt_target as _nht
+
+        _norm, _kind = _nht(targets[0])
+        if _kind == "invalid" or " " in targets[0].strip():
+            _provider = None
+            try:
+                from hunter.llm.config import find_config_path as _fcp, load_config as _lc
+                from hunter.llm.router import provider_from_config as _pfc
+
+                _cfg_path = _fcp()
+                if _cfg_path is not None and _cfg_path.is_file():
+                    _provider = _pfc(_lc(_cfg_path))
+            except Exception:
+                _provider = None
+            from hunter.workflow.scope_recognize import extract_targets as _et
+
+            targets = _et(_provider, targets[0]) or []
+            if not targets:
+                err_console.print("[hunter.error]BLOCKED:[/hunter.error] no hunt target found in description")
+                raise typer.Exit(3)
+
+    # RAG mode: multiple targets or --time -> recognize scopes, enqueue tasks, run loop.
+    if len(targets or []) > 1 or time_opt:
         from hunter.duration import parse_duration
         from hunter.home import state_dir as _state_dir
         from hunter.workflow.scope_recognize import recognize_scope
@@ -466,121 +487,6 @@ def _render_hunt_outcome(outcome, *, json_out: bool) -> None:
         typer.echo(f"report: {outcome.report_path}")
     else:
         typer.echo("report unavailable — chain blocked")
-
-
-# ----------------------------------------------------------------------- rag ---
-@app.command("rag")
-def rag(
-    target: str = typer.Argument("", help="URL, host[:port], or local directory."),
-    scope: Path | None = typer.Option(None, "--scope", help="Scope manifest JSON."),
-    engine: str | None = typer.Option(None, "--engine", help="deterministic | mock | llm."),
-    state: Path | None = typer.Option(None, "--state", help="State directory."),
-    time_text: str = typer.Option("6h", "--time", help="Max wall time [Nh][Nm][Ns]."),
-    interval: float = typer.Option(45.0, "--interval", help="Seconds between feeder cycles."),
-    high_water: int = typer.Option(8, "--high-water", help="Max pending tasks before backoff."),
-    once: bool = typer.Option(False, "--once", help="One cycle then exit."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be enqueued, write nothing."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Assume yes for proposed scope."),
-) -> None:
-    """Recursive Autonomous Grind: keep hunting (4 hunters per finding) until time runs out."""
-    from hunter.duration import parse_duration
-    from hunter.home import state_dir as _state_dir
-    from hunter.tools.scope import localhost_scope, scope_from_manifest
-
-    resolved_state = _state_dir(state)
-
-    # Resolve target/scope like hunt.
-    from hunter.hunt import normalize_hunt_target
-
-    normalized, kind = normalize_hunt_target(target)
-    if kind == "invalid":
-        err_console.print("[hunter.error]BLOCKED:[/hunter.error] invalid hunt target")
-        raise typer.Exit(3)
-    if kind == "dir":
-        err_console.print("[hunter.error]BLOCKED:[/hunter.error] directory targets are not supported for rag")
-        raise typer.Exit(3)
-
-    host = (urlparse(normalized).hostname or "").lower()
-    if host in LOCAL_HOSTS:
-        if not yes and scope is None:
-            pass
-        chosen_scope = localhost_scope()
-    elif scope is not None:
-        try:
-            chosen_scope = scope_from_manifest(scope)
-        except (ValueError, OSError) as exc:
-            err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
-            raise typer.Exit(3) from exc
-    else:
-        proposed = {"name": host, "hosts": [host], "allow_subdomains": False}
-        console.print(f"target {host} is not localhost — a scope manifest is required.")
-        console.print("proposed minimal scope manifest (JSON):")
-        console.print(json.dumps(proposed))
-        from hunter.hunt import confirm_prompt
-
-        if not (yes or confirm_prompt("Authorize this exact scope? [y/N] ")):
-            err_console.print("refused — nothing ran.")
-            raise typer.Exit(3)
-        from hunter.tools.scope import ScopeSet
-
-        chosen_scope = ScopeSet(frozenset({host}), False, name=host)
-
-    selected_engine = engine
-    if selected_engine is None:
-        try:
-            from hunter.llm.config import find_config_path, load_config
-            from hunter.llm.router import provider_from_config
-
-            config_path = find_config_path()
-            if config_path is None or not config_path.is_file():
-                raise FileNotFoundError("no HunterOS LLM config")
-            cfg = load_config(config_path)
-            provider_from_config(cfg)
-            selected_engine = "llm"
-        except Exception:
-            selected_engine = "deterministic"
-            err_console.print("no brain configured — using the deterministic engine.")
-
-    # Provider for wondering.
-    provider = None
-    if selected_engine == "llm":
-        try:
-            from hunter.llm.config import find_config_path, load_config
-            from hunter.llm.router import provider_from_config
-
-            config_path = find_config_path()
-            if config_path is not None and config_path.is_file():
-                cfg = load_config(config_path)
-                provider = provider_from_config(cfg)
-        except Exception:
-            provider = None
-
-    try:
-        budget_s = parse_duration(time_text)
-    except Exception as exc:
-        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid --time: {exc}")
-        raise typer.Exit(3) from exc
-    if budget_s <= 0:
-        budget_s = 6 * 3600
-
-    from hunter.workflow.rag import RagConfig, RagLoop
-
-    rag_config = RagConfig(
-        state_dir=resolved_state,
-        target=normalized,
-        scope=chosen_scope,
-        engine=selected_engine or "deterministic",
-        time_budget_s=float(budget_s),
-        interval_s=float(interval),
-        high_water=int(high_water),
-        dry_run=bool(dry_run),
-        once=bool(once),
-        manage_daemon=not dry_run,
-        provider=provider,
-    )
-    loop = RagLoop(rag_config)
-    code = loop.run()
-    raise typer.Exit(code)
 
 
 @app.command("scope")

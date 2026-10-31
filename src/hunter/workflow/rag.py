@@ -442,7 +442,7 @@ class RagLoop:
             if current_count > 0:
                 print(
                     f"waktu habis — {current_count} finding tercatat. "
-                    f"daemon dibiarkan berjalan; jalankan `hunter rag` lagi "
+                    f"daemon dibiarkan berjalan; jalankan `hunter hunt` lagi "
                     f"dengan --time lebih besar untuk melanjutkan."
                 )
         return 0
