@@ -40,7 +40,7 @@ def vault(no_proxy):
 
 
 def test_registry_resolves_every_engine():
-    assert available_engines() == ["deterministic", "llm", "mock"]
+    assert available_engines() == ["deterministic", "llm", "mock", "review"]
     for name in available_engines():
         engine = get_engine(name)
         assert engine.name == name

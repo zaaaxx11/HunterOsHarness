@@ -33,7 +33,7 @@ __all__ = ["available_engines", "get_engine"]
 
 # Registry order is stable: it is what available_engines() and error
 # messages show, and what tests assert on.
-_ENGINES: tuple[str, ...] = ("deterministic", "llm", "mock")
+_ENGINES: tuple[str, ...] = ("deterministic", "llm", "mock", "review")
 
 
 def available_engines() -> list[str]:
@@ -99,5 +99,9 @@ def get_engine(
             provider if provider is not None else _default_llm_provider(config),
             budget=budget,
         )
+    if name == "review":
+        from hunter.engine.review import ReviewEngine
+
+        return ReviewEngine()
     available = ", ".join(available_engines())
     raise ValueError(f"unknown engine {name!r}; available engines: {available}")

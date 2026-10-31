@@ -764,6 +764,7 @@ class Ledger:
         {
             "http_exchange",
             "http_response",
+            "code_location",
             "note",
             "tool_output",
             "browser_event",
@@ -798,6 +799,10 @@ class Ledger:
                 f"BLOCKED: evidence kind {kind!r} is not in the allowed "
                 f"vocabulary {sorted(self.ALLOWED_EVIDENCE_KINDS)}."
             )
+        if kind == "code_location":
+            from .claimgate import validate_code_location
+
+            validate_code_location(data)
         redacted = redact_payload(data)
         blob = canonical_json(redacted)
         if len(blob.encode("utf-8")) > self.EVIDENCE_MAX_BYTES:

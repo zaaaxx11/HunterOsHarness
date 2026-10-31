@@ -85,3 +85,31 @@ def validate_status_change(
             f"BLOCKED: finding '{finding.id}' cannot jump from THEORETICAL to "
             "VERIFIED; promote to CANDIDATE first (RULE-E1)."
         )
+
+
+def validate_code_location(data) -> None:
+    """Re-read the file span and re-hash; refuse on mismatch (tamper-evidence)."""
+    from pathlib import Path
+
+    if not isinstance(data, dict):
+        raise ClaimGateBlocked("BLOCKED: code_location evidence must be a dict (RULE-E1).")
+    path = data.get("path")
+    line_start = data.get("line_start")
+    line_end = data.get("line_end")
+    expected = data.get("sha256")
+    if not path or not isinstance(line_start, int) or not isinstance(line_end, int) or not expected:
+        raise ClaimGateBlocked("BLOCKED: code_location requires path/line_start/line_end/sha256.")
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ClaimGateBlocked(f"BLOCKED: cannot read code location {path!r}: {exc}") from exc
+    start = max(1, int(line_start))
+    end = min(len(lines), int(line_end))
+    if start > end or start > len(lines):
+        raise ClaimGateBlocked("BLOCKED: code_location line range is invalid.")
+    span = "\n".join(lines[start - 1 : end])
+    import hashlib
+
+    actual = hashlib.sha256(span.encode("utf-8")).hexdigest()
+    if actual != str(expected).strip().lower():
+        raise ClaimGateBlocked("BLOCKED: code_location hash mismatch (RULE-E1 tamper-evidence).")

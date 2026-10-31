@@ -306,8 +306,8 @@ def hunt(
         err_console.print("[hunter.error]BLOCKED:[/hunter.error] invalid hunt target")
         raise typer.Exit(3)
     selected_engine = engine
-    if selected_engine is not None and selected_engine not in {"deterministic", "mock", "llm"}:
-        err_console.print("[hunter.error]BLOCKED:[/hunter.error] unknown engine; engines: deterministic, mock, llm")
+    if selected_engine is not None and selected_engine not in {"deterministic", "mock", "llm", "review"}:
+        err_console.print("[hunter.error]BLOCKED:[/hunter.error] unknown engine; engines: deterministic, mock, llm, review")
         raise typer.Exit(3)
     chosen_scope = None
     if kind == "dir":
@@ -325,7 +325,7 @@ def hunt(
             if not json_out:
                 typer.echo(f"target check: {mount.url} — valid URL (host: 127.0.0.1)")
                 typer.echo(f"skills mounted: {len(selected)}" + (f" ({', '.join(f'{name} [{source}]' for name, source in selected)})" if selected else ""))
-            outcome = run_hunt(mount.url, scope=chosen_scope, engine_name=selected_engine, state_dir=state)
+            outcome = run_hunt(mount.url, scope=chosen_scope, engine_name=selected_engine, state_dir=state, config={"local_root": normalized})
             _render_hunt_outcome(outcome, json_out=json_out)
             raise typer.Exit(outcome.exit_code)
 

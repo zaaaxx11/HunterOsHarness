@@ -499,8 +499,11 @@ def _validate_hunt_task(task: dict[str, Any]) -> None:
 
     target = str(task.get("target", ""))
     normalized, kind = normalize_hunt_target(target)
-    if kind == "invalid" or normalized != target:
+    if kind == "invalid":
         raise ValueError(f"invalid hunt target: {target!r}")
+    if kind == "url" and normalized != target:
+        raise ValueError(f"invalid hunt target: {target!r}")
+    # Directory targets are validated at claim time (path may be created later).
     try:
         max_wall = float(task.get("max_wall_seconds", 0.0) or 0.0)
         min_wall = float(task.get("min_wall_seconds", 0.0) or 0.0)
@@ -1022,29 +1025,55 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
         findings = 0
         exit_code = 1
         try:
+            from hunter.hunt import mount_local_dir, normalize_hunt_target
+
             scope_data = task.get("scope") or {}
             hosts = scope_data.get("hosts") or []
+            local_roots = tuple(str(r) for r in (scope_data.get("local_roots") or []))
             scope = ScopeSet(
                 frozenset(str(host) for host in hosts),
                 bool(scope_data.get("allow_subdomains")),
                 name=str(scope_data.get("name", "daemon")),
+                local_roots=local_roots,
             )
-            outcome = await asyncio.to_thread(
-                run_hunt,
-                str(task.get("target", "")),
-                scope=scope,
-                engine_name=str(task.get("engine", "deterministic")),
-                state_dir=str(state),
-                budget=budget,
-                # Daemon hunts auto-allow approval-danger tools (hunter mode):
-                # the gate lives in engine/llm.py and still refuses the
-                # catastrophic denylist — evidence-or-nothing is unchanged.
-                config={"state_dir": str(state), "approval_auto_allow": True},
-            )
+            target_raw = str(task.get("target", ""))
+            _, kind = normalize_hunt_target(target_raw)
+
+            def _run() -> Any:
+                if kind == "dir":
+                    from pathlib import Path as _P
+
+                    if not _P(target_raw).is_dir():
+                        raise FileNotFoundError(f"local target is not a directory: {target_raw}")
+                    with mount_local_dir(target_raw) as mount:
+                        return run_hunt(
+                            mount.url,
+                            scope=scope,
+                            engine_name=str(task.get("engine", "deterministic")),
+                            state_dir=str(state),
+                            budget=budget,
+                            config={
+                                "state_dir": str(state),
+                                "approval_auto_allow": True,
+                                "local_root": target_raw,
+                            },
+                        )
+                return run_hunt(
+                    target_raw,
+                    scope=scope,
+                    engine_name=str(task.get("engine", "deterministic")),
+                    state_dir=str(state),
+                    budget=budget,
+                    config={"state_dir": str(state), "approval_auto_allow": True},
+                )
+
+            outcome = await asyncio.to_thread(_run)
             run_id = str(getattr(outcome, "run_id", "") or "") or None
             status = str(getattr(outcome, "status", status))
             findings = int(getattr(outcome, "findings", 0) or 0)
             exit_code = int(getattr(outcome, "exit_code", exit_code))
+            if kind == "dir":
+                task["local_root"] = target_raw
         except Exception as exc:  # noqa: BLE001 — a crashed hunt is a done task
             status = "failed"
             exit_code = 1
@@ -1060,6 +1089,8 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
                 "exit_code": exit_code,
                 "finished_ts": time.time(),
             }
+            if task.get("local_root"):
+                done["local_root"] = task.get("local_root")
             with contextlib.suppress(OSError):
                 write_json_atomic(queue_dir(state) / f"done-{task_id}.json", done)
 

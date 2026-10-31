@@ -1,0 +1,102 @@
+"""ReviewEngine — static source review behind the EngineDriver seam.
+
+Reads files under a local root and emits ``code_location`` evidence for
+suspicious patterns. Never promotes findings to ``verified``: a code reading
+is evidence that a span exists, not proof of exploitability.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+from typing import Any
+
+from .base import CandidateFinding, EngineContext, EngineResult, ScanPlan, TargetSpec, Evidence
+from ..kernel.findings import Severity
+
+
+class ReviewEngine:
+    name = "review"
+
+    _SUSPECT_PATTERNS = (
+        ("delegatecall", "unchecked delegatecall", "CWE-829"),
+        ("tx.origin", "tx.origin used for authorization", "CWE-477"),
+        ("selfdestruct", "selfdestruct reachable", "CWE-672"),
+    )
+
+    def plan(self, target: TargetSpec) -> ScanPlan:
+        return ScanPlan(engine=self.name, phases=["scan-files"], notes={"strategy": "static-review"})
+
+    def _local_root(self, ctx: EngineContext, target: TargetSpec) -> Path | None:
+        root = ctx.config.get("local_root") or target.notes.get("local_root")
+        if not root:
+            return None
+        try:
+            return Path(str(root)).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+
+    def run(self, target: TargetSpec, ctx: EngineContext) -> EngineResult:
+        root = self._local_root(ctx, target)
+        if root is None or not root.is_dir():
+            ctx.emit("engine_event", {"stage": "review.no_root", "root": str(root)})
+            return EngineResult(candidates=[], stats={"files_scanned": 0, "requests": 0, "blocked": 0, "errors": 0})
+
+        candidates: list[CandidateFinding] = []
+        files_scanned = 0
+        for dirpath, _dirs, files in os.walk(root):
+            # containment guard
+            try:
+                if Path(dirpath).resolve().relative_to(root) is not None:
+                    pass
+            except ValueError:
+                continue
+            for fname in files:
+                path = Path(dirpath) / fname
+                if path.suffix.lower() not in {".sol", ".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h"}:
+                    continue
+                try:
+                    if path.stat().st_size > 1_000_000:
+                        continue
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                files_scanned += 1
+                lines = text.splitlines()
+                for idx, line in enumerate(lines, start=1):
+                    for needle, title, cwe in self._SUSPECT_PATTERNS:
+                        if needle in line:
+                            span = line
+                            digest = hashlib.sha256(span.encode("utf-8")).hexdigest()
+                            candidates.append(
+                                CandidateFinding(
+                                    key=f"review-{needle}|{path}|{idx}",
+                                    title=title,
+                                    severity=Severity.MEDIUM,
+                                    cwe=cwe,
+                                    endpoint=str(path),
+                                    method="READ",
+                                    description=f"Suspicious pattern {needle!r} at {path}:{idx}",
+                                    impact="Potential vulnerability; requires manual review.",
+                                    remediation="Review and validate the flagged code.",
+                                    klass="unknown",
+                                    evidence=(
+                                        Evidence(
+                                            kind="code_location",
+                                            data={
+                                                "path": str(path),
+                                                "line_start": idx,
+                                                "line_end": idx,
+                                                "sha256": digest,
+                                            },
+                                        ),
+                                    ),
+                                )
+                            )
+        ctx.emit("engine_event", {"stage": "review.done", "files_scanned": files_scanned, "candidates": len(candidates)})
+        return EngineResult(candidates=candidates, stats={"files_scanned": files_scanned, "requests": 0, "blocked": 0, "errors": 0})
+
+    def replay(self, target: TargetSpec, ctx: EngineContext, candidate: CandidateFinding) -> bool:
+        # Code findings are never auto-verified.
+        return False

@@ -51,6 +51,7 @@ class ScopeSet:
     allowed_hosts: frozenset[str] = field(default_factory=frozenset)
     allow_subdomains: bool = False
     name: str = "default"
+    local_roots: tuple[str, ...] = field(default_factory=tuple)
 
     def allows_host(self, host: str | None) -> bool:
         normalized = _normalize_host(host)
@@ -89,6 +90,44 @@ class ScopeSet:
             )
         return host
 
+    def allows_local_root(self, path):
+        try:
+            resolved = Path(path).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return False
+        for root in self.local_roots:
+            try:
+                root_resolved = Path(root).resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            try:
+                resolved.relative_to(root_resolved)
+                return True
+            except ValueError:
+                continue
+        if not self.local_roots:
+            return True
+        return False
+
+    def allows_local_root(self, path):
+        try:
+            resolved = Path(path).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return False
+        for root in self.local_roots:
+            try:
+                root_resolved = Path(root).resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            try:
+                resolved.relative_to(root_resolved)
+                return True
+            except ValueError:
+                continue
+        if not self.local_roots:
+            return True
+        return False
+
     def summary(self) -> dict:
         return {
             "name": self.name,
@@ -116,10 +155,16 @@ def scope_from_manifest(path: str | Path) -> ScopeSet:
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     hosts = raw.get("hosts", [])
-    if not isinstance(hosts, list) or not hosts:
-        raise ValueError("scope manifest must contain a non-empty 'hosts' list")
+    local_roots = raw.get("local_roots", [])
+    if not isinstance(local_roots, list):
+        raise ValueError("local_roots must be a list")
+    if (not isinstance(hosts, list) or not hosts) and not local_roots:
+        raise ValueError("scope manifest must contain hosts or local_roots")
+    if not isinstance(hosts, list):
+        hosts = []
     return ScopeSet(
         allowed_hosts=frozenset(str(h).strip().lower() for h in hosts),
         allow_subdomains=bool(raw.get("allow_subdomains", False)),
         name=str(raw.get("name", Path(path).stem)),
+        local_roots=tuple(str(r) for r in local_roots),
     )
