@@ -237,7 +237,7 @@ def resume(
 
 @app.command()
 def hunt(
-    target: str = typer.Argument("", help="URL, host[:port], or local directory."),
+    targets: list[str] = typer.Argument(None, help="URL, host[:port], repo, or local directory. Multiple targets enable RAG mode."),
     scope: Path | None = typer.Option(None, "--scope", help="Scope manifest JSON."),
     engine: str | None = typer.Option(None, "--engine", help="deterministic | mock | llm."),
     state: Path | None = typer.Option(None, "--state", help="State directory."),
@@ -261,6 +261,9 @@ def hunt(
     lines: int | None = typer.Option(
         None, "--lines", help="Daemon verb: line count for `hunt logs` (ignored for plain hunts)."
     ),
+    rag_flag: bool = typer.Option(
+        False, "--rag", help="Run RAG (continuous hunting) after the initial hunt."
+    ),
 ) -> None:
     """One-command hunt with Strix exit codes: 0 clean, 1 error, 2 findings, 3 refused.
 
@@ -271,7 +274,8 @@ def hunt(
     # command (the verb becomes the positional target) — delegate before the
     # plain-hunt path can touch it. A plain `hunter hunt <URL>` is never
     # misrouted: normalize_hunt_target rejects those tokens as targets.
-    if target in {"start", "stop", "status", "restart", "logs"}:
+    if targets and targets[0] in {"start", "stop", "status", "restart", "logs"}:
+        target = targets[0]
         from hunter.cli.daemon import dispatch_hunt_alias
 
         raise typer.Exit(
@@ -290,6 +294,73 @@ def hunt(
                 lines=lines,
             )
         )
+    # RAG mode: multiple targets or --rag -> recognize scopes, enqueue tasks, run loop.
+    if len(targets or []) > 1 or rag_flag:
+        from hunter.duration import parse_duration
+        from hunter.home import state_dir as _state_dir
+        from hunter.workflow.scope_recognize import recognize_scope
+        from hunter.workflow.rag import RagConfig, RagLoop
+        from hunter.daemon import daemon_running, enqueue_hunt, start_daemon
+
+        resolved_state = _state_dir(state)
+        provider = None
+        if (engine or "llm") == "llm":
+            try:
+                from hunter.llm.config import find_config_path, load_config
+                from hunter.llm.router import provider_from_config
+
+                config_path = find_config_path()
+                if config_path is not None and config_path.is_file():
+                    provider = provider_from_config(load_config(config_path))
+            except Exception:
+                provider = None
+        selected_engine = engine or ("llm" if provider is not None else "deterministic")
+        try:
+            budget_s = parse_duration(time_opt or "6h")
+        except Exception:
+            budget_s = 6 * 3600
+        if budget_s <= 0:
+            budget_s = 6 * 3600
+        first_scope = None
+        for tgt in targets or []:
+            tgt_scope = recognize_scope(provider, tgt)
+            if first_scope is None:
+                first_scope = tgt_scope
+            try:
+                enqueue_hunt(
+                    resolved_state,
+                    target=tgt,
+                    scope=tgt_scope,
+                    engine=selected_engine,
+                    max_wall_seconds=float(budget_s),
+                    max_cost_usd=0.0,
+                    min_wall_seconds=0.0,
+                )
+            except ValueError as exc:
+                err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+                raise typer.Exit(3) from exc
+        try:
+            running, _ = daemon_running(resolved_state)
+            if not running:
+                start_daemon(resolved_state)
+        except Exception:
+            pass
+        rag_config = RagConfig(
+            state_dir=resolved_state,
+            target=targets[0],
+            scope=first_scope,
+            engine=selected_engine,
+            time_budget_s=float(budget_s),
+            interval_s=45.0,
+            high_water=8,
+            dry_run=False,
+            once=False,
+            manage_daemon=False,
+            provider=provider,
+        )
+        RagLoop(rag_config).run()
+        raise typer.Exit(0)
+
     import json
 
     from hunter.hunt import (
@@ -301,6 +372,7 @@ def hunt(
     )
     from hunter.tools.scope import ScopeSet, scope_from_manifest
 
+    target = (targets[0] if targets else "")
     normalized, kind = normalize_hunt_target(target)
     if kind == "invalid":
         err_console.print("[hunter.error]BLOCKED:[/hunter.error] invalid hunt target")
@@ -509,6 +581,36 @@ def rag(
     loop = RagLoop(rag_config)
     code = loop.run()
     raise typer.Exit(code)
+
+
+@app.command("scope")
+def scope_cmd(
+    targets: list[str] = typer.Argument(None, help="Targets to recognize."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
+) -> None:
+    """Recognize target kinds and print the proposed scope manifests."""
+    import json
+
+    from hunter.workflow.scope_recognize import recognize
+
+    provider = None
+    try:
+        from hunter.llm.config import find_config_path, load_config
+        from hunter.llm.router import provider_from_config
+
+        config_path = find_config_path()
+        if config_path is not None and config_path.is_file():
+            provider = provider_from_config(load_config(config_path))
+    except Exception:
+        provider = None
+    out: list[dict] = []
+    for tgt in targets or []:
+        out.append(recognize(provider, tgt))
+    if json_out:
+        console.print_json(json.dumps(out))
+        return
+    for item in out:
+        console.print(item)
 
 
 # ---------------------------------------------------------------------- model ---
