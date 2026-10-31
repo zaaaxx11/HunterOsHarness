@@ -158,10 +158,56 @@ def test_rag_cycle_enqueues_seed_variants(tmp_path):
     )
     loop = RagLoop(cfg)
     enqueued = loop._cycle()
-    # high_water=3 -> at least 2 additional tasks beyond/including seed
+    # With a single-host scope there is no OTHER host to fill the high-water
+    # mark with, so exactly one task is correct — the guard must not invent
+    # `?rag-cycle=N` clones of the same URL to pad the queue.
     pending = len(list((sd / "daemon" / "queue").glob("task-*.json")))
-    assert pending >= 2
-    assert len(enqueued) >= 1
+    assert pending == 1, pending
+    assert len(enqueued) == 1
+    # and the one task is a real scope host, not a query-string variant
+    task = json.loads(next((sd / "daemon" / "queue").glob("task-*.json")).read_text())
+    assert task["target"] == "https://example.com/", task["target"]
+    assert "rag-cycle" not in task["target"]
+
+
+def test_rag_cycle_fills_high_water_with_real_scope_hosts(tmp_path):
+    """A multi-host scope fills the queue with DISTINCT hosts, never clones.
+
+    Pins the fix for the `?rag-cycle=N` padding: every enqueued target must
+    be a different host from the approved scope, so the queue is real work
+    rather than the same endpoint dialed with a junk parameter.
+    """
+    sd = tmp_path / "state"
+    sd.mkdir()
+    (sd / "daemon" / "queue").mkdir(parents=True, exist_ok=True)
+    scope = ScopeSet(frozenset({"example.com", "api.example.com", "cdn.example.com"}),
+                     False, name="test")
+
+    cfg = RagConfig(
+        state_dir=sd,
+        target="http://example.com",
+        scope=scope,
+        engine="deterministic",
+        time_budget_s=10,
+        interval_s=1,
+        high_water=3,
+        dry_run=False,
+        once=True,
+        manage_daemon=False,
+        provider=None,
+    )
+    loop = RagLoop(cfg)
+    enqueued = loop._cycle()
+    pending = len(list((sd / "daemon" / "queue").glob("task-*.json")))
+    assert pending == 3, pending
+
+    targets = [
+        json.loads(p.read_text())["target"]
+        for p in (sd / "daemon" / "queue").glob("task-*.json")
+    ]
+    assert len(set(targets)) == len(targets), f"duplicate targets: {targets}"
+    assert not any("rag-cycle" in t for t in targets), (
+        f"queue padded with query-string clones: {targets}")
 
 
 def test_rag_cycle_no_duplicate_processing(tmp_path):

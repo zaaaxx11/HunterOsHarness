@@ -334,26 +334,37 @@ class RagLoop:
             mark_followed(self.state_dir, fid)
             followed.add(fid)
 
-        # High-water guard: fill with seed variants if still below high-water.
+        # High-water guard: fill with REAL scope targets, not the seed URL
+        # wearing a query-string hat. `?rag-cycle=N` dials the same endpoint
+        # N times with a junk parameter — that is not hunting, it is a
+        # self-inflicted DoS on our own budget. Every host in the approved
+        # scope is a legitimate target; walk them instead.
         origin = self._origin()
-        seed = self.config.target
         cycle = int(state.get("cycle", 0) or 0)
-        while pending < self.config.high_water and pending < self.config.high_water:
-            # cap seed variants
+        # Dedup on (scheme, host), not the raw string: `http://example.com`
+        # and `https://example.com/` are the same host, and a string-set
+        # would happily queue both.
+        seen_hosts = {
+            (urlparse(t).scheme, urlparse(t).hostname or "")
+            for t in existing
+        }
+        for host in sorted(self.config.scope.allowed_hosts):
+            if pending >= self.config.high_water:
+                break
             if cycle >= self.config.max_seed_variants:
                 break
-            cycle += 1
-            variant = f"{seed}?rag-cycle={cycle}" if "?" not in seed else f"{seed}&rag-cycle={cycle}"
-            # validate scope
+            candidate = f"https://{host}/"
+            if ("https", host) in seen_hosts:
+                continue  # already queued under either scheme
             try:
-                self.config.scope.check_url(variant)
+                self.config.scope.check_url(candidate)
             except Exception:  # noqa: BLE001
-                break
-            if variant in existing:
                 continue
-            if self._enqueue(variant):
-                enqueued.append(variant)
-                existing.add(variant)
+            cycle += 1
+            if self._enqueue(candidate):
+                enqueued.append(candidate)
+                existing.add(candidate)
+                seen_hosts.add(("https", host))
                 pending += 1
 
         state["cycle"] = cycle
@@ -415,7 +426,12 @@ class RagLoop:
             except Exception:  # noqa: BLE001
                 pass
 
-        # Extend prompt if new findings appeared.
+        # Deadline reached. Report honestly rather than prompting for an
+        # extension this loop cannot honour: the deadline is a monotonic
+        # bound captured before the while-loop, so answering "y" here used
+        # to fall into an empty branch and change nothing. The daemon is
+        # left running (drained above) so the operator can re-run
+        # `hunter rag` with a fresh --time if they want more.
         if not self.config.dry_run and not self.config.once:
             try:
                 ledger = self._ledger()
@@ -424,16 +440,11 @@ class RagLoop:
             except Exception:  # noqa: BLE001
                 current_count = 0
             if current_count > 0:
-                try:
-                    import builtins
-
-                    answer = builtins.input("Waktu habis, ada finding baru. Tambah waktu? [y/N] ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    answer = "n"
-                if answer in ("y", "yes"):
-                    # Re-run with same budget (one extension) by resetting deadline is not
-                    # possible here; instead leave daemon running for manual `hunter rag`.
-                    pass
+                print(
+                    f"waktu habis — {current_count} finding tercatat. "
+                    f"daemon dibiarkan berjalan; jalankan `hunter rag` lagi "
+                    f"dengan --time lebih besar untuk melanjutkan."
+                )
         return 0
 
 
