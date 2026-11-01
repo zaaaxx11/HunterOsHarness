@@ -12,7 +12,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # Three interpreters, newest first: current stable, one back, two back.
+        # 3.15 is deliberately NOT here: PyYAML publishes no cp315 wheel, so it
+        # builds from source and its Cython bootstrap dies with
+        # "SystemError: module Cython.Utils uses unknown slot ID 84". Move the
+        # window up only once a hard dependency ships a cp315 wheel.
+        python-version: ["3.14", "3.13", "3.12"]
     runs-on: ${{ matrix.os }}
     env:
       HUNTEROS_NO_UPDATE_CHECK: "1"
@@ -53,7 +58,7 @@ jobs:
           fi
 
   typecheck:
-    name: mypy / Python 3.13
+    name: mypy / Python 3.14
     runs-on: ubuntu-latest
     env:
       HUNTEROS_NO_UPDATE_CHECK: "1"
@@ -62,7 +67,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: pip
       - name: Install development dependencies
         run: python -m pip install -e ".[dev]" mypy
@@ -79,7 +84,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: pip
       - name: Install artifact tooling
         run: python -m pip install --disable-pip-version-check build twine
@@ -100,24 +105,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macos-14 was removed: that runner never becomes available on the free
+        # tier, so the job sat queued until the run was cancelled and reported
+        # "cancelled" forever. macos-15-intel covers the macOS surface instead.
         include:
           - os: ubuntu-latest
-            python-version: "3.13"
-            experimental: false
+            python-version: "3.14"
+          - os: ubuntu-latest
+            python-version: "3.12"
           - os: windows-latest
-            python-version: "3.13"
-            experimental: false
+            python-version: "3.14"
           - os: macos-15-intel
-            python-version: "3.13"
-            experimental: false
-          - os: macos-14
-            python-version: "3.13"
-            experimental: true
+            python-version: "3.14"
           - os: ubuntu-24.04-arm
-            python-version: "3.13"
-            experimental: true
+            python-version: "3.14"
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
     env:
       HUNTEROS_NO_UPDATE_CHECK: "1"
       CI: "true"
