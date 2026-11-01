@@ -1931,6 +1931,20 @@ def build_registry(
             )
         )
 
+    # Offensive toolchain (Foundry / Slither / solc). Registered AFTER the
+    # built-ins and BEFORE the drop-in plugins, so a plugin can still override
+    # a toolchain tool but can never shadow a built-in. Missing binaries are
+    # advertised through register_unavailable with the exact install command,
+    # so the model sees the capability and the reason it cannot use it.
+    try:
+        from .toolchain import register_toolchain_tools  # noqa: PLC0415
+
+        register_toolchain_tools(registry)
+    except Exception as exc:  # pragma: no cover - defensive
+        registry.register_unavailable(
+            "toolchain_loader", "toolchain.loader_failed", f"{type(exc).__name__}: {exc}"
+        )
+
     # Drop-in tools: any *_*.py in ~/.hunter/tools (or $HUNTEROS_TOOL_DIRS)
     # becomes a dispatchable tool.  Loaded LAST so a plugin can never shadow a
     # built-in (load_plugins refuses the collision by default), and failures

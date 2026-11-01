@@ -25,7 +25,11 @@ PINNED_15 = (
 )
 # R2-B B3 heavy opt-in tail (append-only, sorted): the first 15 never move.
 PINNED_HEAVY_SORTED = ("anvil", "cast", "slither")
-PINNED_BINARIES = PINNED_15 + PINNED_HEAVY_SORTED
+# Offensive toolchain tail (append-only, sorted within the group): the
+# compile/test half of Foundry plus the bare Solidity compiler. Appended
+# after the R2-B tail so the append-only contract still holds end to end.
+PINNED_TOOLCHAIN_SORTED = ("forge", "solc")
+PINNED_BINARIES = PINNED_15 + PINNED_HEAVY_SORTED + PINNED_TOOLCHAIN_SORTED
 FIVE = ("success", "blocked", "unavailable", "redacted", "truncated")
 ADDR = "0xabc0000000000000000000000000000000000def"
 RPC = "https://rpc.example.com"
@@ -248,7 +252,12 @@ def test_r2b_royal_inventory_pinned_15():
     from hunter.agent.inventory import INVENTORY_BINARIES
 
     assert INVENTORY_BINARIES == PINNED_BINARIES
-    assert len(INVENTORY_BINARIES) == 18
+    assert len(INVENTORY_BINARIES) == 20
     assert INVENTORY_BINARIES[:15] == PINNED_15
-    assert INVENTORY_BINARIES[15:] == PINNED_HEAVY_SORTED
-    assert tuple(sorted(INVENTORY_BINARIES[15:])) == INVENTORY_BINARIES[15:]
+    assert INVENTORY_BINARIES[15:] == PINNED_HEAVY_SORTED + PINNED_TOOLCHAIN_SORTED
+    # Sortedness is per-group, not across the whole tail: the R2-B group and
+    # the toolchain group are each sorted, but "slither" > "forge" so the
+    # concatenation is not. Asserting the whole tail is sorted would force a
+    # reorder that breaks the append-only contract.
+    assert tuple(sorted(PINNED_HEAVY_SORTED)) == PINNED_HEAVY_SORTED
+    assert tuple(sorted(PINNED_TOOLCHAIN_SORTED)) == PINNED_TOOLCHAIN_SORTED

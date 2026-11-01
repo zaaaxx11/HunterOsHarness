@@ -38,6 +38,11 @@ INVENTORY_BINARIES: tuple[str, ...] = (
     "anvil",
     "cast",
     "slither",
+    # Offensive toolchain: the compile/test half of Foundry plus the bare
+    # Solidity compiler. Appended after the pinned 15 and the R2-B tail, and
+    # kept sorted within this group so the append-only contract holds.
+    "forge",
+    "solc",
 )
 
 

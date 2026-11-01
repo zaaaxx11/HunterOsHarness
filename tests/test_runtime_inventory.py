@@ -40,7 +40,11 @@ PINNED_15 = (
 )
 # R2-B B3 heavy opt-in tail (append-only, sorted): the first 15 never move.
 PINNED_HEAVY_SORTED = ("anvil", "cast", "slither")
-PINNED_BINARIES = PINNED_15 + PINNED_HEAVY_SORTED
+# Offensive toolchain tail (append-only, sorted within the group): the
+# compile/test half of Foundry plus the bare Solidity compiler. Appended
+# after the R2-B tail so the append-only contract still holds end to end.
+PINNED_TOOLCHAIN_SORTED = ("forge", "solc")
+PINNED_BINARIES = PINNED_15 + PINNED_HEAVY_SORTED + PINNED_TOOLCHAIN_SORTED
 
 
 @pytest.fixture()
@@ -68,10 +72,15 @@ def env(tmp_path):
 def test_inventory_pinned_binary_list():
     # R2-B append-only: pinned 18 = original 15 first + sorted heavy tail.
     assert INVENTORY_BINARIES == PINNED_BINARIES
-    assert len(INVENTORY_BINARIES) == 18
+    assert len(INVENTORY_BINARIES) == 20
     assert INVENTORY_BINARIES[:15] == PINNED_15
-    assert INVENTORY_BINARIES[15:] == PINNED_HEAVY_SORTED
-    assert tuple(sorted(INVENTORY_BINARIES[15:])) == INVENTORY_BINARIES[15:]
+    assert INVENTORY_BINARIES[15:] == PINNED_HEAVY_SORTED + PINNED_TOOLCHAIN_SORTED
+    # Sortedness is per-group, not across the whole tail: the R2-B group and
+    # the toolchain group are each sorted, but "slither" > "forge" so the
+    # concatenation is not. Asserting the whole tail is sorted would force a
+    # reorder that breaks the append-only contract.
+    assert tuple(sorted(PINNED_HEAVY_SORTED)) == PINNED_HEAVY_SORTED
+    assert tuple(sorted(PINNED_TOOLCHAIN_SORTED)) == PINNED_TOOLCHAIN_SORTED
 
 
 def test_runtime_inventory_tool_returns_model_json(env, monkeypatch):
@@ -109,7 +118,11 @@ def test_inventory_cached_and_which_seamed(env, monkeypatch):
     first = registry.dispatch("runtime_inventory", {}, ctx)
     second = registry.dispatch("runtime_inventory", {}, ctx)
     assert first.ok is True and second.ok is True
-    # the run-scoped cache means which_fn ran exactly once over all binaries
-    assert calls == list(PINNED_BINARIES)
+    # the run-scoped cache means which_fn ran exactly once over all binaries.
+    # Only the inventory's own calls are counted here: build_registry also
+    # resolves the toolchain binaries (forge/cast/slither/anvil/solc) through
+    # toolchain._resolve, which is a separate PATH scan by design.
+    inventory_calls = [c for c in calls if c in PINNED_BINARIES]
+    assert inventory_calls == list(PINNED_BINARIES)
     assert json.loads(first.result_for_model)["missing"] == ["masscan"]
     assert second.result_for_model == first.result_for_model
