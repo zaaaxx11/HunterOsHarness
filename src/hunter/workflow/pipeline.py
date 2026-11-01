@@ -118,6 +118,58 @@ class _ReplayRecorder:
         return getattr(self._client, name)
 
 
+def _auto_curate(ledger: Any, run_id: str, *, emit: Any = None) -> dict[str, Any]:
+    """Distil this run's retro into skill cards, non-interactively.
+
+    Returns a small summary dict so the RUN_ENDED event can report whether the
+    harness actually learned anything from this hunt.
+
+    Opt-out is ``agent.auto_curate: false`` in the harness config. Everything
+    is best-effort: a curator blow-up must never lose a completed run, so any
+    failure is recorded as an event and swallowed.
+    """
+    # Config gate must be honoured or the documented opt-out is a lie.
+    try:
+        from hunter.config import load_config  # noqa: PLC0415 — avoid import cycle
+
+        cfg = load_config()
+        agent_cfg = getattr(cfg, "agent", None)
+        flag = None
+        if isinstance(agent_cfg, dict):
+            flag = agent_cfg.get("auto_curate")
+        else:
+            flag = getattr(agent_cfg, "auto_curate", None)
+        if flag is False:
+            if emit is not None:
+                emit(EventKind.ENGINE_EVENT, {"tool": "auto_curate", "skipped": "disabled_by_config"})
+            return {"skipped": "disabled_by_config", "saved": 0}
+    except Exception:
+        pass  # config unavailable → default to learning
+
+    summary: dict[str, Any] = {"enabled": True, "saved": 0, "skipped": 0, "duplicates": 0}
+    try:
+        from hunter.agent.curator import curate  # noqa: PLC0415 — optional module
+
+        # ask=lambda -> always accept.  An unattended hunt has no TTY, and the
+        # curator already refuses anything that trips scan_draft() (scope /
+        # gate / exploit-instruction markers), so auto-accept stays bounded:
+        # a dangerous draft never reaches disk regardless of the answer.
+        text = curate(run_id, ledger=ledger, ask=lambda prompt: True, console=None)
+        lowered = (text or "").lower()
+        summary["saved"] = lowered.count("saved candidate")
+        summary["skipped"] = 1 if "skipped" in lowered else 0
+        summary["duplicates"] = lowered.count("skipped duplicate")
+        summary["text"] = (text or "")[:500]
+    except Exception as exc:  # pragma: no cover - defensive
+        summary["error"] = f"{type(exc).__name__}: {exc}"
+    if emit is not None:
+        try:
+            emit(EventKind.ENGINE_EVENT, {"tool": "auto_curate", **summary})
+        except Exception:
+            pass
+    return summary
+
+
 def run_scan(
     target_url: str,
     *,
@@ -440,6 +492,13 @@ def _execute_scan(
     machine.close_current()
     machine.start("retro")
     record_retro(ledger, run_id)
+    # AUTO-LEARN: turn this run's retro into durable skill cards.  The curator
+    # already existed but was only reachable from `hunter curate` / the slash
+    # command, so a hunt never taught the harness anything.  Now every run
+    # distils its own lessons, unless the operator opts out with
+    # `agent.auto_curate: false`.  Failures are logged into the ledger as an
+    # event and never abort the run: learning is a side effect, not a gate.
+    curated = _auto_curate(ledger, run_id, emit=emit)
     machine.close_current()
     emit(
         EventKind.RUN_ENDED,
@@ -450,6 +509,7 @@ def _execute_scan(
             "gate_blocked": gate_blocked,
             "gates_failed": stats["gates_failed"],
             "elapsed_ms": elapsed_ms,
+            "curated": curated,
         },
     )
 

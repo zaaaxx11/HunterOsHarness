@@ -96,9 +96,15 @@ class AgentLoop:
         max_time_nudges: int = 50,
         interrupt_check: Callable[[], bool] | None = None,
         hooks: Any | None = None,
+        role: str = "",
     ) -> None:
         if tier not in TIER_ORDER:
             raise ValueError(f"unknown tier {tier!r} (use basic|advanced)")
+        # Role scopes the soul: a delegated worker runs under its own card,
+        # while the orchestrating hunt leaves this empty and keeps the shared
+        # soul. Validated lazily by soul.load_role_soul, which falls back
+        # instead of raising.
+        self.role = (role or "").strip().lower()
         from .skills import install_default_skill_selector
 
         install_default_skill_selector()
@@ -146,9 +152,21 @@ class AgentLoop:
         from .skills import is_default_skill_selector
         if skills_index is None or not is_default_skill_selector(current_skill_selector()):
             skills_index = resolve_skills_index(question=goal)
-        from .soul import soul_block as _soul_block
+        from .soul import role_soul_block, soul_block as _soul_block
 
-        soul = _soul_block()  # pinned once: every turn shares one character
+        # PINNED ONCE per run. A child loop carries its own role, so it opens
+        # with that specialty's soul card instead of the orchestrator's. A loop
+        # without a role (the main hunt, `hunter chat`) keeps the shared soul.
+        role = getattr(self, "role", "") or ""
+        if role:
+            soul = role_soul_block(role)
+            # A role with no card and no shared soul must still render an
+            # identity, so an empty block falls back rather than silently
+            # dropping the persona line.
+            if not soul:
+                soul = _soul_block()
+        else:
+            soul = _soul_block()
         system = build_system_prompt(
             target_url=ctx.target_url,
             scope_summary=ctx.scope.summary(),

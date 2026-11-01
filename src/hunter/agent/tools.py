@@ -29,6 +29,7 @@ network, or filesystem directly. Governance invariants implemented here:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 import shlex
@@ -388,6 +389,18 @@ def _http_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
         "engine_event",
         {"tool": "http_request", "method": method, "url": url, "status": exchange.status, "hops": hops},
     )
+
+    # AUTO-BROWSER FALLBACK: curl stays the default because it is cheap and
+    # gives clean evidence. But a WAF/JS challenge answers a plain client with
+    # 403/429/503 or a challenge page, and the hunt should not stall there —
+    # that is exactly when a real browser earns its cost. We fall back ONLY on
+    # those signals, keep the raw response as evidence either way, and label
+    # the result so the model knows which engine produced it.
+    if _looks_blocked(exchange) and method in ("GET", "HEAD"):
+        browser_outcome = _browser_fallback(args, ctx, url=url, max_body=max_body)
+        if browser_outcome is not None:
+            return browser_outcome
+
     _observe_tool(ctx, "http_request")
     resp_body = exchange.response_body or ""
     truncated = len(resp_body) > max_body
@@ -1325,11 +1338,229 @@ def _browser_type(args: dict[str, Any], ctx: ToolContext, module: Any = _AUTO) -
 # -- registry assembly -----------------------------------------------------------
 
 
+def _looks_blocked(exchange: Any) -> bool:
+    """Heuristic: would a real browser plausibly get further than the client?
+
+    Narrow ON PURPOSE. Two failure modes cost real money if we get this wrong:
+
+    * False positive — a JSON-RPC endpoint answers ``GET /`` with 403 by
+      design (correct method is POST). Treating that as a "challenge" launched
+      Chromium, which rendered an empty page, and the model lost the real
+      evidence. A status code ALONE is therefore never enough.
+    * False negative — a JS challenge served with 200 slips past. Covered by
+      the body markers below.
+
+    So: a deny status only counts when the body also looks like an edge page
+    (HTML challenge text), OR when the response carries the classic
+    edge-blocker headers. A bare 403/429 with an empty or JSON body is a
+    finding about the target, not a reason to render it.
+    """
+    try:
+        status = int(getattr(exchange, "status", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    body = str(getattr(exchange, "response_body", "") or "")
+    lowered = body[:8000].lower()
+
+    markers = (
+        "just a moment",
+        "attention required",
+        "checking your browser",
+        "cf-challenge",
+        "cf_chl_opt",
+        "cf-chl",
+        "enable javascript",
+        "javascript is required",
+        "captcha",
+        "ddos protection",
+        "access denied",
+        "verify you are human",
+    )
+    if any(marker in lowered for marker in markers):
+        return True
+
+    if status not in (401, 403, 405, 406, 429, 503):
+        return False
+
+    # A deny status counts only when it is clearly an edge/render step: HTML
+    # body, or a known bot-wall header. JSON and empty bodies mean the app
+    # answered deliberately — respect it and keep the plain exchange.
+    headers = {}
+    raw_headers = getattr(exchange, "response_headers", None)
+    if isinstance(raw_headers, dict):
+        headers = {str(k).lower(): str(v) for k, v in raw_headers.items()}
+    if "cf-mitigated" in headers or "x-amzn-waf-action" in headers:
+        return True
+    content_type = headers.get("content-type", "")
+    looks_html = "html" in content_type.lower() or lowered.lstrip().startswith(("<!doctype", "<html"))
+    return looks_html
+
+
+def _browser_fallback(
+    args: dict[str, Any], ctx: ToolContext, *, url: str, max_body: int
+) -> ToolOutcome | None:
+    """Retry a blocked GET through Chromium; None means "no browser, keep curl".
+
+    Returns None (so the caller reports the original HTTP result) when the
+    browser is unavailable or fails, because a broken browser must never
+    destroy a valid curl observation.
+
+    ``BrowserSession`` starts lazily on first ``navigate`` and returns
+    ``BrowserAction`` values, not raw strings.
+    """
+    if not ctx.config.get("browser_enabled"):
+        return None
+    try:
+        from . import browser as browser_mod  # noqa: PLC0415 — optional dependency
+    except Exception:
+        return None
+    if getattr(browser_mod, "load_playwright", lambda: None)() is None:
+        return None
+
+    session = ctx.config.get("browser_session")
+    opened_here = False
+    if session is None:
+        try:
+            session = browser_mod.BrowserSession(ctx.scope)
+        except Exception as exc:
+            ctx.emit(
+                "engine_event",
+                {"tool": "http_request", "code": "browser.fallback_unavailable", "error": str(exc)[:200]},
+            )
+            return None
+        ctx.config["browser_session"] = session
+        opened_here = True
+
+    ctx.emit(
+        "engine_event",
+        {"tool": "http_request", "code": "browser.fallback_used", "url": url},
+    )
+    try:
+        nav = session.navigate(url)
+        snap = session.snapshot()
+    except browser_mod.BrowserScopeRedirectBlocked as exc:
+        ctx.emit(
+            "engine_event",
+            {"tool": "http_request", "code": "scope.target_out_of_scope", "engine": "browser"},
+        )
+        return _blocked("scope.target_out_of_scope", str(exc))
+    except Exception as exc:
+        if opened_here:
+            with contextlib.suppress(Exception):
+                session.close()
+            ctx.config.pop("browser_session", None)
+        ctx.emit(
+            "engine_event",
+            {"tool": "http_request", "code": "browser.fallback_failed", "error": str(exc)[:200]},
+        )
+        return None
+
+    text = str(getattr(snap, "snapshot", "") or "")
+    final_url = str(getattr(nav, "url", url) or url)
+    digest = text[:max_body]
+    truncated = bool(getattr(snap, "truncated", False)) or len(text) > max_body
+    result = (
+        f"GET {url} -> rendered by Chromium after the plain client was blocked\n"
+        f"final_url: {final_url}\n"
+        f"title: {getattr(nav, 'title', '')!r}\n"
+        f"response_text[:400]: {digest[:400]!r}\n"
+        + ("[truncated]\n" if truncated else "")
+        + "engine: browser (fallback) — the plain HTTP client hit a challenge/deny; "
+        "this is the DOM after JavaScript ran. Evidence is persisted as browser_render."
+    )
+    return ToolOutcome(
+        result_for_model=result,
+        evidence={
+            "kind": "browser_render",
+            "data": {
+                "url": url,
+                "final_url": final_url,
+                "engine": "chromium-fallback",
+                "text": digest,
+                "truncated": truncated,
+            },
+        },
+    )
+
+
+def _agent_delegate(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+    """Spawn a real sub-agent: separate context, soul-injected, tool-restricted.
+
+    The child writes into the SAME ledger and scope, so its evidence is real and
+    chained — but it cannot file findings.  Only the orchestrator decides what
+    becomes a claim.
+    """
+    from .subagents import SubagentSpec, run_subagent
+
+    goal = str(args.get("goal", "") or "").strip()
+    if not goal:
+        return ToolOutcome(ok=False, result_for_model="delegate_task: 'goal' is required")
+
+    role = str(args.get("role", "redteam") or "redteam").strip().lower()
+    context = str(args.get("context", "") or "")
+    try:
+        max_turns = int(args.get("max_turns", 12) or 12)
+    except (TypeError, ValueError):
+        max_turns = 12
+    max_turns = max(1, min(max_turns, 40))
+
+    provider = ctx.config.get("provider")
+    if provider is None:
+        return ToolOutcome(
+            ok=False,
+            result_for_model="delegate_task: no provider in context; delegation unavailable",
+        )
+    registry = ctx.config.get("registry")
+    if registry is None:
+        return ToolOutcome(
+            ok=False,
+            result_for_model="delegate_task: no registry in context; delegation unavailable",
+        )
+
+    # Depth guard: a child may not delegate again.  Without this a model could
+    # fork bomb the harness by asking each child to spawn more children.
+    depth = int(ctx.config.get("delegate_depth", 0) or 0)
+    if depth >= 1:
+        return ToolOutcome(
+            ok=False,
+            result_for_model=(
+                "delegate_task: max delegation depth reached — you are a sub-agent, "
+                "finish with the evidence you have."
+            ),
+        )
+
+    ctx.emit("delegate_started", {"role": role, "goal": goal[:500], "max_turns": max_turns})
+    result = run_subagent(
+        SubagentSpec(
+            role=role,
+            goal=goal,
+            context=context,
+            max_turns=max_turns,
+        ),
+        ctx,
+        provider=provider,
+        parent_registry=registry,
+        tier=str(ctx.config.get("tier", "basic")),
+        budget=None,
+    )
+    ctx.emit(
+        "delegate_finished",
+        {
+            "role": result.role,
+            "ok": result.ok,
+            "turns": result.stats.get("turns"),
+            "tool_calls": result.stats.get("tool_calls"),
+        },
+    )
+    return ToolOutcome(ok=result.ok, result_for_model=result.render())
+
+
 def build_registry(
     tier: str = "basic",
     *,
     browser_enabled: bool = False,
     playwright_module: Any = _AUTO,
+    **kwargs: Any,
 ) -> ToolRegistry:
     """Assemble the v0.2 agent tool registry.
 
@@ -1627,5 +1858,77 @@ def build_registry(
                 name,
                 "browser.disabled",
                 "browser tools are disabled; enable agent.browser for a governed hunt.",
+            )
+
+    # Sub-agent delegation: the orchestrator can spawn real child workers with
+    # their own context.  Gated on the advanced tier — a basic hunt stays a
+    # single focused loop, and delegation is an escalation, not a default.
+    if TIER_ORDER.get(tier, 0) >= TIER_ORDER["advanced"]:
+        registry.register(
+            ToolSpec(
+                name="delegate_task",
+                description=(
+                    "Spawn a real sub-agent to work an independent sub-problem. The child "
+                    "has its OWN conversation (so it does not inherit your assumptions), gets "
+                    "the same soul/character and the same scope, and returns a report of "
+                    "observations — it CANNOT file findings. Use it when you need an "
+                    "unbiased second pass, a focused fuzz campaign, or a role you are too "
+                    "committed to judge (e.g. trying to falsify your own hypothesis)."
+                ),
+                parameters=_schema(
+                    {
+                        "role": {
+                            "type": "string",
+                            "enum": ["recon", "redteam", "fuzzer", "chainer"],
+                            "description": "Specialty preset for the child worker.",
+                        },
+                        "goal": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4000,
+                            "description": "Exactly what the child must accomplish.",
+                        },
+                        "context": {
+                            "type": "string",
+                            "maxLength": 4000,
+                            "description": (
+                                "Evidence, endpoints or hypotheses to hand over. The child "
+                                "does not see your conversation, so state facts here."
+                            ),
+                        },
+                        "max_turns": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 40,
+                            "description": "Turn ceiling for the child (default 12).",
+                        },
+                    },
+                    ["goal"],
+                ),
+                handler=_agent_delegate,
+                min_tier="advanced",
+            )
+        )
+
+    # Drop-in tools: any *_*.py in ~/.hunter/tools (or $HUNTEROS_TOOL_DIRS)
+    # becomes a dispatchable tool.  Loaded LAST so a plugin can never shadow a
+    # built-in (load_plugins refuses the collision by default), and failures
+    # are recorded on the registry instead of breaking startup.
+    plugins_enabled = bool(kwargs.get("plugins_enabled", True))
+    if plugins_enabled:
+        try:
+            from .plugins import load_plugins  # noqa: PLC0415 — optional module
+
+            result = load_plugins(
+                registry,
+                home=kwargs.get("home"),
+                override=bool(kwargs.get("plugin_override", False)),
+            )
+            registry.plugin_result = result  # type: ignore[attr-defined]
+            for name, reason in result.skipped:
+                registry.register_unavailable(name, "plugin.skipped", reason)
+        except Exception as exc:  # pragma: no cover - defensive
+            registry.register_unavailable(
+                "plugin_loader", "plugin.loader_failed", f"{type(exc).__name__}: {exc}"
             )
     return registry

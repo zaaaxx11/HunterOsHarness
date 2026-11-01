@@ -218,3 +218,137 @@ def soul_block(text: str | None = _UNSET) -> str:
     if not text:
         return ""
     return SOUL_HEADER + CORE_IDENTITY + "\n" + sanitize_soul(text)
+
+
+# -- per-role souls --------------------------------------------------------------
+#
+# One soul per worker role, so a delegated sub-agent opens with the character of
+# its specialty instead of the orchestrator's. Resolution order (highest first):
+#
+# 1. ``~/.hunter/souls/<role>.md`` — operator override, trusted, verbatim.
+# 2. ``$HUNTER_SOULS_DIR/<role>.md`` — explicit dir pin, trusted, verbatim.
+# 3. bundled ``_data/prompts/souls/<role>.md`` — ships with the harness.
+# 4. the shared soul (:func:`load_soul`) — a role without a card still gets an
+#    identity rather than an empty system prompt.
+#
+# A role is part of the path, so it is validated as a strict identifier: a
+# crafted role like ``../../etc/passwd`` must never reach the filesystem.
+
+_ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+# Per-role soul budget. A worker's character is worth its context, but not more
+# than this: the cap keeps a bloated card from crowding out the tools, skills and
+# evidence the worker actually needs. Enforced on the rendered block.
+#
+# Deliberately generous — a well-written card runs 300-400 tokens, so 5000 is
+# pure headroom for a verbose operator override rather than a working limit.
+# It exists only to stop a runaway file from eating the whole context window.
+ROLE_SOUL_MAX_TOKENS = 5000
+
+
+def _valid_role(role: str) -> str:
+    clean = (role or "").strip().lower()
+    if not _ROLE_RE.match(clean):
+        raise ValueError(f"invalid role name: {role!r}")
+    return clean
+
+
+def _role_soul_candidates(role: str) -> list[Path]:
+    out: list[Path] = []
+    env_dir = os.getenv("HUNTER_SOULS_DIR") or os.getenv("HUNTEROS_SOULS_DIR")
+    if env_dir:
+        out.append(Path(env_dir) / f"{role}.md")
+    try:
+        from hunter.home import hunter_home as _hunter_home
+
+        out.append(_hunter_home() / "souls" / f"{role}.md")
+    except Exception:  # noqa: BLE001
+        out.append(Path.home() / ".hunter" / "souls" / f"{role}.md")
+    bundled_dir = Path(__file__).resolve().parent.parent / "_data" / "prompts" / "souls"
+    out.append(bundled_dir / f"{role}.md")
+    return out
+
+
+def load_role_soul(role: str, *, fallback_to_shared: bool = True) -> str:
+    """Persona text for one worker role. Never raises."""
+    try:
+        role = _valid_role(role)
+    except ValueError:
+        role = "redteam"
+    for candidate in _role_soul_candidates(role):
+        text = _read_persona_file(candidate)
+        if text is not None:
+            return text
+    if fallback_to_shared:
+        try:
+            return load_soul()
+        except Exception:  # noqa: BLE001
+            return ""
+    return ""
+
+
+def role_soul_block(role: str, *, max_tokens: int = ROLE_SOUL_MAX_TOKENS) -> str:
+    """Full prompt block (headers + identity + card) for a worker role.
+
+    Hard-capped at ``max_tokens``: a bloated card is trimmed at a line boundary
+    rather than silently eating the child's context budget. The cap is enforced
+    on the RENDERED block, not just the card file, because the headers and core
+    identity are part of what the child actually pays for.
+    """
+    text = load_role_soul(role)
+    if not text:
+        return ""
+    header = (
+        "# SOUL — role-scoped\n\n"
+        f"You are running as the **{role}** worker. The card below is your\n"
+        "character for this task; the core identity still applies.\n\n"
+    )
+    block = header + CORE_IDENTITY + "\n" + sanitize_soul(text)
+    return _cap_tokens(block, max_tokens)
+
+
+def _count_tokens(text: str) -> int:
+    """Token count for a prompt fragment, with a cheap fallback.
+
+    Prefers the real BPE tokenizer when it is installed; otherwise falls back to
+    a conservative chars/4 estimate, which over-counts for prose and therefore
+    errs on the safe side of the cap.
+    """
+    try:
+        import tiktoken  # type: ignore
+
+        return len(tiktoken.get_encoding("cl100k_base").encode(text))
+    except Exception:  # noqa: BLE001
+        return (len(text) + 3) // 4
+
+
+def _cap_tokens(block: str, max_tokens: int) -> str:
+    """Trim ``block`` at a line boundary until it fits within ``max_tokens``."""
+    if max_tokens <= 0:
+        return block
+    if _count_tokens(block) <= max_tokens:
+        return block
+    lines = block.splitlines()
+    kept: list[str] = []
+    for line in lines:
+        candidate = "\n".join(kept + [line])
+        if _count_tokens(candidate) > max_tokens:
+            break
+        kept.append(line)
+    trimmed = "\n".join(kept).rstrip()
+    note = f"\n\n[TRUNCATED at {max_tokens} tokens]"
+    return trimmed + note
+
+
+def available_roles() -> list[str]:
+    """Every role that has a resolvable soul card on disk."""
+    roles: set[str] = set()
+    for candidate in _role_soul_candidates("__probe__"):
+        directory = candidate.parent
+        try:
+            for entry in directory.iterdir():
+                if entry.suffix == ".md" and _ROLE_RE.match(entry.stem):
+                    roles.add(entry.stem)
+        except OSError:
+            continue
+    return sorted(roles)

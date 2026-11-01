@@ -139,9 +139,20 @@ class LLMEngine:
                 )
         try:
             goal = build_goal(target, self.tier)
+            registry = build_registry(self.tier, browser_enabled=browser_enabled)
+            # Delegation needs the provider and the full registry in the tool
+            # context: a child AgentLoop is built from these.  Both stay inside
+            # the governed context — the model still cannot reach them directly.
+            tool_ctx.config.setdefault("provider", self._provider)
+            tool_ctx.config.setdefault("registry", registry)
+            tool_ctx.config.setdefault("tier", self.tier)
+            tool_ctx.config.setdefault("delegate_depth", 0)
+            # The http_request auto-fallback needs to know a browser is allowed
+            # before it pays the cost of launching one.
+            tool_ctx.config.setdefault("browser_enabled", browser_enabled)
             loop = AgentLoop(
                 self._provider,
-                build_registry(self.tier, browser_enabled=browser_enabled),
+                registry,
                 tier=self.tier,
                 budget=self._budget,
                 interrupt_check=ctx.config.get("interrupt_check"),
