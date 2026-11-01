@@ -667,6 +667,21 @@ def _two_chat_audits_once(vault, base):
         ledger = run_a["ledger"]
         evidence_a = {row["id"] for row in ledger.evidence(run_a["run_id"])}
         evidence_b = {row["id"] for row in ledger.evidence(run_b["run_id"])}
+        if not (evidence_a and evidence_b):
+            # Diagnostic: a bare `assert (set())` says nothing about WHY a side
+            # produced no evidence under runner load. Surface the real reason.
+            blame = "A" if not evidence_a else "B"
+            rid = run_a["run_id"] if blame == "A" else run_b["run_id"]
+            ev_ids = [r["id"] for r in ledger.evidence(rid)]
+            ev_kinds = [
+                f"{getattr(e, 'kind', '?')}:{str(getattr(e, 'payload', ''))[:90]}"
+                for e in ledger.events(rid)
+            ]
+            raise AssertionError(
+                f"no evidence on side {blame} (run={rid}); "
+                f"A={sorted(evidence_a)} B={sorted(evidence_b)} direct={ev_ids} "
+                f"events={ev_kinds[:14]}"
+            )
         assert evidence_a and evidence_b and not (evidence_a & evidence_b)
         assert ledger.verify_chain().ok
         engine_a.handle_text("/audit finish")
