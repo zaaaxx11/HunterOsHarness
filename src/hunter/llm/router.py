@@ -339,6 +339,49 @@ class _Candidate:
     endpoint: str = ""
 
 
+def _to_wire_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate HunterOs' internal message dicts into OpenAI wire schema.
+
+    The agent loop appends assistant tool calls as ``{"id","name","arguments"}``
+    (see ``hunter.agent.loop``). OpenAI-compatible gateways reject that shape:
+    they require ``{"id","type":"function","function":{"name","arguments"}}``
+    with ``arguments`` serialized as a JSON *string*. Lenient providers tolerate
+    the internal shape, strict ones (vLLM-backed gateways, strict Pydantic
+    validation) answer HTTP 400 — so normalize at the wire boundary, not in the
+    loop, keeping the internal contract simple.
+    """
+    wire: list[dict[str, Any]] = []
+    for message in messages:
+        calls = message.get("tool_calls")
+        if not calls or not isinstance(calls, list):
+            wire.append(message)
+            continue
+        normalized = []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            if "function" in call and isinstance(call.get("function"), dict):
+                normalized.append(call)  # already wire-shaped
+                continue
+            args = call.get("arguments", {})
+            if not isinstance(args, str):
+                try:
+                    args = json.dumps(args if args is not None else {})
+                except (TypeError, ValueError):
+                    args = "{}"
+            normalized.append(
+                {
+                    "id": call.get("id", "") or "",
+                    "type": "function",
+                    "function": {"name": call.get("name", "") or "", "arguments": args},
+                }
+            )
+        updated = {k: v for k, v in message.items() if k != "tool_calls"}
+        updated["tool_calls"] = normalized
+        wire.append(updated)
+    return wire
+
+
 class ProviderRouter:
     """ChatProvider over LiteLLM with failover, retries, and budget checks."""
 
@@ -569,7 +612,7 @@ class ProviderRouter:
     ) -> TurnResult:
         kwargs: dict[str, Any] = {
             "model": candidate.wire_model,
-            "messages": messages,
+            "messages": _to_wire_messages(messages),
             "api_key": candidate.api_key or None,  # None → LiteLLM's own env resolution
             "timeout": candidate.timeout,
             "stream": stream_cb is not None,
@@ -808,17 +851,37 @@ def describe_chain(router: ProviderRouter, tier: str) -> str:
 
 def provider_from_config(
     config: HunterConfig, *, litellm_module: Any | None = None
-) -> ProviderRouter:
+) -> Any:
     """Build the canonical provider for an already-loaded HunterConfig.
 
     Keeping construction here gives chat, the engine registry, and one-shot
     hunt selection one config-aware path while retaining the ``litellm_module``
     seam used by router tests.  The ordinary call intentionally passes only
     the config so lightweight constructor fakes remain valid.
+
+    Provider selection (agent.wire):
+      ``native``   — default. Direct httpx against OpenAI ``/chat/completions``.
+                     No LiteLLM, no mcp, no price database, no message mangling.
+      ``litellm``  — opt-in fallback for the exotic providers LiteLLM alone
+                     can speak (bedrock, vertex, azure-ad, ...).
     """
-    if litellm_module is None:
+    if litellm_module is not None:
+        # Explicit module injection is always the LiteLLM path (test seam).
+        return ProviderRouter(config, litellm_module=litellm_module)
+
+    wire = ""
+    agent = getattr(config, "agent", None)
+    if agent is not None:
+        wire = (getattr(agent, "wire", "") or "").strip().lower()
+    if not wire:
+        wire = (os.environ.get("HUNTEROS_WIRE") or "").strip().lower()
+
+    if wire == "litellm":
         return ProviderRouter(config)
-    return ProviderRouter(config, litellm_module=litellm_module)
+
+    from hunter.llm.native import NativeProvider
+
+    return NativeProvider(config)
 
 
 class _StreamToolCall:

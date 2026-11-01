@@ -55,6 +55,7 @@ _AGENT_KEYS: tuple[str, ...] = (
     "api_max_retries",
     "browser",
     "browser_cloak",
+    "wire",
     "scope_confirm",
     "approved_scopes",
 )
@@ -158,6 +159,7 @@ class AgentConfig:
 
     tier: str = "basic"
     api_max_retries: int = 3
+    wire: str = "native"
     browser: bool = False
     browser_cloak: bool = True
     scope_confirm: bool = False
@@ -571,6 +573,7 @@ def validate_raw(raw: Mapping[str, Any], *, source_text: str | None = None) -> H
     cfg.agent = AgentConfig(
         tier=tier,
         api_max_retries=_as_int(agent_raw.get("api_max_retries", 3), "agent.api_max_retries", minimum=1),
+        wire=_as_wire(agent_raw.get("wire", "native")),
         browser=_as_bool(agent_raw.get("browser", False), "agent.browser"),
         browser_cloak=_as_bool(agent_raw.get("browser_cloak", True), "agent.browser_cloak"),
         scope_confirm=_as_bool(agent_raw.get("scope_confirm", False), "agent.scope_confirm"),
@@ -794,6 +797,13 @@ def resolve_key(
         from_env = (env.get(provider.key_env) or "").strip()
         if from_env:
             return from_env
+        # keys.env is normally injected into os.environ by the CLI startup hook
+        # (hunter.cli.main). Library callers — engines, tests, embedded runs —
+        # never go through the CLI, so resolve it here too. Real env vars still
+        # win (checked first above); this is a read-only fallback, never a write.
+        from_file = _key_from_keys_env(provider.key_env)
+        if from_file:
+            return from_file
         inline = (provider.api_key or "").strip()
         if inline:
             return inline
@@ -806,6 +816,43 @@ def resolve_key(
             exit_code=EXIT_AUTH,
         )
     return (provider.api_key or "").strip()
+
+
+def _as_wire(value: Any) -> str:
+    """The LLM wire implementation: ``native`` (default) or ``litellm``.
+
+    Fail-closed on unknown values so a typo cannot silently fall back to the
+    heavy LiteLLM path — or, worse, to the native path on a provider that only
+    LiteLLM can speak.
+    """
+    wire = _as_str(value, "agent.wire") or "native"
+    wire = wire.strip().lower()
+    if wire not in ("native", "litellm"):
+        raise _config_error(
+            "config.value",
+            f"agent.wire must be one of: native, litellm — got '{wire}'",
+            "set agent.wire to native (direct HTTP) or litellm (LiteLLM routing)",
+        )
+    return wire
+
+
+def _key_from_keys_env(key_name: str) -> str:
+    """Read one key from ``keys.env`` without mutating the environment.
+
+    Never raises: a missing/unreadable file simply yields ``""`` so the caller
+    falls through to its normal "no key" error path.
+    """
+    try:
+        from hunter.llm.keys import keys_env_path, parse_keys_env
+    except ImportError:  # pragma: no cover - keys module is always present
+        return ""
+    try:
+        path = keys_env_path()
+        if not path.is_file():
+            return ""
+        return (parse_keys_env(path.read_text(encoding="utf-8")).get(key_name) or "").strip()
+    except Exception:
+        return ""
 
 
 # ------------------------------------------------------------------- docs ----

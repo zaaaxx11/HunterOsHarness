@@ -216,10 +216,14 @@ class BrowserSession:
         ``cloak_rng`` reproduces the same fingerprint exactly.
         """
         rng = self.cloak_rng if self.cloak_rng is not None else random.Random()
-        viewport = rng.choice(CLOAK_VIEWPORT_POOL)
+        width, height = rng.choice(CLOAK_VIEWPORT_POOL)
         return {
             "user_agent": rng.choice(CLOAK_USER_AGENTS),
-            "viewport": viewport,
+            # Playwright's new_context expects a ViewportSize MAPPING, not a
+            # (w, h) pair — passing the tuple straight through raised
+            # "viewport.width: expected integer, got undefined" and made the
+            # whole cloak path unusable.
+            "viewport": {"width": int(width), "height": int(height)},
             "locale": rng.choice(CLOAK_LOCALE_POOL),
             "timezone_id": rng.choice(CLOAK_TIMEZONE_POOL),
         }

@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
@@ -66,18 +66,38 @@ class ScopeSet:
                 return True
         return False
 
-    def check_url(self, url: str) -> str:
+    def check_url(self, url: str, *, base_url: str = "") -> str:
         """Return the host when in scope; raise ScopeViolation otherwise.
 
-        Fail-closed: missing scheme, missing host, unknown schemes, and URLs
-        that cannot even be parsed (e.g. a malformed IPv6 literal, which makes
-        ``urlparse`` raise ``ValueError``) are all violations — silence is not
-        consent, and the failure type is always ScopeViolation.
+        Fail-closed: missing host, unknown schemes, and URLs that cannot even
+        be parsed (e.g. a malformed IPv6 literal, which makes ``urlparse``
+        raise ``ValueError``) are all violations — silence is not consent, and
+        the failure type is always ScopeViolation.
+
+        Two convenience repairs, both of which STILL pass through the host
+        allowlist below (a repair can never widen scope):
+
+        * a scheme-less absolute reference (``rpc.example.com/path``) is
+          retried as ``https://`` — models habitually drop the scheme, and the
+          old path produced a nonsense host like ``rpc.example.comhttps``
+          instead of a clear refusal;
+        * a root-relative path (``/v1/status``) is joined onto ``base_url``.
         """
-        try:
-            parsed = urlparse(url)
-        except ValueError as exc:
-            raise ScopeViolation(f"BLOCKED: URL could not be parsed ({url!r}): {exc}") from exc
+        candidate = (url or "").strip()
+        if not candidate:
+            raise ScopeViolation("BLOCKED: empty URL")
+
+        parsed = self._parse(candidate)
+        if not (parsed.scheme in ("http", "https") and parsed.hostname):
+            if base_url and candidate.startswith("/"):
+                joined = urljoin(base_url, candidate)
+                parsed = self._parse(joined)
+                candidate = joined
+            elif not parsed.scheme and not candidate.startswith("/"):
+                # Scheme-less absolute reference: assume https and re-parse.
+                parsed = self._parse(f"https://{candidate}")
+                candidate = f"https://{candidate}"
+
         if parsed.scheme not in ("http", "https"):
             raise ScopeViolation(f"BLOCKED: scheme '{parsed.scheme or '-'}' not allowed ({url!r})")
         host = _normalize_host(parsed.hostname)
@@ -89,6 +109,14 @@ class ScopeSet:
                 "Add it to the scope manifest to authorize."
             )
         return host
+
+    @staticmethod
+    def _parse(url: str):
+        """``urlparse`` that turns a ValueError into a ScopeViolation."""
+        try:
+            return urlparse(url)
+        except ValueError as exc:
+            raise ScopeViolation(f"BLOCKED: URL could not be parsed ({url!r}): {exc}") from exc
 
     def allows_local_root(self, path):
         try:
