@@ -193,6 +193,68 @@ surfaces ──► phase pipeline ──► engines ──► claim gate ──�
 
 ## Workflow
 
+### Continuous hunting (RAG — internal, not a command)
+
+`hunter hunt` is the single entry point. Give it a URL, a repo, a local
+directory, several targets, or a free-form description; the harness recognizes
+the target kind (LLM-assisted), builds a scope manifest, and keeps the daemon
+queue fed so hunting never idles. Every finding spawns follow-up hunts until
+the `--time` budget is spent.
+
+```mermaid
+flowchart TB
+    subgraph Input["hunter hunt <input>"]
+        T1["URL / host"]
+        T2["git repo / local dir"]
+        T3["smart contract"]
+        T4["free-form description<br/>(LLM extracts targets)"]
+    end
+
+    subgraph Recognize["Scope recognizer (LLM, utility tier)"]
+        REC["classify kind:<br/>url · repo · smartcontract · api · web"]
+        SCOPE["scope manifest per target<br/>(hosts · local_roots)"]
+        REC --> SCOPE
+    end
+
+    subgraph Daemon["24/7 daemon (queue)"]
+        Q["task queue (high-water 8)"]
+        W["hunt worker<br/>mount_local_dir for local targets"]
+        RUN["run_scan → pipeline"]
+        Q --> W --> RUN
+    end
+
+    subgraph RAG["RAG loop (internal)"]
+        FIND["read findings (candidate / theoretical / verified)"]
+        WONDER["LLM wonder: 4 child hunts per finding<br/>+ parent_finding_id"]
+        SEED["seed variants when queue drains"]
+        DEDUP["dedup vs task/claimed/done + followed set"]
+        FIND --> WONDER --> DEDUP
+        FIND --> SEED --> DEDUP
+        DEDUP --> Q
+    end
+
+    T1 --> REC
+    T2 --> REC
+    T3 --> REC
+    T4 --> REC
+    SCOPE --> Q
+    RUN --> LEDGER2[("hash-chained ledger")]
+    LEDGER2 --> FIND
+```
+
+ASCII fallback:
+
+```text
+hunt <input> ──► scope recognizer ──► daemon queue ──► run_scan ──► ledger
+ (url/repo/dir/      (LLM classify,      (high-water 8)    │            │
+  description)        scope manifest)                       │            ▼
+                                          RAG loop ◄────────┘     findings
+             finding ──► 4 child hunts (parent_finding_id) ──► queue
+             no finding ──► seed variants ──► queue
+             dedup: task/claimed/done + followed set
+```
+
+### One hunt (deterministic path)
 ```mermaid
 sequenceDiagram
     autonumber
