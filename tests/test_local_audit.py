@@ -1,6 +1,5 @@
 import hashlib
 import json
-from pathlib import Path
 
 from hunter.tools.scope import ScopeSet, scope_from_manifest
 from hunter.kernel.ledger import Ledger
@@ -37,11 +36,13 @@ def test_code_location_evidence_hash_validation(tmp_path):
     run_id = "R-test"
     ledger.create_run(run_id, "http://localhost", "review", "local")
     # valid
-    eid = ledger.add_evidence(run_id, "code_location", {"path": str(f), "line_start": 2, "line_end": 2, "sha256": digest})
+    loc = {"path": str(f), "line_start": 2, "line_end": 2, "sha256": digest}
+    eid = ledger.add_evidence(run_id, "code_location", loc)
     assert eid.startswith("EV-")
     # invalid hash
     try:
-        ledger.add_evidence(run_id, "code_location", {"path": str(f), "line_start": 2, "line_end": 2, "sha256": "deadbeef"})
+        bad = {"path": str(f), "line_start": 2, "line_end": 2, "sha256": "deadbeef"}
+        ledger.add_evidence(run_id, "code_location", bad)
         raised = False
     except Exception:
         raised = True
@@ -54,12 +55,14 @@ def test_review_engine_emits_code_location(tmp_path):
     root.mkdir()
     (root / "x.sol").write_text("tx.origin\n")
     engine = ReviewEngine()
-    from hunter.tools.http_client import ScopedHttpClient
     from hunter.tools.scope import localhost_scope
 
     scope = localhost_scope()
     # attach local_root via config
-    ctx = EngineContext(http=None, emit=lambda *a, **k: None, config={"local_root": str(root)}, ledger=None, run_id="")
+    ctx = EngineContext(
+        http=None, emit=lambda *a, **k: None,
+        config={"local_root": str(root)}, ledger=None, run_id="",
+    )
     # EngineContext.http can be None for review (no network)
     target = TargetSpec(url="http://127.0.0.1:1/", scope=scope, notes={"local_root": str(root)})
     result = engine.run(target, ctx)
@@ -111,11 +114,16 @@ def test_finding_cannot_splice_cross_run_evidence(tmp_path):
 def test_malformed_task_fails_done_not_wedge_worker(tmp_path):
     import asyncio
 
-    from hunter.daemon import claim_task, enqueue_task, hunt_worker, queue_dir
+    from hunter.daemon import enqueue_task, hunt_worker, queue_dir
 
     sd = tmp_path / "state"
     sd.mkdir()
-    enqueue_task(sd, {"target": "http://127.0.0.1:1/", "engine": "deterministic", "max_wall_seconds": "banana"})
+    task = {
+        "target": "http://127.0.0.1:1/",
+        "engine": "deterministic",
+        "max_wall_seconds": "banana",
+    }
+    enqueue_task(sd, task)
     stop = sd / "stop.flag"
 
     async def _drain():

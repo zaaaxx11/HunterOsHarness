@@ -416,7 +416,7 @@ class Ledger:
         db_path = self._resolve_path(path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._path = db_path
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(
             str(db_path), check_same_thread=False, isolation_level=None
         )
@@ -429,14 +429,18 @@ class Ledger:
         # v0.7 migration: add new columns / drop stale trigger defs before
         # re-running the (IF NOT EXISTS) schema script.
         self._migrate_v07()
+        self._migrate_v3()
         self._conn.executescript(_SCHEMA)
-        # Stamp schema version.
+        # Second pass: on a FRESH db the runs table only exists after the
+        # schema script above, so the v3 columns are added here (idempotent).
+        self._migrate_v3()
+        # Stamp schema version (v3 = run lifecycle columns, RETENTION-SPEC A).
         try:
             v = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
         except Exception:
             v = 0
-        if v < 2:
-            self._conn.execute("PRAGMA user_version = 2")
+        if v < 3:
+            self._conn.execute("PRAGMA user_version = 3")
 
     def _migrate_v07(self) -> None:
         # Drop findings triggers we redefine (so stale defs get replaced).
@@ -463,6 +467,42 @@ class Ledger:
             if col not in existing:
                 with contextlib.suppress(sqlite3.OperationalError):
                     self._conn.execute(f"ALTER TABLE findings ADD COLUMN {col} {decl}")
+
+    def _migrate_v3(self) -> None:
+        """RETENTION-SPEC Part A: run-lifecycle columns on ``runs``.
+
+        Additive only. ``runs_protected_columns`` freezes run_id/target/
+        engine/scope_name/started_ts and deliberately does NOT mention these
+        three columns, so a sealed run's outcome/closed_at/summary_json stay
+        writable by ``kernel.runs.close_run``. Idempotent: re-running on a
+        migrated db is a no-op.
+        """
+        new_cols = [
+            ("outcome", "TEXT"),
+            ("closed_at", "REAL"),
+            ("summary_json", "TEXT"),
+        ]
+        existing = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
+        for col, decl in new_cols:
+            if col not in existing:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+
+    def assert_run_writable(self, run_id: str) -> None:
+        """Raise ``runs.RunClosed`` when ``run_id`` has been sealed (Part A).
+
+        Read paths never call this — replaying/reporting a closed run stays
+        possible. Import is local: ``hunter.kernel.runs`` imports this module.
+        """
+        from .runs import assert_run_writable as _assert  # noqa: PLC0415
+
+        _assert(self, run_id)
+
+    def run_is_closed(self, run_id: str) -> bool:
+        """True when the run row carries a ``closed_at`` stamp."""
+        from .runs import run_is_closed as _closed  # noqa: PLC0415
+
+        return _closed(self, run_id)
 
     @staticmethod
     def _resolve_path(path: str | Path | None) -> Path:
@@ -657,7 +697,8 @@ class Ledger:
     def runs(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT run_id, target, engine, scope_name, started_ts, ended_ts, status"
+                "SELECT run_id, target, engine, scope_name, started_ts, ended_ts, status,"
+                " outcome, closed_at, summary_json"
                 " FROM runs ORDER BY started_ts, run_id"
             ).fetchall()
         return [
@@ -669,6 +710,12 @@ class Ledger:
                 "started_ts": r[4],
                 "ended_ts": r[5],
                 "status": r[6],
+                # Lifecycle columns (schema v3). Retention MUST see closed_at:
+                # without it every run looks open and garbage collection becomes
+                # a silent no-op that never reclaims a single row.
+                "outcome": r[7],
+                "closed_at": r[8],
+                "summary_json": r[9],
             }
             for r in rows
         ]
@@ -769,6 +816,10 @@ class Ledger:
             "note",
             "tool_output",
             "browser_event",
+            # Post-JS DOM snapshot produced by the browser_render tool. The tool
+            # emitted this kind before it was in the vocabulary, so any hunt that
+            # rendered a page died on the claim gate instead of storing evidence.
+            "browser_render",
             "local_read",
             "dns_record",
             "ct_entry",
@@ -814,6 +865,9 @@ class Ledger:
             )
         digest = sha256_hex(blob)
         with self._write() as conn:
+            # Inside the transaction: a concurrent seal cannot slip between
+            # the check and the insert (BEGIN IMMEDIATE holds the write lock).
+            self.assert_run_writable(run_id)
             evidence_id = self._next_id(conn, "evidence", "EV")
             stored = self._append_event(
                 conn,
@@ -854,6 +908,8 @@ class Ledger:
     def create_finding(self, finding: Finding) -> Finding:
         """Assigns id, binds evidence, applies RULE-E1 atomically."""
         with self._write() as conn:
+            # RETENTION-SPEC A: a sealed run accepts no new claims.
+            self.assert_run_writable(finding.run_id)
             for evidence_id in finding.evidence_ids:
                 known = conn.execute(
                     "SELECT 1 FROM evidence WHERE id = ?", (evidence_id,)
@@ -925,6 +981,8 @@ class Ledger:
         finding = _replace(finding, status=FindingStatus.THEORETICAL)
         evidence_ids = list(finding.evidence_ids)
         with self._write() as conn:
+            # RETENTION-SPEC A: a sealed run accepts no new claims.
+            self.assert_run_writable(finding.run_id)
             for evidence_id in evidence_ids:
                 known = conn.execute(
                     "SELECT 1 FROM evidence WHERE id = ?", (evidence_id,)
@@ -1000,6 +1058,8 @@ class Ledger:
             if row is None:
                 raise KeyError(f"finding '{finding_id}' not found")
             current = self._row_to_finding(row)
+            # RETENTION-SPEC A: statuses may not move once the run is sealed.
+            self.assert_run_writable(current.run_id)
             if not reason or not reason.strip():
                 raise ClaimGateBlocked(
                     f"BLOCKED: status change of finding '{finding_id}' requires a non-empty"

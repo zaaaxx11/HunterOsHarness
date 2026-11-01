@@ -10,10 +10,9 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-from typing import Any
 
-from .base import CandidateFinding, EngineContext, EngineResult, ScanPlan, TargetSpec, Evidence
 from ..kernel.findings import Severity
+from .base import CandidateFinding, EngineContext, EngineResult, Evidence, ScanPlan, TargetSpec
 
 
 class ReviewEngine:
@@ -47,7 +46,8 @@ class ReviewEngine:
         root = self._local_root(ctx, target)
         if root is None or not root.is_dir():
             ctx.emit("engine_event", {"stage": "review.no_root", "root": str(root)})
-            return EngineResult(candidates=[], stats={"files_scanned": 0, "requests": 0, "blocked": 0, "errors": 0})
+            empty = {"files_scanned": 0, "requests": 0, "blocked": 0, "errors": 0}
+            return EngineResult(candidates=[], stats=empty)
 
         candidates: list[CandidateFinding] = []
         files_scanned = 0
@@ -65,7 +65,11 @@ class ReviewEngine:
                 # tree must not point the reader at ~/.ssh/id_rsa etc.
                 if path.is_symlink():
                     continue
-                if path.suffix.lower() not in {".sol", ".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h"}:
+                _CODE_SUFFIXES = {
+                    ".sol", ".py", ".js", ".ts", ".go",
+                    ".rs", ".java", ".c", ".cpp", ".h",
+                }
+                if path.suffix.lower() not in _CODE_SUFFIXES:
                     continue
                 try:
                     if path.stat().st_size > 1_000_000:
@@ -105,8 +109,12 @@ class ReviewEngine:
                                     ),
                                 )
                             )
-        ctx.emit("engine_event", {"stage": "review.done", "files_scanned": files_scanned, "candidates": len(candidates)})
-        return EngineResult(candidates=candidates, stats={"files_scanned": files_scanned, "requests": 0, "blocked": 0, "errors": 0})
+        ctx.emit(
+            "engine_event",
+            {"stage": "review.done", "files_scanned": files_scanned, "candidates": len(candidates)},
+        )
+        stats = {"files_scanned": files_scanned, "requests": 0, "blocked": 0, "errors": 0}
+        return EngineResult(candidates=candidates, stats=stats)
 
     def replay(self, target: TargetSpec, ctx: EngineContext, candidate: CandidateFinding) -> bool:
         # Code findings are never auto-verified.

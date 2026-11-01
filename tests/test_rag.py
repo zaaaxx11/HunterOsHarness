@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from hunter.tools.scope import ScopeSet
 from hunter.workflow.rag import (
@@ -138,7 +137,6 @@ def test_rag_cycle_enqueues_seed_variants(tmp_path):
     sd = tmp_path / "state"
     sd.mkdir()
     scope = _scope()
-    from hunter.home import state_dir as _sd
 
     # ensure state dir layout
     (sd / "daemon" / "queue").mkdir(parents=True, exist_ok=True)
@@ -197,7 +195,7 @@ def test_rag_cycle_fills_high_water_with_real_scope_hosts(tmp_path):
         provider=None,
     )
     loop = RagLoop(cfg)
-    enqueued = loop._cycle()
+    loop._cycle()
     pending = len(list((sd / "daemon" / "queue").glob("task-*.json")))
     assert pending == 3, pending
 

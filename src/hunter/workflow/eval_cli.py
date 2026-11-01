@@ -52,10 +52,7 @@ def score_cell(ledger: Any, run_id: str, expected_keys: list[str] | None = None)
     expected_keys. Returns matched/missing/extra + recall.
     """
     expected = list(expected_keys or [])
-    try:
-        findings = ledger.findings(run_id)
-    except Exception:
-        findings = []
+    findings = ledger.findings(run_id)
     found = {str(getattr(f, "key", "")) for f in findings}
     matched = [k for k in expected if k in found]
     missing = [k for k in expected if k not in found]

@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from hunter.workflow.scope_recognize import recognize, recognize_scope
 from hunter.tools.scope import ScopeSet

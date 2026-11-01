@@ -28,6 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from hunter.cli.handle import handle_cli_error, is_verbose, set_verbose
+from hunter.cli.hunt_close import HUNT_CLOSE_VERBS
 from hunter.kernel.findings import SEVERITY_ORDER
 from hunter.kernel.ledger import Ledger
 from hunter.palette import PALETTE, make_console
@@ -261,11 +262,15 @@ def hunt(
     lines: int | None = typer.Option(
         None, "--lines", help="Daemon verb: line count for `hunt logs` (ignored for plain hunts)."
     ),
+    close_outcome: str | None = typer.Option(
+        None, "--outcome", help="close verb: proven | partial | blocked | abandoned (ignored for plain hunts)."
+    ),
 ) -> None:
     """One-command hunt with Strix exit codes: 0 clean, 1 error, 2 findings, 3 refused.
 
     Daemon verbs ride the same command: `hunt start --target URL --time 2h`,
     `hunt stop`, `hunt status [--json]`, `hunt restart`, `hunt logs --lines N`.
+    Run lifecycle: `hunt close <run_id> [--outcome ...] [--json]`.
     """
     # F2 verb interception: click turns `hunt start --target URL` into THIS
     # command (the verb becomes the positional target) — delegate before the
@@ -291,6 +296,27 @@ def hunt(
                 lines=lines,
             )
         )
+    # RETENTION-SPEC A verb interception: `hunt close <run_id>` arrives here
+    # with "close" as the positional target. Delegate to cli/hunt_close.py
+    # before the free-form/target normalization path can treat it as a hunt.
+    if targets and targets[0] in HUNT_CLOSE_VERBS:
+        from hunter.cli.hunt_close import dispatch_hunt_close
+
+        rest = list(targets[1:])
+        if not rest:
+            err_console.print(
+                "[hunter.error]BLOCKED:[/hunter.error] `hunt close` needs a run id "
+                "(see `hunter runs`)."
+            )
+            raise typer.Exit(2)
+        raise typer.Exit(
+            dispatch_hunt_close(
+                rest[0],
+                outcome=close_outcome,
+                state=state,
+                json_out=json_out,
+            )
+        )
     # Free-form description: if the single argument is not a URL/dir, ask the
     # LLM to extract concrete targets from it.
     if len(targets or []) == 1:
@@ -300,7 +326,8 @@ def hunt(
         if _kind == "invalid" or " " in targets[0].strip():
             _provider = None
             try:
-                from hunter.llm.config import find_config_path as _fcp, load_config as _lc
+                from hunter.llm.config import find_config_path as _fcp
+                from hunter.llm.config import load_config as _lc
                 from hunter.llm.router import provider_from_config as _pfc
 
                 _cfg_path = _fcp()
@@ -317,12 +344,12 @@ def hunt(
 
     # RAG mode: multiple targets or --time -> recognize scopes, enqueue tasks, run loop.
     if len(targets or []) > 1 or time_opt:
+        from hunter.daemon import daemon_running, enqueue_hunt, start_daemon
         from hunter.duration import parse_duration
         from hunter.home import state_dir as _state_dir
-        from hunter.workflow.scope_recognize import recognize_scope
-        from hunter.workflow.rag import RagConfig, RagLoop
-        from hunter.daemon import daemon_running, enqueue_hunt, start_daemon
         from hunter.tools.scope import scope_from_manifest
+        from hunter.workflow.rag import RagConfig, RagLoop
+        from hunter.workflow.scope_recognize import recognize_scope
 
         resolved_state = _state_dir(state)
         # The operator's explicit --scope manifest is authoritative. It is
@@ -362,10 +389,7 @@ def hunt(
             # replaced a 68-host approved manifest with a 1-host guess —
             # the operator's authorization thrown away by a heuristic.
             # Only fall back to recognition when no manifest was given.
-            if manifest_scope is not None:
-                tgt_scope = manifest_scope
-            else:
-                tgt_scope = recognize_scope(provider, tgt)
+            tgt_scope = manifest_scope if manifest_scope is not None else recognize_scope(provider, tgt)
             if first_scope is None:
                 first_scope = tgt_scope
             try:
@@ -1754,11 +1778,27 @@ register_daemon_commands(app)
 cron_app = typer.Typer(help="Scheduled hunts (persisted cron jobs).")
 app.add_typer(cron_app, name="cron")
 
+promote_app = typer.Typer(
+    help="Promote proven-live critical/high findings into reusable skills and tools.",
+)
+app.add_typer(promote_app, name="promote")
+from hunter.cli.promote import register_promote_commands  # noqa: E402
 
-def _cron_state(state: Path | None) -> Path:
+register_promote_commands(promote_app)
+
+from hunter.cli.gc import register_gc_command  # noqa: E402
+
+register_gc_command(app)
+
+
+def _promote_state(state: Path | None = None) -> Path:
     from hunter.home import state_dir as _resolve
 
     return _resolve(state)
+
+
+# backward-compat alias for existing cron commands that call ``_cron_state``.
+_cron_state = _promote_state
 
 
 @cron_app.command("list")

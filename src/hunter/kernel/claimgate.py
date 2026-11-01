@@ -25,13 +25,17 @@ class ClaimGateBlocked(PermissionError):
 
 
 def _taxonomy_ids() -> set[str]:
-    try:
-        from hunter.taxonomy import load_klasses
-        from hunter.taxonomy import validate_klass as _vk  # noqa: F401
+    """Allowed klass ids. FAIL-CLOSED: a taxonomy load failure must not
+    silently widen the allow-list.
 
-        return set(load_klasses().keys()) | {"unknown"}
-    except Exception:
-        return {"unknown"}
+    Returning ``{"unknown"}`` here turned RULE-E5 into a no-op — the gate would
+    happily accept the literal string ``unknown`` for every finding, so a
+    forged/invalid klass sailed through exactly when the taxonomy was broken.
+    A broken taxonomy is a hard error: raise, so the caller blocks.
+    """
+    from hunter.taxonomy import load_klasses
+
+    return set(load_klasses().keys()) | {"unknown"}
 
 
 def validate_klass(klass: str) -> None:

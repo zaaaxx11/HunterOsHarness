@@ -37,7 +37,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from hunter.errors import HunterError
-from hunter.llm.base import ChatProvider, RunBudget as RunBudgetContract
+from hunter.llm.base import ChatProvider
+from hunter.llm.base import RunBudget as RunBudgetContract
 from hunter.llm.budget import RunBudget
 
 from .prompts import build_system_prompt, resolve_skills_index
@@ -152,7 +153,8 @@ class AgentLoop:
         from .skills import is_default_skill_selector
         if skills_index is None or not is_default_skill_selector(current_skill_selector()):
             skills_index = resolve_skills_index(question=goal)
-        from .soul import role_soul_block, soul_block as _soul_block
+        from .soul import role_soul_block
+        from .soul import soul_block as _soul_block
 
         # PINNED ONCE per run. A child loop carries its own role, so it opens
         # with that specialty's soul card instead of the orchestrator's. A loop
@@ -552,7 +554,12 @@ class AgentLoop:
                     finished_summary = "stopped: guardrail halt (partial)"
                     break
                 if outcome.evidence is not None:
-                    evidence_ids = self._store_evidence(ctx, call.name, outcome.evidence)
+                    try:
+                        evidence_ids = self._store_evidence(ctx, call.name, outcome.evidence)
+                    except Exception as exc:  # noqa: BLE001 — evidence-store failure must not crash the run
+                        evidence_ids = []
+                        if "error" not in stats:
+                            stats["error"] = f"[evidence_store_error] {type(exc).__name__}: {exc}"
                     stats["evidence_stored"] += len(evidence_ids)
                     content = content + "\n" + "\n".join(f"evidence_id: {eid}" for eid in evidence_ids)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})

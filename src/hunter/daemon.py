@@ -1045,7 +1045,18 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
             target_raw = str(task.get("target", ""))
             _, kind = normalize_hunt_target(target_raw)
 
-            def _run() -> Any:
+            # Bind every loop variable as a default so the closure captures the
+            # values for THIS task. Without this the closure reads whatever the
+            # loop variable holds when _run finally executes, which is how a
+            # queued audit can silently run against a different target.
+            def _run(
+                kind: str = kind,
+                target_raw: str = target_raw,
+                scope: ScopeSet = scope,
+                task: dict[str, Any] = task,
+                budget: Any = budget,
+                state: Any = state,
+            ) -> Any:
                 if kind == "dir":
                     from pathlib import Path as _P
 

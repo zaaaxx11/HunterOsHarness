@@ -192,11 +192,16 @@ class ChatStore:
         tool_calls: list[dict[str, Any]] | None = None,
         run_id: str | None = None,
         cost_usd: float = 0.0,
+        created_at: float | None = None,
     ) -> dict[str, Any]:
-        """Append one message and chain it onto the session's hash chain."""
+        """Append one message and chain it onto the session's hash chain.
+
+        ``created_at`` exists so retention/gc tests can place a row in the past.
+        Production callers omit it and get ``time.time()``.
+        """
         if self.get_session(sid) is None:
             raise KeyError(f"session '{sid}' not found")
-        now = time.time()
+        now = time.time() if created_at is None else float(created_at)
         with self._lock:
             prev = self._conn.execute(
                 "SELECT self_hash FROM chat_messages WHERE session_id = ?"

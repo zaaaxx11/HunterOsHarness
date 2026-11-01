@@ -163,10 +163,8 @@ def _auto_curate(ledger: Any, run_id: str, *, emit: Any = None) -> dict[str, Any
     except Exception as exc:  # pragma: no cover - defensive
         summary["error"] = f"{type(exc).__name__}: {exc}"
     if emit is not None:
-        try:
+        with contextlib.suppress(Exception):
             emit(EventKind.ENGINE_EVENT, {"tool": "auto_curate", **summary})
-        except Exception:
-            pass
     return summary
 
 
@@ -413,9 +411,22 @@ def _execute_scan(
     verified = 0
     replay_requests = 0
     for finding, candidate in created:
-        reproduced, error_text, replay_exchange, requests = _replay_candidate(
-            engine, target, scope, emit, config, candidate
-        )
+        try:
+            reproduced, error_text, replay_exchange, requests = _replay_candidate(
+                engine, target, scope, emit, config, candidate
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad replay must not kill the run
+            # The replay ladder verifies findings one at a time. A crashed replay
+            # is "not reproduced" for THAT finding only; the remaining findings
+            # and the run itself stay alive and keep their evidence. Without
+            # this, a single malformed URL raised out of the ladder and turned a
+            # run with real findings into a bare `failed` summary.
+            reproduced, error_text, replay_exchange, requests = (
+                False,
+                f"{type(exc).__name__}: {exc}",
+                None,
+                0,
+            )
         replay_requests += requests
         if not reproduced:
             payload: dict[str, Any] = {

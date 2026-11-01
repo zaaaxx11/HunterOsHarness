@@ -225,7 +225,7 @@ def dns_resolve(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
         return _blocked("dns.library_unavailable", msg)
     # Stdlib path (no resolve-then-allow: the scope gate above already passed).
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = _bounded_getaddrinfo(host)
     except OSError as exc:
         if doh:
             out = _doh_lookup(host, rtype, ctx)
@@ -532,7 +532,7 @@ def dnssec_validate(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
             "result_for_model": "DNSSEC chain BOGUS: needs_follow_up (never ruled_out).",
         }
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = _bounded_getaddrinfo(host)
         addrs = sorted({redact_text(s[4][0])[:256] for s in infos if len(s) > 4})[:8]
     except OSError as exc:
         _emit(ctx, "dnssec_validate", {"code": "dns.resolve_error"})
@@ -675,3 +675,30 @@ def register_network_tools(registry: Any) -> Any:
             )
         )
     return registry
+
+def _bounded_getaddrinfo(host: str, timeout: float = 10.0):
+    """``socket.getaddrinfo`` with a hard deadline.
+
+    The stdlib resolver has no per-call timeout — a black-holed DNS server can
+    stall a tool (and the whole turn budget) for tens of seconds. Run the
+    lookup on a daemon thread and abandon it at the deadline.
+    """
+    import threading
+
+    box: dict[str, object] = {}
+
+    def _work() -> None:
+        try:
+            box["infos"] = socket.getaddrinfo(host, None)
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=_work, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"dns: getaddrinfo({host!r}) exceeded {timeout}s")
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc]
+    return box.get("infos") or []
+

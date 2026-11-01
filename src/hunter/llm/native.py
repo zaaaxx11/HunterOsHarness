@@ -26,6 +26,7 @@ The contract is :class:`hunter.llm.base.ChatProvider` — identical to
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from dataclasses import dataclass
@@ -36,7 +37,6 @@ from hunter.llm.base import ClassifiedError, StreamCb, ToolCall, TurnResult
 from hunter.llm.config import (
     FallbackEntry,
     HunterConfig,
-    TierConfig,
     resolve_key,
     resolve_model,
 )
@@ -225,10 +225,9 @@ class NativeProvider:
         if not model:
             return None
         provider = tier_cfg.provider or "auto"
-        try:
-            api_key = resolve_key(provider, self.config)
-        except Exception:
-            api_key = ""
+        # A key-resolution failure must surface as a config error, not as an
+        # empty-key request that the provider rejects with a misleading 401.
+        api_key = resolve_key(provider, self.config)
         base_url = tier_cfg.base_url or self._provider_base_url(provider) or ""
         if not base_url and provider not in ("auto", ""):
             base_url = ""
@@ -379,10 +378,8 @@ class NativeProvider:
             status = int(getattr(response, "status_code", 0) or 0)
             if status >= 400:
                 body = b""
-                try:
+                with contextlib.suppress(Exception):
                     body = b"".join(response.iter_bytes())
-                except Exception:
-                    pass
                 raise _ProviderHTTPError(
                     self._verdict_for(status, body.decode("utf-8", "replace"), response)
                 )
@@ -486,6 +483,7 @@ class NativeProvider:
             should_fallback=base.should_fallback,
             status_code=status,
             message=message,
+            retry_after=retry_after,
         ) or ClassifiedError(reason=base.reason, status_code=status, message=message)
 
 
@@ -495,7 +493,10 @@ class _ProviderHTTPError(Exception):
     def __init__(self, verdict: ClassifiedError) -> None:
         super().__init__(verdict.message)
         self.verdict = verdict
-        self.retry_after = None
+        # Carry the parsed Retry-After through to the retry loop. Hardcoding
+        # None here discarded the server's backoff instruction, turning every
+        # 429 into a zero-sleep retry storm.
+        self.retry_after = getattr(verdict, "retry_after", None)
 
 
 class _TimeoutLike(Exception):

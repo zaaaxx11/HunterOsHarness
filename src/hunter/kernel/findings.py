@@ -34,6 +34,9 @@ class FindingStatus(str, Enum):
     CANDIDATE = "candidate"  # probe observed a signal; single evidence bound
     VERIFIED = "verified"  # independent replay succeeded; second evidence bound
     RULED_OUT = "ruled_out"  # debunked; kept for the audit trail, never deleted
+    # v0.7+ promotion ladder (doctrine: theoretical -> promoted -> proven-live)
+    PROMOTED = "promoted"  # peer review / retest confirmed; third evidence bound
+    PROVEN_LIVE = "proven-live"  # independent verifier + adversary challenge survived
 
 
 @dataclass(frozen=True, slots=True)

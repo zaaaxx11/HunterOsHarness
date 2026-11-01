@@ -60,10 +60,15 @@ def is_parallelizable(name: str, args: dict[str, Any] | None) -> bool:
 def run_parallel(
     calls: list[ParallelCall],
     max_workers: int = 4,
-    timeout: float = 5.0,
+    timeout: float = 60.0,
     dispatch: Callable[[ParallelCall], Any] | None = None,
 ) -> list[ParallelResult]:
-    """Execute calls concurrently; order preserved; timeout->tool error."""
+    """Execute calls concurrently; order preserved; timeout->tool error.
+
+    The fan-out wait must be generous relative to a single tool's budget: a 5 s
+    wait guillotined every realistic HTTP/DNS probe, so the batch always expired
+    and the caller fell back to serial execution — losing the fan-out entirely.
+    """
     if dispatch is None:
         raise ValueError("dispatch is required")
     workers = max(1, min(int(max_workers), max(1, len(calls))))

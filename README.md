@@ -118,7 +118,8 @@ hunter scan https://target.example.com --scope scope.manifest.json
 
 ### Providers, roles, and the optional browser
 
-Model roles are `orchestrator`, `hunter`, `verifier`, and `utility` (legacy
+Model roles are `orchestrator`, `hunter`, `verifier`, and `utility`
+(orchestrator/hunter/verifier/utility) — legacy
 `planner` / `exploit` / `verify` names are accepted on load and canonicalized on
 the next config write). Add any OpenAI-compatible provider:
 
@@ -128,8 +129,14 @@ hunter config provider test lab-vllm --model mistralai/Mistral-7B-Instruct-v0.4.
 ```
 
 Browser automation is optional and hunt-only: `pip install 'hunteros-harness[browser]'`
-then `python -m playwright install chromium`. Browser actions are scope-gated
-and available only inside an authorized hunt; normal chat stays browser-free.
+then `python -m playwright install chromium`. The base install works without the extra —
+nothing imports Playwright until a scope-gated browser action actually runs. Browser
+actions are scope-gated and available only inside an authorized hunt; normal chat stays
+browser-free.
+
+Inside `hunter chat`, `/hunt on <target>` arms session hunt mode against an authorized
+target and `/hunt off` disarms it; `/audit` and `/audit finish` wrap a governed audit
+run. The TUI exposes the same surfaces.
 
 The 24/7 engine boots once with `hunt start` (no target needed) and is managed
 with `hunt status`, `hunt logs`, and `hunt stop`; queue hunts with
@@ -414,6 +421,20 @@ Deeper invariants and the L1–L5 framing: [docs/ARCHITECTURE.md](docs/ARCHITECT
 - The gateway is default-deny with allowlists, HMAC-signed webhooks, anti-replay
   signatures, and turn leases.
 - No DoS, no credential bruteforce, no mass PII, no social engineering.
+
+## Updating
+
+`hunter update` upgrades GitHub-first and falls back to PyPI:
+
+```bash
+hunter update               # apply the newest release
+hunter update --check       # report only, change nothing
+```
+
+A background update check caches its result in `~/.hunteros/update-check.json`
+for 24 hours and prints a one-line notice on stderr only. It never writes into
+`--json` stdout and never interrupts `chat` / `tui` / `gateway` sessions. To
+disable it entirely, set `HUNTEROS_NO_UPDATE_CHECK=1`.
 
 ## Development
 

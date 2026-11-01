@@ -186,14 +186,12 @@ def _default_ask(prompt: str) -> bool:
 def review_and_save(
     draft: SkillDraft, *, home=None, ask: Callable[[str], bool] | None = None, console: Console | None = None
 ):
-    # console=None means "unattended": the caller wants the return text and
-    # nothing on stdout. Falling back to Console() here printed a rich Panel
-    # straight into stdout, which corrupted `scan --json` output (the panel
-    # landed ahead of the JSON document and json.loads choked on it).
+    # ``console=None`` means UNATTENDED (auto-curate inside a hunt): print
+    # nothing. A real Console here writes the preview panel to stdout, which
+    # corrupts the machine-readable `--json` document that a hunt emits on the
+    # same stream. Callers that want the human preview pass a Console.
     quiet = console is None
-    if not quiet:
-        assert console is not None  # narrows the Optional for the type checker
-        console = console or Console()
+    console = console or Console()
     root = user_skills_dir(home)
     target = root / draft.name / "SKILL.md"
     from hunter.agent.skills import load_corpus

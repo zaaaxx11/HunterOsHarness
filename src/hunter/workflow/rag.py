@@ -8,9 +8,10 @@ the time budget lasts.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -299,10 +300,8 @@ class RagLoop:
         except Exception:  # noqa: BLE001
             findings = []
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 ledger.close()
-            except Exception:  # noqa: BLE001
-                pass
 
         pending = len(list(queue_dir(self.state_dir).glob("task-*.json")))
 
@@ -465,10 +464,8 @@ class RagLoop:
 
         # Deadline handling: drain, let in-flight finish.
         if not self.config.dry_run:
-            try:
+            with contextlib.suppress(Exception):
                 drain_daemon(self.state_dir, timeout=15.0)
-            except Exception:  # noqa: BLE001
-                pass
 
         # Closing summary, printed in EVERY mode including --once. Without it
         # a single-cycle run exits 0 with no output at all, which reads as

@@ -118,25 +118,6 @@ class ScopeSet:
         except ValueError as exc:
             raise ScopeViolation(f"BLOCKED: URL could not be parsed ({url!r}): {exc}") from exc
 
-    def allows_local_root(self, path):
-        try:
-            resolved = Path(path).resolve()
-        except (OSError, RuntimeError, ValueError):
-            return False
-        for root in self.local_roots:
-            try:
-                root_resolved = Path(root).resolve()
-            except (OSError, RuntimeError, ValueError):
-                continue
-            try:
-                resolved.relative_to(root_resolved)
-                return True
-            except ValueError:
-                continue
-        if not self.local_roots:
-            return True
-        return False
-
     def allows_local_root(self, path: str | Path) -> bool:
         """True when ``path`` resolves inside one of the configured local roots."""
         try:
@@ -154,9 +135,7 @@ class ScopeSet:
             except ValueError:
                 continue
         # Absent local_roots -> permissive (backward-compatible localhost behaviour).
-        if not self.local_roots:
-            return True
-        return False
+        return bool(not self.local_roots)
 
     def summary(self) -> dict:
         return {

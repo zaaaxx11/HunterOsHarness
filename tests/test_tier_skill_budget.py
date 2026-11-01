@@ -20,23 +20,25 @@ def _oversize_skill(body: str, name: str = "oversize-card") -> Skill:
     )
 
 
-def test_basic_16_advanced_18_shell_exec_and_delegate_only_advanced():
+def test_basic_16_advanced_17_shell_exec_only_advanced():
     """LOOSE terdokumentasi (harus GREEN): pin kontrak tier struktural v0.2+M8.
 
-    advanced=18 since subagent delegation landed: `delegate_task` joins
-    `shell_exec` as advanced-only. Both can spawn work the operator did not
-    directly ask for, so neither belongs in the basic tier.
+    Plugins are disabled here on purpose. This test pins the BUILT-IN tool
+    surface, and ``build_registry`` otherwise loads whatever drop-in tools live
+    in ``~/.hunter/tools`` — so on a developer box with plugins installed the
+    counts drift and the pin fails for a reason that has nothing to do with the
+    tier contract.
     """
-    basic = build_registry("basic").schemas_for_tier("basic")
-    advanced = build_registry("advanced").schemas_for_tier("advanced")
+    basic = build_registry("basic", plugins_enabled=False).schemas_for_tier("basic")
+    advanced = build_registry("advanced", plugins_enabled=False).schemas_for_tier("advanced")
     basic_names = [t["function"]["name"] for t in basic]
     advanced_names = [t["function"]["name"] for t in advanced]
+    # 16 basic / 18 advanced: advanced carries shell_exec and delegate_task, so
+    # every role that reaches advanced tooling can spawn a real sub-agent.
     assert len(basic) == 16 and len(advanced) == 18, \
         f"pin counts: basic={len(basic)} advanced={len(advanced)}"
-    assert "shell_exec" in advanced_names and "shell_exec" not in basic_names, \
-        "shell_exec struktural advanced-only"
-    assert "delegate_task" in advanced_names and "delegate_task" not in basic_names, \
-        "delegate_task struktural advanced-only"
+    assert set(advanced_names) - set(basic_names) == {"shell_exec", "delegate_task"}, \
+        f"advanced-only drift: {sorted(set(advanced_names) - set(basic_names))}"
     assert set(basic_names) <= set(advanced_names), "basic tak boleh lebih kaya"
     assert load_corpus() is not None and MAX_MOUNTED == 5, "pin konstanta skill"
 

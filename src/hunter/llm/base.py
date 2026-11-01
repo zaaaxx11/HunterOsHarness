@@ -55,6 +55,9 @@ class ClassifiedError:
     should_fallback: bool = False
     status_code: int | None = None
     message: str = ""  # redacted — safe for logs and user display
+    # Seconds the provider asked us to wait (Retry-After). Honouring this is the
+    # difference between a polite retry and hammering a rate-limited endpoint.
+    retry_after: float | None = None
 
     def __post_init__(self) -> None:
         if self.reason not in ERROR_REASONS:

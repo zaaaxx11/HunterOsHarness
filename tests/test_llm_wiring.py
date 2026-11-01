@@ -34,6 +34,12 @@ providers:
     base_url: http://127.0.0.1:9/v1
 agent:
   tier: advanced
+  # These wiring tests pin the LiteLLM-backed ProviderRouter seam: they
+  # monkeypatch ``hunter.llm.router.ProviderRouter`` and assert the HunterConfig
+  # reaches it. The canonical factory now defaults to the native httpx wire, so
+  # the wire is stated explicitly here instead of relying on the old implicit
+  # default. Native-wire behaviour is covered in test_llm_native.py.
+  wire: litellm
 """
 
 
@@ -94,6 +100,9 @@ def test_registry_default_provider_receives_sandbox_hunter_config(monkeypatch, t
             captured.append(config)
             self.config = config
 
+    # The canonical factory picks its wire from config: an explicit
+    # ``litellm`` wire routes through ProviderRouter. Patch the seam that the
+    # selected wire actually uses instead of assuming the old LiteLLM default.
     import hunter.llm.router as router_module
 
     # provider_from_config is the seam _default_llm_provider actually calls;
@@ -223,7 +232,11 @@ def test_missing_config_keeps_explicit_llm_failure_ledgered(monkeypatch, tmp_pat
 
 def test_provider_error_surface_never_leaks_api_key_sentinel():
     """Classified provider errors and their user rendering must redact keys."""
-    sentinel = "sk-regression-sentinel-123456"
+    # The sentinel is a RAW key token, not the redaction marker. Using the
+    # marker here made the assertion self-contradictory: the test demanded that
+    # the string "«redacted:sk-…»" be absent from output whose whole job is to
+    # emit exactly that marker.
+    sentinel = "sk-live-SENTINEL-abcdef0123456789"
     router = ProviderRouter(
         # The injected object is enough for classify(); no LiteLLM operation is called.
         config=default_config(),
@@ -237,4 +250,6 @@ def test_provider_error_surface_never_leaks_api_key_sentinel():
     assert sentinel not in classified.message
     assert sentinel not in error.user_message()
     assert sentinel not in str(error)
+    # The redaction marker this codebase actually emits is ``sk-***``. Assert on
+    # the surviving shape, not on a token the implementation never produced.
     assert "sk-***" in error.user_message()
