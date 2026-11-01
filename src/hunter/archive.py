@@ -176,6 +176,17 @@ def _archive_schema(conn: sqlite3.Connection, run_id: str) -> None:
     for _name, sql in guards:
         conn.execute(sql)
     conn.commit()
+    # The source ledger runs in WAL mode, and ``backup`` carries the journal
+    # mode across, so uncommitted frames can still live in a sidecar
+    # ``<archive>.db-wal`` when the connection above closes. Hashing the main
+    # file at that moment digests a *partial* database: on CPython 3.11 the
+    # implicit close happened to checkpoint first, on 3.10 it does not, and
+    # verify_archive then compared the manifest against a file that no longer
+    # matched its own digest. Pin the archive to a rollback journal and force a
+    # checkpoint so ``.db`` is self-contained and byte-stable before hashing.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.commit()
 
 
 # -- archive_run / verify_archive / purge_run --------------------------------
