@@ -3,6 +3,11 @@
 # Every value here can be overridden per-run with env vars:
 #   HUNTEROS_MODEL, HUNTEROS_TIER, HUNTEROS_BUDGET_USD, HUNTEROS_MAX_ITERATIONS
 
+# This example mirrors a 2-provider setup (openai-compatible gateway + failover).
+# Pin every tier to the SAME brain when provider credit is concentrated on one
+# model: a mismatched per-tier model is the usual cause of a run dying halfway
+# with a 404 on the verifier while the orchestrator still works.
+
 model_tiers:
   orchestrator:                # task decomposition — the "top default" model
     provider: anthropic        # auto | openai | anthropic | openrouter | groq | gemini | ollama | ...
@@ -29,6 +34,11 @@ providers:                     # credentials per provider name
     key_env: ANTHROPIC_API_KEY # env var is preferred over inline api_key
   openai:
     key_env: OPENAI_API_KEY
+# OpenAI-compatible gateways: declare base_url plus a key_env indirection, and
+# keep the key in a chmod 600 env file next to the ledger (never inline here).
+#   nostate:
+#     base_url: https://gateway.example.com/v1
+#     key_env: HUNTER_NOSTATE_KEY
 # Keyless providers (e.g. ollama) get NO block here at all:
 #   local:
 #     base_url: http://127.0.0.1:11434   (set on the tier, not the provider)
@@ -39,6 +49,8 @@ providers:                     # credentials per provider name
 
 # Tried in order when the primary provider fails with auth/billing/404-class
 # errors (deduped against the primary by provider+model+base_url).
+# Each entry needs BOTH provider and model — a bare provider string is rejected
+# by config validation (`fallback_providers[0] needs both 'provider' and ...`).
 fallback_providers: []
 #  - provider: openrouter
 #    model: anthropic/claude-sonnet-4.5

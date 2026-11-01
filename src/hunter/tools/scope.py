@@ -46,6 +46,37 @@ def _normalize_host(host: str | None) -> str:
     return host
 
 
+# A model habitually glues the scheme onto the host when it drops the "://"
+# ("rpc.example.com" + "https" -> "rpc.example.comhttps"). Detect that exact
+# malformation so check_url can repair it instead of refusing on a nonsense
+# host and wasting the rest of the run.
+_GLUED_SCHEME_SUFFIXES = ("https", "http")
+
+
+def _unglue_scheme(candidate: str) -> str | None:
+    """Return the repaired URL when the scheme is glued onto the host.
+
+    ``rpc.example.comhttps`` -> ``https://rpc.example.com``
+    ``rpc.example.comhttps/v1`` -> ``https://rpc.example.com/v1``
+
+    Returns ``None`` when the input does not show the malformation, so the
+    caller keeps its normal fail-closed path. The repair never widens scope:
+    the result is re-parsed and still has to pass the host allowlist.
+    """
+    if not candidate or candidate.startswith("/") or "://" in candidate:
+        return None
+    head, sep, tail = candidate.partition("/")
+    host_part = head.lower()
+    for scheme in _GLUED_SCHEME_SUFFIXES:
+        if host_part.endswith(scheme) and len(host_part) > len(scheme):
+            # Keep only the single trailing label that is really a scheme.
+            bare = head[: -len(scheme)]
+            if bare.endswith(".") or "." not in bare:
+                return None  # ends on a dot / no host at all -> not our shape
+            return f"{scheme}://{bare}" + (sep + tail if sep else "")
+    return None
+
+
 @dataclass(frozen=True)
 class ScopeSet:
     allowed_hosts: frozenset[str] = field(default_factory=frozenset)
@@ -81,11 +112,18 @@ class ScopeSet:
           retried as ``https://`` — models habitually drop the scheme, and the
           old path produced a nonsense host like ``rpc.example.comhttps``
           instead of a clear refusal;
+        * a URL where the scheme got glued onto the host
+          (``rpc.example.comhttps``) is un-glued first, so the run keeps going
+          instead of dying on a typo;
         * a root-relative path (``/v1/status``) is joined onto ``base_url``.
         """
         candidate = (url or "").strip()
         if not candidate:
             raise ScopeViolation("BLOCKED: empty URL")
+
+        unglued = _unglue_scheme(candidate)
+        if unglued is not None:
+            candidate = unglued
 
         parsed = self._parse(candidate)
         if not (parsed.scheme in ("http", "https") and parsed.hostname):
