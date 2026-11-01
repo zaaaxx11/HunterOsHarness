@@ -328,9 +328,10 @@ def test_ci_matrix_and_commands_are_explicit():
     matrix = job["strategy"]["matrix"]
     assert job["strategy"]["fail-fast"] is False
     assert matrix["os"] == ["ubuntu-latest", "windows-latest"]
-    # Portability: the supported floor (3.10) and the newest supported CPython
-    # are both exercised, so the declared requires-python is actually tested.
-    assert matrix["python-version"] == ["3.10", "3.11", "3.12", "3.13"]
+    # Portability policy: a rolling window of the three newest stable CPython
+    # releases, newest first. The floor moves up with the window, so
+    # requires-python stays in lockstep with what CI actually exercises.
+    assert matrix["python-version"] == ["3.14", "3.13", "3.12"]
     assert job["runs-on"] == "${{ matrix.os }}"
     assert job["env"]["HUNTEROS_NO_UPDATE_CHECK"] == "1"
     assert job["env"]["CI"] == "true"
@@ -380,7 +381,7 @@ def test_release_artifact_metadata_contract():
     """A5: package metadata keeps browser optional and core dependency-free."""
     text = _read("pyproject.toml")
     assert re.search(r'^version\s*=\s*"' + re.escape(RELEASE_VERSION) + r'"', text, re.M)
-    assert 'requires-python = ">=3.10"' in text
+    assert 'requires-python = ">=3.12"' in text
     assert 'browser = ["playwright>=1.40"]' in text
     deps_section = text.split("[project.optional-dependencies]")[0]
     assert "playwright" not in deps_section.lower()
