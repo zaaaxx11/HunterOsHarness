@@ -35,6 +35,7 @@ import random
 import shlex
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -453,8 +454,8 @@ def _run_probe(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     lines = [f"probe {check_id}: {len(candidates)} candidate(s)"]
     for index, candidate in enumerate(candidates, start=1):
         count = len(candidate.evidence)
-        for evidence in candidate.evidence:
-            artifacts.append({"kind": "http_exchange", "data": dict(evidence.data)})
+        for item in candidate.evidence:
+            artifacts.append({"kind": "http_exchange", "data": dict(item.data)})
         param = f" (param {candidate.param})" if candidate.param else ""
         lines.append(
             f"{index}. [{candidate.severity.value}] {candidate.key} — "
@@ -701,13 +702,14 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
     except Exception as exc:  # the claim gate below us has the final word
         from hunter.errors import build_error_surface  # noqa: PLC0415
 
-        surface = build_error_surface(exc)
+        error_surface = build_error_surface(exc)
         return ToolOutcome(
             ok=False,
             blocked=True,
             code="finding.claim_gate_blocked",
             result_for_model=(
-                f"BLOCKED [finding.claim_gate_blocked] the ledger refused this claim: {surface['message']} "
+                f"BLOCKED [finding.claim_gate_blocked] the ledger refused this claim: "
+                f"{error_surface['message']} "
                 "(RULE-E1 is enforced again at the storage layer — evidence or nothing)."
             ),
         )
@@ -853,7 +855,8 @@ def _r4c_onchain_bind(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
         return {"ok": False, "blocked": True, "code": "r4c.method_not_allowlisted",
                 "result_for_model": f"BLOCKED [r4c.method_not_allowlisted] {method!r} is not readonly."}
     try:
-        cid = int(chain_id)
+        # args is model-supplied: a non-int raises TypeError/ValueError below.
+        cid = int(chain_id)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return {"ok": False, "blocked": True, "code": "r4c.scope_mismatch",
                 "result_for_model": "BLOCKED [r4c.scope_mismatch] bad chain_id."}
@@ -1555,6 +1558,24 @@ def _agent_delegate(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     return ToolOutcome(ok=result.ok, result_for_model=result.render())
 
 
+class _TieredToolRegistry(ToolRegistry):
+    """Registry that records the tier it was assembled for (introspection only;
+    it never filters specs — see :func:`build_registry`)."""
+
+    built_for_tier: str = ""
+
+
+def _bind_module(
+    fn: Callable[[dict[str, Any], ToolContext, Any], ToolOutcome], module: Any
+) -> Callable[[dict[str, Any], ToolContext], ToolOutcome]:
+    """Bind the loaded playwright module as a handler's third argument."""
+
+    def handler(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+        return fn(args, ctx, module)
+
+    return handler
+
+
 def build_registry(
     tier: str = "basic",
     *,
@@ -1575,8 +1596,8 @@ def build_registry(
     """
     if tier not in TIER_ORDER:
         raise ValueError(f"unknown tier {tier!r} (use basic|advanced)")
-    registry = ToolRegistry()
-    registry.built_for_tier = tier  # type: ignore[attr-defined] — introspection only
+    registry = _TieredToolRegistry()
+    registry.built_for_tier = tier  # introspection only
 
     specs = [
         ToolSpec(
@@ -1807,7 +1828,7 @@ def build_registry(
                     parameters=_schema(
                         {"url": {"type": "string", "minLength": 1, "maxLength": 2048}}, ["url"]
                     ),
-                    handler=lambda args, ctx, module=module: _browser_navigate(args, ctx, module),
+                    handler=_bind_module(_browser_navigate, module),
                 )
             )
             registry.register(
@@ -1818,7 +1839,7 @@ def build_registry(
                         "Cookies, storage, headers, and arbitrary page code are never exposed."
                     ),
                     parameters=_schema({}, []),
-                    handler=lambda args, ctx, module=module: _browser_snapshot(args, ctx, module),
+                    handler=_bind_module(_browser_snapshot, module),
                 )
             )
             registry.register(
@@ -1831,7 +1852,7 @@ def build_registry(
                     parameters=_schema(
                         {"selector": {"type": "string", "minLength": 1, "maxLength": 512}}, ["selector"]
                     ),
-                    handler=lambda args, ctx, module=module: _browser_click(args, ctx, module),
+                    handler=_bind_module(_browser_click, module),
                 )
             )
             registry.register(
@@ -1849,7 +1870,7 @@ def build_registry(
                         },
                         ["selector", "text"],
                     ),
-                    handler=lambda args, ctx, module=module: _browser_type(args, ctx, module),
+                    handler=_bind_module(_browser_type, module),
                 )
             )
     else:

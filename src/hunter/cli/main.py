@@ -17,7 +17,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from urllib.parse import urlparse
 
 import typer
@@ -351,7 +351,10 @@ def hunt(
         from hunter.workflow.rag import RagConfig, RagLoop
         from hunter.workflow.scope_recognize import recognize_scope
 
-        resolved_state = _state_dir(state)
+        # ``state_dir`` always returns a resolved ``Path`` (explicit -> env ->
+        # ``~/.hunter``); the ``str | None`` in its signature only describes
+        # the *explicit* argument.
+        resolved_state: Path = _state_dir(state)
         # The operator's explicit --scope manifest is authoritative. It is
         # resolved HERE, before any recognition, because `recognize_scope`
         # asks the LLM to guess a scope from the target string — and a guess
@@ -365,6 +368,10 @@ def hunt(
                     f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
                 raise typer.Exit(3) from exc
         provider = None
+        # RAG-mode engine name. ``engine or (...)`` never yields None, so this
+        # narrow is real (not a silenced Optional); the plain-hunt path below
+        # keeps its own Optional probe semantics.
+        rag_engine: str = engine or "deterministic"
         if (engine or "llm") == "llm":
             try:
                 from hunter.llm.config import find_config_path, load_config
@@ -375,7 +382,11 @@ def hunt(
                     provider = provider_from_config(load_config(config_path))
             except Exception:
                 provider = None
-        selected_engine = engine or ("llm" if provider is not None else "deterministic")
+        # Declared ``str | None`` (not the concrete value): the plain-hunt path
+        # below re-binds it from the optional ``--engine`` flag and treats
+        # ``None`` as "probe for a provider", so this binding must keep that
+        # possibility visible to the type checker.
+        selected_engine: str | None = engine or ("llm" if provider is not None else "deterministic")
         try:
             budget_s = parse_duration(time_opt or "6h")
         except Exception:
@@ -397,7 +408,7 @@ def hunt(
                     resolved_state,
                     target=tgt,
                     scope=tgt_scope,
-                    engine=selected_engine,
+                    engine=rag_engine,
                     max_wall_seconds=float(budget_s),
                     max_cost_usd=0.0,
                     min_wall_seconds=0.0,
@@ -434,7 +445,7 @@ def hunt(
             state_dir=resolved_state,
             target=targets[0],
             scope=first_scope,
-            engine=selected_engine,
+            engine=rag_engine,
             time_budget_s=float(budget_s),
             interval_s=45.0,
             high_water=8,
@@ -462,6 +473,9 @@ def hunt(
     if kind == "invalid":
         err_console.print("[hunter.error]BLOCKED:[/hunter.error] invalid hunt target")
         raise typer.Exit(3)
+    # Re-binds from the optional --engine flag, then defaults. After this point
+    # the value is always a concrete engine string, so the narrow is real and
+    # not a silenced Optional.
     selected_engine = engine
     if selected_engine is not None and selected_engine not in {"deterministic", "mock", "llm", "review"}:
         err_console.print("[hunter.error]BLOCKED:[/hunter.error] unknown engine; engines: deterministic, mock, llm, review")
@@ -1752,13 +1766,17 @@ def verify(
 
 
 def main() -> None:
+    import click
     from typer.main import get_command
 
     from hunter.cli.handle import run_app
 
     # Non-standalone: the backstop (handle.py) owns interrupts and escapes;
     # argument errors keep typer's own rendering and exit codes.
-    run_app(get_command(app))
+    # ``get_command`` is annotated as the vendored ``typer._click`` Command;
+    # at runtime it IS a ``click.core.Command`` (that is why ``run_app`` can
+    # call ``.main`` on it), so the cast is exact, not a lie.
+    run_app(cast("click.Command", get_command(app)))
 
 
 # --------------------------------------------------------------------- daemon ---

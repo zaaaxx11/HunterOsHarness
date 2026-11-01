@@ -39,7 +39,11 @@ class _RolePrompt(str):
     """Prevent the legacy ``"mode" in prompt`` matcher from matching ``model``."""
 
     def __contains__(self, item: object) -> bool:
+        # ``object`` is the correct signature for ``__contains__``; the mapping
+        # itself is keyed by str, so narrow once here instead of silencing.
         if item == "mode":
+            return False
+        if not isinstance(item, str):
             return False
         return super().__contains__(item)
 

@@ -217,23 +217,23 @@ def render_config(data: Mapping[str, Any] | None) -> str:
     if providers:
         lines.append("providers:                     # credentials per provider name")
         for name in sorted(providers, key=str):
-            block: Mapping[str, Any] = providers.get(name) or {}
-            if not isinstance(block, Mapping):
+            provider_block: Mapping[str, Any] = providers.get(name) or {}
+            if not isinstance(provider_block, Mapping):
                 raise _config_write_error(
-                    f"providers.{name} must be a mapping, got {type(block).__name__}",
+                    f"providers.{name} must be a mapping, got {type(provider_block).__name__}",
                     "fix the providers section — each provider needs key_env/api_key/base_url keys",
                 )
             lines.append(f"  {_yaml_key(name, 'providers')}:")
-            if block.get("key_env"):
-                lines.append(f"    key_env: {_scalar(block['key_env'])}")
-            if block.get("api_key"):
+            if provider_block.get("key_env"):
+                lines.append(f"    key_env: {_scalar(provider_block['key_env'])}")
+            if provider_block.get("api_key"):
                 lines.append(
-                    f"    api_key: {_scalar(block['api_key'])}  # env var is preferred"
+                    f"    api_key: {_scalar(provider_block['api_key'])}  # env var is preferred"
                 )
-            if block.get("base_url"):
-                lines.append(f"    base_url: {_scalar(block['base_url'])}")
-            if block.get("endpoint"):
-                lines.append(f"    endpoint: {_scalar(block['endpoint'])}")
+            if provider_block.get("base_url"):
+                lines.append(f"    base_url: {_scalar(provider_block['base_url'])}")
+            if provider_block.get("endpoint"):
+                lines.append(f"    endpoint: {_scalar(provider_block['endpoint'])}")
     else:
         lines.append("providers: {}                   # add one: hunter config provider add <name>")
     lines.append("")

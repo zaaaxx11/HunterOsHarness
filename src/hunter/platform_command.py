@@ -27,6 +27,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 __all__ = ["CommandResult", "join_command", "run_command", "split_command"]
 
@@ -147,7 +148,7 @@ def run_command(
     parts = [str(part) for part in argv]
     if not parts:
         return CommandResult(argv=[], returncode=127, spawn_error="empty command")
-    kwargs: dict[str, object] = {
+    kwargs: dict[str, Any] = {
         "cwd": str(cwd) if cwd is not None else None,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
@@ -162,7 +163,7 @@ def run_command(
     else:
         kwargs["start_new_session"] = True
     try:
-        process = subprocess.Popen(parts, **kwargs)  # type: ignore[arg-type]
+        process = subprocess.Popen(parts, **kwargs)
     except OSError as exc:
         return CommandResult(argv=parts, returncode=127, spawn_error=f"{type(exc).__name__}: {exc}")
     try:

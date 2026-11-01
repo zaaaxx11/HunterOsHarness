@@ -127,6 +127,7 @@ class RunBudget:
         """Seconds left in the ``min_wall_seconds`` floor (0.0 when unarmed or
         disarmed). Docstring-only stub — ``hunter.llm.budget.RunBudget``
         implements it; a bare base-contract budget simply has no min-time."""
+        return 0.0
 
 
 class ChatProvider(Protocol):

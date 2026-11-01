@@ -161,7 +161,9 @@ def _onchain_allowed(ctx: Any, chain_id: Any, address: Any) -> bool:
     addr = str(address or "").strip().lower()
     for entry in _chain_scope(ctx):
         try:
-            if int(entry.get("chain_id")) == cid and str(entry.get("address", "")).strip().lower() == addr:
+            chain_id = entry.get("chain_id")
+            entry_addr = str(entry.get("address", "")).strip().lower()
+            if chain_id is not None and int(chain_id) == cid and entry_addr == addr:
                 return True
         except (TypeError, ValueError, AttributeError):
             continue

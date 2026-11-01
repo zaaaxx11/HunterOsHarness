@@ -22,6 +22,7 @@ import os
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Mapping
 from typing import Any
 
 from hunter.chat.repl import ChatEngine
@@ -325,11 +326,11 @@ class GatewayApp:
         except Exception as exc:  # noqa: BLE001 — the platform gets an answer, always
             surface = build_error_surface(exc)
             logger.exception("gateway handler failed for %s", session_key)
-            message = f"[ERROR {surface['layer']}] {surface['message']}"
+            text = f"[ERROR {surface['layer']}] {surface['message']}"
             hint = surface.get("hint") or ""
             if hint:
-                message += f"\nHint: {hint}"
-            return message
+                text += f"\nHint: {hint}"
+            return text
         finally:
             await lease.release()
             if durable_handle is not None:
@@ -407,19 +408,20 @@ def transports_from_env(env: dict[str, str] | None = None) -> list[ChatTransport
     from hunter.gateway.telegram import TelegramAdapter
     from hunter.gateway.webhook import WebhookAdapter
 
-    env = os.environ if env is None else env
+    source: Mapping[str, str] = os.environ if env is None else env
     transports: list[ChatTransport] = []
 
     def _allowlist(raw: str | None, *, code: str, message: str, hint: str) -> set[str]:
         """Parse a comma/whitespace-separated allowlist; refuse to run open."""
-        if not (raw or "").strip():
+        text = raw or ""
+        if not text.strip():
             raise HunterError(code=code, layer="config", message=message, hint=hint)
-        return {part.strip() for part in raw.replace(";", ",").split(",") if part.strip()}
+        return {part.strip() for part in text.replace(";", ",").split(",") if part.strip()}
 
-    token = (env.get("HUNTEROS_TELEGRAM_TOKEN") or "").strip()
+    token = (source.get("HUNTEROS_TELEGRAM_TOKEN") or "").strip()
     if token:
         allowed = _allowlist(
-            env.get("HUNTEROS_TELEGRAM_ALLOWED_USERS"),
+            source.get("HUNTEROS_TELEGRAM_ALLOWED_USERS"),
             code="gateway.telegram_allowlist",
             message="HUNTEROS_TELEGRAM_TOKEN is set but no allowlist is configured",
             hint="set HUNTEROS_TELEGRAM_ALLOWED_USERS to a comma-separated list "
@@ -427,12 +429,12 @@ def transports_from_env(env: dict[str, str] | None = None) -> list[ChatTransport
         )
         transports.append(TelegramAdapter(token, allowed))
 
-    discord_token = (env.get("HUNTEROS_DISCORD_TOKEN") or "").strip()
+    discord_token = (source.get("HUNTEROS_DISCORD_TOKEN") or "").strip()
     if discord_token:
         from hunter.gateway.discord import DiscordAdapter
 
         allowed = _allowlist(
-            env.get("HUNTEROS_DISCORD_ALLOWED_USERS"),
+            source.get("HUNTEROS_DISCORD_ALLOWED_USERS"),
             code="gateway.discord_allowlist",
             message="HUNTEROS_DISCORD_TOKEN is set but no allowlist is configured",
             hint="set HUNTEROS_DISCORD_ALLOWED_USERS to a comma-separated list "
@@ -440,55 +442,61 @@ def transports_from_env(env: dict[str, str] | None = None) -> list[ChatTransport
         )
         transports.append(DiscordAdapter(discord_token, allowed))
 
-    whatsapp_token = (env.get("HUNTEROS_WHATSAPP_TOKEN") or "").strip()
+    whatsapp_token = (source.get("HUNTEROS_WHATSAPP_TOKEN") or "").strip()
     if whatsapp_token:
         from hunter.gateway.whatsapp import DEFAULT_WEBHOOK_PORT, WhatsAppAdapter
 
-        phone_number_id = (env.get("HUNTEROS_WHATSAPP_PHONE_NUMBER_ID") or "").strip()
+        phone_number_id = (source.get("HUNTEROS_WHATSAPP_PHONE_NUMBER_ID") or "").strip()
         allowed = _allowlist(
-            env.get("HUNTEROS_WHATSAPP_ALLOWED_USERS"),
+            source.get("HUNTEROS_WHATSAPP_ALLOWED_USERS"),
             code="gateway.whatsapp_allowlist",
             message="HUNTEROS_WHATSAPP_TOKEN is set but no allowlist is configured",
             hint="set HUNTEROS_WHATSAPP_ALLOWED_USERS to a comma-separated list "
             "of authorized WhatsApp sender numbers",
         )
-        kwargs: dict[str, Any] = {}
-        if env.get("HUNTEROS_WHATSAPP_APP_SECRET"):
-            kwargs["app_secret"] = env["HUNTEROS_WHATSAPP_APP_SECRET"].strip()
-        if env.get("HUNTEROS_WHATSAPP_VERIFY_TOKEN"):
-            kwargs["verify_token"] = env["HUNTEROS_WHATSAPP_VERIFY_TOKEN"].strip()
-        if env.get("HUNTEROS_WHATSAPP_PORT"):
+        wa_kwargs: dict[str, Any] = {}
+        app_secret = source.get("HUNTEROS_WHATSAPP_APP_SECRET")
+        if app_secret:
+            wa_kwargs["app_secret"] = app_secret.strip()
+        verify_token = source.get("HUNTEROS_WHATSAPP_VERIFY_TOKEN")
+        if verify_token:
+            wa_kwargs["verify_token"] = verify_token.strip()
+        wa_port = source.get("HUNTEROS_WHATSAPP_PORT")
+        if wa_port:
             # A non-integer port is a config error (exit 8), not a traceback.
             try:
-                kwargs["port"] = int(env["HUNTEROS_WHATSAPP_PORT"])
+                wa_kwargs["port"] = int(wa_port)
             except ValueError as exc:
                 raise HunterError(
                     code="gateway.port_invalid",
                     layer="config",
                     message="HUNTEROS_WHATSAPP_PORT must be an integer — "
-                    f"got {env['HUNTEROS_WHATSAPP_PORT']!r}",
+                    f"got {wa_port!r}",
                     hint=f"e.g. export HUNTEROS_WHATSAPP_PORT={DEFAULT_WEBHOOK_PORT}",
                 ) from exc
-        transports.append(WhatsAppAdapter(whatsapp_token, phone_number_id, allowed, **kwargs))
+        transports.append(WhatsAppAdapter(whatsapp_token, phone_number_id, allowed, **wa_kwargs))
 
-    secret = (env.get("HUNTEROS_WEBHOOK_SECRET") or "").strip()
+    secret = (source.get("HUNTEROS_WEBHOOK_SECRET") or "").strip()
     if secret:
-        kwargs: dict[str, Any] = {}
-        if env.get("HUNTEROS_WEBHOOK_HOST"):
-            kwargs["host"] = env["HUNTEROS_WEBHOOK_HOST"].strip()
-        if env.get("HUNTEROS_WEBHOOK_PORT"):
+        hook_kwargs: dict[str, Any] = {}
+        hook_host = source.get("HUNTEROS_WEBHOOK_HOST")
+        if hook_host:
+            hook_kwargs["host"] = hook_host.strip()
+        hook_port = source.get("HUNTEROS_WEBHOOK_PORT")
+        if hook_port:
             # A non-integer port is a config error (exit 8), not a traceback.
             try:
-                kwargs["port"] = int(env["HUNTEROS_WEBHOOK_PORT"])
+                hook_kwargs["port"] = int(hook_port)
             except ValueError as exc:
                 raise HunterError(
                     code="gateway.port_invalid",
                     layer="config",
                     message="HUNTEROS_WEBHOOK_PORT must be an integer — "
-                    f"got {env['HUNTEROS_WEBHOOK_PORT']!r}",
+                    f"got {hook_port!r}",
                     hint="e.g. export HUNTEROS_WEBHOOK_PORT=8807",
                 ) from exc
-        if env.get("HUNTEROS_WEBHOOK_PATH"):
-            kwargs["path"] = env["HUNTEROS_WEBHOOK_PATH"]
-        transports.append(WebhookAdapter(secret, **kwargs))
+        hook_path = source.get("HUNTEROS_WEBHOOK_PATH")
+        if hook_path:
+            hook_kwargs["path"] = hook_path
+        transports.append(WebhookAdapter(secret, **hook_kwargs))
     return transports

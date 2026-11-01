@@ -89,7 +89,9 @@ class ToolContext:
 class ToolOutcome:
     ok: bool = True
     result_for_model: str = ""  # bounded text the model reads (no secrets)
-    evidence: dict[str, Any] | None = None  # {"kind": ..., "data": {...}} → pipeline stores
+    # A single {"kind": ..., "data": {...}} artifact, or a list of them (the loop
+    # persists each in order) → pipeline stores
+    evidence: dict[str, Any] | list[dict[str, Any]] | None = None
     blocked: bool = False  # true → outcome is a structured refusal
     code: str = ""  # stable machine code, e.g. "scope.target_out_of_scope"
     lifecycle_yield: str | None = None  # respond_to_user message

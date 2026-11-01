@@ -147,7 +147,7 @@ def _normalize_version(tag: str) -> str:
     return ".".join(str(part) for part in parsed)
 
 
-def _newer(a: tuple[int, ...], b: tuple[int, ...]) -> bool:
+def _newer(a: tuple[int, ...] | None, b: tuple[int, ...] | None) -> bool:
     """Strict ``a > b`` with zero-padding — ``(0, 4)`` == ``(0, 4, 0)``."""
     if a is None or b is None:
         return False

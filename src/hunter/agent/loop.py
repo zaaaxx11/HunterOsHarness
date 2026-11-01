@@ -540,7 +540,7 @@ class AgentLoop:
                         }
                     )
                     continue
-                outcome = self.registry.dispatch(call.name, parsed, ctx)
+                outcome = self.registry.dispatch(call.name, parsed or {}, ctx)
                 # P0 seams: post_tool after each dispatch; on_blocked on BLOCKED.
                 self._safe_hook("safe_post_tool", ctx, call.name, parsed, outcome)
                 if outcome.blocked:

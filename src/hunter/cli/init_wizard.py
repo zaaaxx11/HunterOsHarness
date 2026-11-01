@@ -481,7 +481,7 @@ def run_init_wizard(
                           markup=False, highlight=False)
 
         # ---- tools check (same rows as `hunter doctor`; never aborts) ----------
-        if not yes:
+        if not yes and checks_fn is not None:
             _print_tools_check(console, checks_fn, notes)
 
         # ---- write phase (keys.env BEFORE config — a crash can only leave

@@ -61,8 +61,12 @@ def make_console(*, stderr: bool = False, **kwargs: Any) -> Any:
     console = Console(stderr=stderr, theme=theme, **kwargs)
     # Rich 15 does not expose Console.theme publicly; retain a stable
     # inspection seam for integrations and palette tests.
-    if not hasattr(console, "theme"):
-        console.theme = theme
+    # ``console`` is widened to ``Any`` solely for this seam assignment: Rich's
+    # Console declares no ``theme`` attribute, and the dynamic attribute is the
+    # documented contract (integrations and palette tests inspect it).
+    seam: Any = console
+    if not hasattr(seam, "theme"):
+        seam.theme = theme
     return console
 
 

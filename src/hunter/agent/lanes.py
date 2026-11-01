@@ -137,7 +137,7 @@ class LaneRunner:
         self._global_remaining = self.global_budget
 
     # -- fan out -----------------------------------------------------------
-    def fan_out(self, lanes: Any = None, work_fn: Callable[[Lane], Any] = None) -> list[Any]:
+    def fan_out(self, lanes: Any = None, work_fn: Callable[[Lane], Any] | None = None) -> list[Any]:
         if work_fn is None and callable(lanes):
             # Allow fan_out(work_fn) when lanes already stored.
             work_fn = lanes

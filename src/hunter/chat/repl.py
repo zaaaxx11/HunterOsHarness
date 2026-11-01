@@ -22,7 +22,7 @@ import contextlib
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from rich.console import Console
 from rich.markdown import Markdown as RichMarkdown
@@ -154,7 +154,9 @@ class ChatEngine:
         self._owns_store = store is None
         self.store = store if store is not None else ChatStore()
         self.config = config
-        self.provider = provider
+        # ``None`` means "no brain configured" and every turn path checks it
+        # before use; the router path below may swap in a real provider.
+        self.provider: ChatProvider | None = provider
         self._provider_error: HunterError | None = None
         if provider is None:
             if config is None:
@@ -657,13 +659,21 @@ class ChatEngine:
                 return bool(confirm(f"approve {request.tool}: {request.summary} [y/N] "))
 
             gate_kwargs["confirm_fn"] = _confirm_request
+
+        def _append_event(kind: str, payload: dict[str, Any]) -> None:
+            # ToolContext.emit (EmitFn) returns None by contract; the ledger
+            # append itself is unchanged and still raises on a chain failure.
+            ledger.append(run_id, kind, payload)
+
         tool_ctx = ToolContext(
             run_id=run_id,
             ledger=ledger,
             http=http,
             scope=scope,
             target_url=target,
-            emit=lambda kind, payload: ledger.append(run_id, kind, payload),
+            # ``ToolContext.emit`` is ``EmitFn`` (``-> None``): append to the
+            # chain and discard the returned Event, exactly as before.
+            emit=_append_event,
             config={
                 "tier": tier,
                 "browser_enabled": bool(getattr(getattr(self.config, "agent", None), "browser", False)),
@@ -750,7 +760,10 @@ class ChatEngine:
 
         self.store.append_message(self.session_id, "user", text)
         loop = AgentLoop(
-            self.provider,
+            # ``_audit_open`` refuses to open an audit without a provider, so a
+            # live audit always has one; the guard at the top keeps the None
+            # path unreachable here.
+            cast("ChatProvider", self.provider),
             build_registry(
                 audit["tier"],
                 browser_enabled=bool(audit["ctx"].config.get("browser_enabled", False)),

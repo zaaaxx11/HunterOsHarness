@@ -245,7 +245,9 @@ def debunk_pass(
         return "needs_follow_up"
 
     recorder = _ExchangeRecorder(ctx.http)
-    engine_ctx = EngineContext(http=recorder, emit=ctx.emit)
+    # _ExchangeRecorder records every exchange while delegating to the real
+    # client; it satisfies the ScopedHttpClient protocol structurally.
+    engine_ctx = EngineContext(http=recorder, emit=ctx.emit)  # type: ignore[arg-type]
     try:
         reproduced = bool(recheck(engine_ctx, ctx.target_url.rstrip("/"), finding))
     except httpx.HTTPError as exc:

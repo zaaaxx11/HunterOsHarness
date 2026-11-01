@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from hunter import __version__
 from hunter.engine.base import EngineContext, TargetSpec
@@ -295,6 +295,12 @@ def _execute_scan(
         machine.observe(event.kind_value(), event.payload)
         return event
 
+    # ``EngineContext.emit`` is typed ``-> None`` (the engine contract), but the
+    # pipeline's emit also returns the appended Event for its own bookkeeping.
+    # Keeping the Event return is the narrower, compatible signature; the cast
+    # is sound because a ``Callable[..., Event]`` IS a valid ``Callable[..., None]``.
+    emit_cb = cast("Callable[[str, dict[str, Any]], None]", emit)
+
     emit(
         EventKind.RUN_STARTED,
         {
@@ -335,7 +341,7 @@ def _execute_scan(
         # into the canonical transitions (hunter.phases.observe_tool).
         ctx = EngineContext(
             http=http,
-            emit=emit,
+            emit=emit_cb,
             config={**dict(config or {}), "phase_machine": machine},
             ledger=ledger,
             run_id=run_id,
@@ -577,7 +583,15 @@ def _replay_candidate(
     try:
         with ScopedHttpClient(scope) as replay_http:
             recorder = _ReplayRecorder(replay_http)
-            ctx = EngineContext(http=recorder, emit=emit, config=dict(config or {}))
+            # ``_ReplayRecorder`` is a transparent wrapper/proxy over the
+            # ``ScopedHttpClient`` protocol (``__getattr__`` delegates every
+            # other member), so it satisfies the context's ``http`` field at
+            # runtime; the declared type does not model the proxy.
+            ctx = EngineContext(
+                http=cast("ScopedHttpClient", recorder),
+                emit=cast("Callable[[str, dict[str, Any]], None]", emit),
+                config=dict(config or {}),
+            )
             reproduced = bool(engine.replay(target, ctx, candidate))
             requests = replay_http.stats.requests
     except Exception as exc:  # noqa: BLE001 - a broken replay must not kill the run

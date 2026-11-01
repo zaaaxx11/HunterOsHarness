@@ -10,7 +10,7 @@ ledger does not show.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from hunter.kernel.events import EventKind
 from hunter.kernel.findings import Finding
@@ -135,8 +135,8 @@ class CoverageMatrix:
             payload = getattr(event, "payload", {}) or {}
             if payload.get("tool") != "coverage_record":
                 continue
-            klass = payload.get("klass")
-            surface = payload.get("surface") or payload.get("risk_area")
+            klass = cast("Any", payload.get("klass"))
+            surface = cast("Any", payload.get("surface") or payload.get("risk_area"))
             outcome = str(payload.get("outcome", "")).strip()
             if not klass or not surface:
                 continue
@@ -157,16 +157,17 @@ class CoverageMatrix:
     # -- queries ------------------------------------------------------------
 
     def gaps(self) -> list[tuple[str, str]]:
-        result: list[Gap] = []
+        result: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for key, status in self.cells.items():
             if status != "covered" and key not in seen:
                 seen.add(key)
                 result.append(Gap(key[0], key[1]))
         for item in self.expected_surfaces:
-            key = self._normalize_expected(item)
-            if key is None:
+            normalized = self._normalize_expected(item)
+            if normalized is None:
                 continue
+            key = normalized
             if key in seen:
                 continue
             if self.cells.get(key) == "covered":
@@ -189,11 +190,11 @@ class CoverageMatrix:
             # own; treat it as an unknown-class surface for gap reporting.
             return ("unknown", item)
         if isinstance(item, dict):
-            klass = item.get("klass") or item.get("class") or "unknown"
-            surface = item.get("surface") or item.get("risk_area")
-            if surface is None:
+            raw_surface = item.get("surface") or item.get("risk_area")
+            if raw_surface is None:
                 return None
-            return (str(klass), str(surface))
+            klass_text = item.get("klass") or item.get("class") or "unknown"
+            return (str(klass_text), str(raw_surface))
         return None
 
     # -- serialization ------------------------------------------------------

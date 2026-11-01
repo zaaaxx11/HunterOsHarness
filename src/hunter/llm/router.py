@@ -389,7 +389,9 @@ class ProviderRouter:
 
     def __init__(self, config: HunterConfig, *, litellm_module: Any | None = None) -> None:
         self.config = config
-        self._litellm = litellm_module
+        # Always a live module after __init__: either the injected test double or
+        # the imported ``litellm`` module (import failure raises HunterError).
+        self._litellm: Any = litellm_module
         self._last_outcome: str | None = None
         if self._litellm is None:
             try:

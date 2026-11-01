@@ -55,7 +55,9 @@ def sign_payload(secret: str, ts: str | int, body: str | bytes) -> str:
 
 
 def _is_loopback_host(host: str | None) -> bool:
-    return bool(host) and host.strip().lower() in _LOOPBACK_HOSTS
+    if not host:
+        return False
+    return host.strip().lower() in _LOOPBACK_HOSTS
 
 
 def _timing_safe_equal(provided: str, expected: str) -> bool:

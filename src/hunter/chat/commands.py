@@ -561,7 +561,7 @@ def _exec_findings(ctx: CommandContext) -> CommandReply:
     if not findings:
         return CommandReply(f"no findings recorded for run {run_id}", data={"run_id": run_id})
     lines = [f"**Findings — {run_id}**", ""]
-    lines += _findings_table(_SummaryShim(run_id, findings))
+    lines += _findings_table(_SummaryShim(run_id, findings))  # type: ignore[arg-type]  # shim is duck-typed to RunSummary
     lines += ["", f"next: `/report {run_id}`"]
     return CommandReply("\n".join(lines), format="markdown", data={"run_id": run_id})
 

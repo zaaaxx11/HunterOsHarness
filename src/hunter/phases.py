@@ -119,10 +119,12 @@ def _classification_classes(check_ids: list[str], source: str) -> list[dict[str,
         if check_id in seen:
             continue
         seen.add(check_id)
+        tier = tiers.get(check_id)
+        lane = _LANE_BY_TIER.get(tier) if tier is not None else None
         classes.append(
             {
                 "check_id": check_id,
-                "lane": _LANE_BY_TIER.get(tiers.get(check_id), "unclassified"),
+                "lane": lane if lane is not None else "unclassified",
                 "source": source,
             }
         )

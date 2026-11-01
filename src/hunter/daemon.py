@@ -292,7 +292,12 @@ def _windows_process_signature(pid: int) -> str | None:
 
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # ``ctypes.WinDLL`` is only defined on Windows builds of ctypes, so it
+        # is resolved dynamically rather than referenced directly.
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if win_dll is None:  # pragma: no cover - non-windows
+            return None
+        kernel32 = win_dll("kernel32", use_last_error=True)
     except (AttributeError, OSError):  # pragma: no cover - non-windows
         return None
     kernel32.OpenProcess.restype = ctypes.c_void_p

@@ -104,7 +104,7 @@ class LearningLoop:
             f_run_id = getattr(finding, "run_id", None)
             if run_id is not None and f_run_id != run_id:
                 continue
-            reason = reason_by_finding.get(getattr(finding, "id", None))
+            reason = reason_by_finding.get(getattr(finding, "id", None)) or ""
             if not reason:
                 reason = getattr(finding, "falsifier", "") or ""
             if not reason:

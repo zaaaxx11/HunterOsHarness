@@ -161,7 +161,7 @@ def _show_click_exception(exc: click.exceptions.ClickException, rich_markup_mode
         if rich_markup_mode is not None:
             from typer import rich_utils
 
-            rich_utils.rich_format_error(exc)
+            rich_utils.rich_format_error(exc)  # type: ignore[arg-type]  # typer vendors click; same object at runtime
             return
     except Exception:  # noqa: BLE001 — rendering must never crash the error path
         pass

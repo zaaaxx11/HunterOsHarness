@@ -92,7 +92,10 @@ def event_hash(
 class Event:
     seq: int
     run_id: str
-    kind: EventKind
+    # ``EventKind`` when the kind is a known member, the raw string otherwise
+    # (forward-compatible: a newer writer's kinds must still read back and
+    # hash-verify). ``kind_value()`` normalises both forms to ``str``.
+    kind: EventKind | str
     payload: dict[str, Any]
     ts: float
     prev_hash: str = GENESIS_HASH
@@ -114,7 +117,7 @@ class Event:
         return cls(
             seq=seq,
             run_id=run_id,
-            kind=kind,  # type: ignore[arg-type]
+            kind=kind,
             payload=payload,
             ts=ts,
             prev_hash=prev_hash,

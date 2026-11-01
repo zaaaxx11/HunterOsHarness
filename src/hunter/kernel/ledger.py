@@ -600,7 +600,10 @@ class Ledger:
         try:
             kind: EventKind | str = EventKind(kind_raw)
         except ValueError:
-            kind = kind_raw
+            # Unknown (newer-writer) kind: keep the raw string — ``Event.kind``
+            # is ``EventKind | str`` and ``kind_value()`` normalises both, so the
+            # row still hash-verifies instead of being dropped.
+            kind = str(kind_raw)
         return Event(
             seq=seq,
             run_id=run_id,
@@ -754,20 +757,20 @@ class Ledger:
                         report.broken_at_seq = seq
                     report.details.append(f"seq {seq}: row is not decodable (payload corrupt)")
                     continue
-                problems: list[str] = []
+                run_problems: list[str] = []
                 if event.hash != event.recompute_hash():
-                    problems.append(
+                    run_problems.append(
                         f"seq {event.seq}: stored hash does not match recomputed content hash"
                     )
                 if event.prev_hash != GENESIS_HASH and not self._hash_exists(event.prev_hash):
-                    problems.append(
+                    run_problems.append(
                         f"seq {event.seq}: prev_hash references no event and is not GENESIS_HASH"
                     )
-                if problems:
+                if run_problems:
                     report.ok = False
                     if report.broken_at_seq is None:
                         report.broken_at_seq = event.seq
-                    report.details.extend(problems)
+                    report.details.extend(run_problems)
             return report
         expected_prev = GENESIS_HASH
         for idx, row in enumerate(rows):

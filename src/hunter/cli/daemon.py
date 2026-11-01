@@ -23,9 +23,8 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 
 import typer
 
@@ -246,7 +245,18 @@ def _wall_label(seconds: float) -> str:
     return f"{seconds}s"
 
 
-def _default_interactive_ask():
+class _AskSeam(Protocol):
+    """The interactive ask seam: ``ask(prompt, default="") -> str``.
+
+    A ``Protocol`` (not a bare ``Callable``) so the seam's optional ``default``
+    argument stays optional for BOTH the injected test double and the built-in
+    TTY prompt, with mypy checking each call site correctly.
+    """
+
+    def __call__(self, prompt: str, default: str = "") -> str: ...
+
+
+def _default_interactive_ask() -> _AskSeam:
     """The typer-echo ask used on a TTY when no seam is injected."""
 
     def ask(prompt: str, default: str = "") -> str:
@@ -282,7 +292,7 @@ def _cmd_start(
     yes: bool,
     force: bool,
     state: Path | None,
-    interactive_ask: Callable[[str, str], str] | None = None,
+    interactive_ask: _AskSeam | None = None,
     idle_tip: bool = True,
 ) -> int:
     """Validate and start the persistent engine, optionally with one task.

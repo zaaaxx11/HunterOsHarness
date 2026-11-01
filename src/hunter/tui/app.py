@@ -600,7 +600,9 @@ class HunterTui(App[None]):
 
     @work(exclusive=True, group="engine", exit_on_error=False)
     async def refresh_engine(self) -> None:
-        status = await asyncio.to_thread(daemon_status, self._state_dir)
+        # An unset state dir means the default (``~/.hunter``) — never `None`:
+        # ``daemon_status`` would stringify it to a bogus "None" directory.
+        status = await asyncio.to_thread(daemon_status, self._state_display())
         lines = [
             f"engine {'running' if status.get('running') else 'stopped'}",
             f"queue: {status.get('queue_pending', 0)} pending",
@@ -635,7 +637,7 @@ class HunterTui(App[None]):
         self.query_one("#config-report", Static).update(await asyncio.to_thread(_read))
 
     def action_start_engine(self) -> None:
-        state = self._state_dir
+        state = self._state_display()
         start_daemon(
             state,
             target=None,
@@ -648,7 +650,7 @@ class HunterTui(App[None]):
         self.refresh_engine()
 
     def action_stop_engine(self) -> None:
-        stop_daemon(self._state_dir, timeout=5.0, force=False)
+        stop_daemon(self._state_display(), timeout=5.0, force=False)
         self.refresh_engine()
 
     def action_refresh(self) -> None:
@@ -664,7 +666,9 @@ class HunterTui(App[None]):
         """Config pane is read-only: ``e`` copies a row, diffs it, then routes
         through ``config set`` (never writes the file directly)."""
         try:
-            text = str(self.query_one("#config-report", Static).renderable)
+            # ``Static.renderable`` is a live attribute Textual's stubs omit;
+            # ``getattr`` with a "" default keeps the empty-pane path identical.
+            text = str(getattr(self.query_one("#config-report", Static), "renderable", ""))
         except Exception:  # noqa: BLE001 — nothing rendered yet
             text = ""
         rows = [line for line in text.splitlines() if line.strip() and line.strip() != "config: (none)"]
