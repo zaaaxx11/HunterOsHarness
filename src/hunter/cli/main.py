@@ -322,8 +322,21 @@ def hunt(
         from hunter.workflow.scope_recognize import recognize_scope
         from hunter.workflow.rag import RagConfig, RagLoop
         from hunter.daemon import daemon_running, enqueue_hunt, start_daemon
+        from hunter.tools.scope import scope_from_manifest
 
         resolved_state = _state_dir(state)
+        # The operator's explicit --scope manifest is authoritative. It is
+        # resolved HERE, before any recognition, because `recognize_scope`
+        # asks the LLM to guess a scope from the target string — and a guess
+        # must never replace an approved manifest.
+        manifest_scope = None
+        if scope is not None:
+            try:
+                manifest_scope = scope_from_manifest(scope)
+            except (ValueError, OSError) as exc:
+                err_console.print(
+                    f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
+                raise typer.Exit(3) from exc
         provider = None
         if (engine or "llm") == "llm":
             try:
@@ -344,7 +357,15 @@ def hunt(
             budget_s = 6 * 3600
         first_scope = None
         for tgt in targets or []:
-            tgt_scope = recognize_scope(provider, tgt)
+            # An explicit --scope manifest WINS. `recognize_scope` asks the
+            # LLM to guess the scope from the target string, which silently
+            # replaced a 68-host approved manifest with a 1-host guess —
+            # the operator's authorization thrown away by a heuristic.
+            # Only fall back to recognition when no manifest was given.
+            if manifest_scope is not None:
+                tgt_scope = manifest_scope
+            else:
+                tgt_scope = recognize_scope(provider, tgt)
             if first_scope is None:
                 first_scope = tgt_scope
             try:
@@ -366,6 +387,12 @@ def hunt(
                 start_daemon(resolved_state)
         except Exception:
             pass
+        if first_scope is None:
+            # No target produced a scope (empty target list). Refuse rather
+            # than hand RagConfig a None it will choke on later.
+            err_console.print(
+                "[hunter.error]BLOCKED:[/hunter.error] no scope resolved for any target")
+            raise typer.Exit(3)
         rag_config = RagConfig(
             state_dir=resolved_state,
             target=targets[0],
