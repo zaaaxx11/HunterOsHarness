@@ -186,7 +186,14 @@ def _default_ask(prompt: str) -> bool:
 def review_and_save(
     draft: SkillDraft, *, home=None, ask: Callable[[str], bool] | None = None, console: Console | None = None
 ):
-    console = console or Console()
+    # console=None means "unattended": the caller wants the return text and
+    # nothing on stdout. Falling back to Console() here printed a rich Panel
+    # straight into stdout, which corrupted `scan --json` output (the panel
+    # landed ahead of the JSON document and json.loads choked on it).
+    quiet = console is None
+    if not quiet:
+        assert console is not None  # narrows the Optional for the type checker
+        console = console or Console()
     root = user_skills_dir(home)
     target = root / draft.name / "SKILL.md"
     from hunter.agent.skills import load_corpus
@@ -199,18 +206,22 @@ def review_and_save(
         lines.extend(["", f"warning: draft contains instruction-like text: {', '.join(draft.flag_reasons)}", "this skill will be saved INERT (quarantined: true) and never mounted until you edit the file"])
     if target.parent.exists():
         lines.extend(["", f"exists: {target} — skipped to avoid overwrite"])
-        console.print(Panel("\n".join(lines), title="Skill preview"))
+        if not quiet:
+            console.print(Panel("\n".join(lines), title="Skill preview"))
         return None
-    console.print(Panel("\n".join(lines), title="Skill preview"))
+    if not quiet:
+        console.print(Panel("\n".join(lines), title="Skill preview"))
     try:
         approved = bool((ask or _default_ask)(f"save this skill to {target}? [y/N] "))
     except Exception:
         approved = False
     if not approved:
-        console.print("skipped — not saved")
+        if not quiet:
+            console.print("skipped — not saved")
         return None
     path = write_skill(draft, home=home)
-    console.print(f"saved {path}" + (" (inert/quarantined)" if draft.flagged else ""))
+    if not quiet:
+        console.print(f"saved {path}" + (" (inert/quarantined)" if draft.flagged else ""))
     return path
 
 

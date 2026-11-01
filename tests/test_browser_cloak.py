@@ -182,7 +182,10 @@ def test_cloak_on_launch_args_and_context_fingerprint():
         assert key in context_kwargs
     assert context_kwargs["locale"] in CLOAK_LOCALE_POOL
     assert context_kwargs["timezone_id"] in CLOAK_TIMEZONE_POOL
-    assert tuple(context_kwargs["viewport"]) in CLOAK_VIEWPORT_POOL
+    # Playwright wants a ViewportSize MAPPING, not a (w, h) pair — the
+    # tuple form raised "viewport.width: expected integer, got undefined".
+    viewport = context_kwargs["viewport"]
+    assert (viewport["width"], viewport["height"]) in CLOAK_VIEWPORT_POOL
     assert isinstance(context_kwargs["user_agent"], str) and context_kwargs["user_agent"]
 
 
@@ -203,7 +206,8 @@ def test_cloak_seeded_rng_deterministic_and_pools():
     kwargs_b = driver_b.browser.new_context_calls[0]
     assert kwargs_a == kwargs_b  # same seed -> identical fingerprint
     assert kwargs_a["user_agent"] in CLOAK_USER_AGENTS
-    assert tuple(kwargs_a["viewport"]) in CLOAK_VIEWPORT_POOL
+    viewport = kwargs_a["viewport"]
+    assert (viewport["width"], viewport["height"]) in CLOAK_VIEWPORT_POOL
     assert kwargs_a["locale"] in CLOAK_LOCALE_POOL
     assert kwargs_a["timezone_id"] in CLOAK_TIMEZONE_POOL
 

@@ -96,7 +96,10 @@ def test_registry_default_provider_receives_sandbox_hunter_config(monkeypatch, t
 
     import hunter.llm.router as router_module
 
-    monkeypatch.setattr(router_module, "ProviderRouter", CapturingProvider)
+    # provider_from_config is the seam _default_llm_provider actually calls;
+    # the default wire builds a NativeProvider, not a ProviderRouter.
+    monkeypatch.setattr(router_module, "provider_from_config",
+                        lambda config, **kw: CapturingProvider(config))
 
     provider = registry._default_llm_provider()
 
@@ -119,9 +122,14 @@ def test_get_engine_llm_keeps_configured_provider_instead_of_stub(monkeypatch, t
         def __init__(self, config: HunterConfig) -> None:
             self.config = config
 
+    # The registry builds its provider via provider_from_config(), which now
+    # defaults to NativeProvider (direct httpx, no LiteLLM). Patching
+    # router.ProviderRouter no longer intercepts that path, so the seam under
+    # test is provider_from_config itself.
     import hunter.llm.router as router_module
 
-    monkeypatch.setattr(router_module, "ProviderRouter", ConfigOnlyProvider)
+    monkeypatch.setattr(router_module, "provider_from_config",
+                        lambda config, **kw: ConfigOnlyProvider(config))
 
     engine = registry.get_engine("llm")
 
@@ -148,7 +156,10 @@ def test_cli_hunt_constructs_llm_provider_with_config_not_from_env(monkeypatch, 
     import hunter.llm.router as router_module
 
     # Deliberately no from_env attribute: this is the regression guard.
-    monkeypatch.setattr(router_module, "ProviderRouter", ConfigOnlyProvider)
+    # The seam is provider_from_config — the default wire is now NativeProvider,
+    # so patching ProviderRouter would not intercept the real construction path.
+    monkeypatch.setattr(router_module, "provider_from_config",
+                        lambda config, **kw: ConfigOnlyProvider(config))
 
     result = runner.invoke(
         app,
