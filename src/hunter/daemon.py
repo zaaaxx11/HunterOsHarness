@@ -611,6 +611,7 @@ def _scope_payload(scope: Any) -> dict[str, Any]:
             "name": str(scope.name),
             "hosts": sorted(scope.allowed_hosts),
             "allow_subdomains": bool(scope.allow_subdomains),
+            "local_roots": list(scope.local_roots),
         }
     if isinstance(scope, dict):
         return scope
@@ -1013,18 +1014,23 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
             heartbeat["loop_ts"] = time.time()
         except Exception:
             pass
-        budget = RunBudget(
-            max_cost_usd=float(task.get("max_cost_usd", 0.0) or 0.0),
-            wall_seconds=float(task.get("max_wall_seconds", 0.0) or 0.0),
-            min_wall_seconds=float(task.get("min_wall_seconds", 0.0) or 0.0),
-            stop_file=str(stop_path),
-        )
-        budget.start()
         run_id: str | None = None
         status = "failed"
         findings = 0
         exit_code = 1
+        budget: RunBudget | None = None
         try:
+            # Budget construction is INSIDE the try: a malformed queued task
+            # (e.g. "max_wall_seconds": "banana") must land as a failed done
+            # task, never wedge the worker loop — enqueue_task performs no
+            # limit validation, only enqueue_hunt does.
+            budget = RunBudget(
+                max_cost_usd=float(task.get("max_cost_usd", 0.0) or 0.0),
+                wall_seconds=float(task.get("max_wall_seconds", 0.0) or 0.0),
+                min_wall_seconds=float(task.get("min_wall_seconds", 0.0) or 0.0),
+                stop_file=str(stop_path),
+            )
+            budget.start()
             from hunter.hunt import mount_local_dir, normalize_hunt_target
 
             scope_data = task.get("scope") or {}
@@ -1045,6 +1051,15 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
 
                     if not _P(target_raw).is_dir():
                         raise FileNotFoundError(f"local target is not a directory: {target_raw}")
+                    # Fail-closed filesystem gate (mirrors check_url for HTTP):
+                    # a directory task may only be audited when its root is
+                    # inside one of the scope's local_roots (absent local_roots
+                    # keeps the backward-compatible permissive behaviour).
+                    if not scope.allows_local_root(target_raw):
+                        raise PermissionError(
+                            f"BLOCKED: local root {target_raw!r} is outside the "
+                            f"scope's local_roots (scope={scope.name!r})."
+                        )
                     with mount_local_dir(target_raw) as mount:
                         return run_hunt(
                             mount.url,

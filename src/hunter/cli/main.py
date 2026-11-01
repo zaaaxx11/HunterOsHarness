@@ -384,9 +384,22 @@ def hunt(
         try:
             running, _ = daemon_running(resolved_state)
             if not running:
-                start_daemon(resolved_state)
-        except Exception:
-            pass
+                start_code = start_daemon(resolved_state)
+                if start_code != 0:
+                    # LOUD: a failed boot must not silently leave a queue
+                    # nothing consumes (RagLoop runs with manage_daemon=False).
+                    err_console.print(
+                        f"[hunter.error]BLOCKED:[/hunter.error] daemon failed to start (code {start_code})"
+                    )
+                    raise typer.Exit(3)
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            err_console.print(
+                f"[hunter.error]BLOCKED:[/hunter.error] daemon start check failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise typer.Exit(3) from exc
         if first_scope is None:
             # No target produced a scope (empty target list). Refuse rather
             # than hand RagConfig a None it will choke on later.

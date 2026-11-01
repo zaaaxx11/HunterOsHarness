@@ -33,9 +33,15 @@ class ReviewEngine:
         if not root:
             return None
         try:
-            return Path(str(root)).resolve()
+            resolved = Path(str(root)).resolve()
         except (OSError, RuntimeError, ValueError):
             return None
+        # Fail-closed filesystem gate: the root must be inside one of the
+        # scope's local_roots (absent local_roots keeps the permissive
+        # localhost behaviour, mirroring daemon.hunt_worker).
+        if not target.scope.allows_local_root(resolved):
+            return None
+        return resolved
 
     def run(self, target: TargetSpec, ctx: EngineContext) -> EngineResult:
         root = self._local_root(ctx, target)
@@ -46,14 +52,19 @@ class ReviewEngine:
         candidates: list[CandidateFinding] = []
         files_scanned = 0
         for dirpath, _dirs, files in os.walk(root):
-            # containment guard
+            # Real containment guard: os.walk starting at `root` stays inside
+            # it for real subdirectories, but a link-named dirpath must not
+            # escape; resolve and refuse anything outside the root.
             try:
-                if Path(dirpath).resolve().relative_to(root) is not None:
-                    pass
+                Path(dirpath).resolve().relative_to(root)
             except ValueError:
                 continue
             for fname in files:
                 path = Path(dirpath) / fname
+                # File symlinks are NOT followed: a link placed in the scanned
+                # tree must not point the reader at ~/.ssh/id_rsa etc.
+                if path.is_symlink():
+                    continue
                 if path.suffix.lower() not in {".sol", ".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".h"}:
                     continue
                 try:

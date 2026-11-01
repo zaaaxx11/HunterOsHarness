@@ -109,7 +109,8 @@ class ScopeSet:
             return True
         return False
 
-    def allows_local_root(self, path):
+    def allows_local_root(self, path: str | Path) -> bool:
+        """True when ``path`` resolves inside one of the configured local roots."""
         try:
             resolved = Path(path).resolve()
         except (OSError, RuntimeError, ValueError):
@@ -124,6 +125,7 @@ class ScopeSet:
                 return True
             except ValueError:
                 continue
+        # Absent local_roots -> permissive (backward-compatible localhost behaviour).
         if not self.local_roots:
             return True
         return False
@@ -134,6 +136,7 @@ class ScopeSet:
             "hosts": sorted(self.allowed_hosts),
             "allow_subdomains": self.allow_subdomains,
             "localhost": True,
+            "local_roots": list(self.local_roots),
         }
 
 

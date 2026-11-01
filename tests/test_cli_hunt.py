@@ -32,6 +32,7 @@ FAKE_SCOPE_SUMMARY = {
     "hosts": ["staging.client-x.com"],
     "allow_subdomains": False,
     "localhost": True,
+    "local_roots": [],
 }
 PROPOSED_JSON = (
     '{"name": "staging.client-x.com", "hosts": ["staging.client-x.com"], '

@@ -67,3 +67,62 @@ def test_review_engine_emits_code_location(tmp_path):
     ev = result.candidates[0].evidence[0]
     assert ev.kind == "code_location"
     assert ev.data["path"].endswith("x.sol")
+
+
+def test_code_location_rejects_bool_lines_and_open_range(tmp_path):
+    import pytest as _pytest
+
+    from hunter.kernel.claimgate import ClaimGateBlocked, validate_code_location
+
+    f = tmp_path / "a.py"
+    f.write_text("one\n" * 5)
+    digest = hashlib.sha256("\n".join(["one"] * 5).encode("utf-8")).hexdigest()
+    with _pytest.raises(ClaimGateBlocked):
+        validate_code_location({"path": str(f), "line_start": True, "line_end": 5, "sha256": digest})
+    with _pytest.raises(ClaimGateBlocked):
+        validate_code_location({"path": str(f), "line_start": 1, "line_end": 10**9, "sha256": digest})
+    with _pytest.raises(ClaimGateBlocked):
+        validate_code_location({"path": str(f), "line_start": 1, "line_end": 6, "sha256": digest})
+    validate_code_location({"path": str(f), "line_start": 1, "line_end": 5, "sha256": digest})
+
+
+def test_finding_cannot_splice_cross_run_evidence(tmp_path):
+    import pytest as _pytest
+
+    from hunter.kernel.claimgate import ClaimGateBlocked
+    from hunter.kernel.findings import Finding, Severity
+
+    db = tmp_path / "ledger.db"
+    ledger = Ledger(db)
+    try:
+        ledger.create_run("R-a", "http://localhost", "mock", "s")
+        ledger.create_run("R-b", "http://localhost", "mock", "s")
+        eid = ledger.add_evidence("R-a", "note", {"note": "cross-run probe"})
+        f = Finding(
+            id="", run_id="R-b", key="k|GET|/|-", title="t", severity=Severity.LOW,
+            cwe="CWE-000", endpoint="/", evidence_ids=(eid,),
+        )
+        with _pytest.raises(ClaimGateBlocked):
+            ledger.create_finding(f)
+    finally:
+        ledger.close()
+
+
+def test_malformed_task_fails_done_not_wedge_worker(tmp_path):
+    import asyncio
+
+    from hunter.daemon import claim_task, enqueue_task, hunt_worker, queue_dir
+
+    sd = tmp_path / "state"
+    sd.mkdir()
+    enqueue_task(sd, {"target": "http://127.0.0.1:1/", "engine": "deterministic", "max_wall_seconds": "banana"})
+    stop = sd / "stop.flag"
+
+    async def _drain():
+        await hunt_worker(str(sd), stop_path=stop, heartbeat={})
+
+    asyncio.run(_drain())  # must not raise
+    done = list(queue_dir(sd).glob("done-*.json"))
+    assert done, "malformed task must land as a done task"
+    payload = json.loads(done[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"

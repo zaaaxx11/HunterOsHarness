@@ -232,12 +232,13 @@ WHEN NEW.status != 'theoretical'
   AND (
     NOT EXISTS (
         SELECT 1 FROM json_each(COALESCE(NEW.evidence_ids, '[]')) AS je
+        JOIN evidence e ON e.id = je.value AND e.run_id = NEW.run_id
         WHERE je.type = 'text'
-          AND EXISTS (SELECT 1 FROM evidence e WHERE e.id = je.value)
     )
     OR EXISTS (
         SELECT 1 FROM json_each(COALESCE(NEW.evidence_ids, '[]')) AS je
-        WHERE NOT EXISTS (SELECT 1 FROM evidence e WHERE e.id = je.value)
+        LEFT JOIN evidence e ON e.id = je.value
+        WHERE je.type != 'text' OR e.id IS NULL OR e.run_id != NEW.run_id
     )
   )
 BEGIN
@@ -799,11 +800,13 @@ class Ledger:
                 f"BLOCKED: evidence kind {kind!r} is not in the allowed "
                 f"vocabulary {sorted(self.ALLOWED_EVIDENCE_KINDS)}."
             )
+        redacted = redact_payload(data)
         if kind == "code_location":
+            # Validate the REDACTED payload: the stored artifact is what must
+            # re-verify, so tamper-evidence binds to what is actually on disk.
             from .claimgate import validate_code_location
 
-            validate_code_location(data)
-        redacted = redact_payload(data)
+            validate_code_location(redacted)
         blob = canonical_json(redacted)
         if len(blob.encode("utf-8")) > self.EVIDENCE_MAX_BYTES:
             raise ClaimGateBlocked(
@@ -859,6 +862,16 @@ class Ledger:
                     raise ClaimGateBlocked(
                         f"BLOCKED: evidence '{evidence_id}' bound to finding"
                         f" '{finding.key}' does not exist in the ledger (RULE-E1)."
+                    )
+                # Same-run ownership: evidence may never be spliced across runs
+                # (mirrors the evidence_ids UPDATE guard at the trigger layer).
+                row = conn.execute(
+                    "SELECT run_id FROM evidence WHERE id = ?", (evidence_id,)
+                ).fetchone()
+                if row is not None and str(row[0]) != str(finding.run_id):
+                    raise ClaimGateBlocked(
+                        f"BLOCKED: evidence '{evidence_id}' belongs to run '{row[0]}',"
+                        f" not '{finding.run_id}' (RULE-E1 cross-run splice)."
                     )
             validate_finding_insert(finding, len(finding.evidence_ids))
             new_id = self._next_id(conn, "findings", "F")
@@ -920,6 +933,14 @@ class Ledger:
                     raise ClaimGateBlocked(
                         f"BLOCKED: evidence '{evidence_id}' bound to finding"
                         f" '{finding.key}' does not exist in the ledger (RULE-E1)."
+                    )
+                row = conn.execute(
+                    "SELECT run_id FROM evidence WHERE id = ?", (evidence_id,)
+                ).fetchone()
+                if row is not None and str(row[0]) != str(finding.run_id):
+                    raise ClaimGateBlocked(
+                        f"BLOCKED: evidence '{evidence_id}' belongs to run '{row[0]}',"
+                        f" not '{finding.run_id}' (RULE-E1 cross-run splice)."
                     )
             validate_finding_insert(finding, len(evidence_ids))
             new_id = self._next_id(conn, "findings", "F")

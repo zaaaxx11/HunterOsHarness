@@ -117,6 +117,10 @@ def normalize_finding_target(finding: Finding, origin: str) -> str | None:
 
 def derive_child_targets(finding: Finding, scope: ScopeSet, origin: str) -> list[str]:
     """Deterministic in-scope child targets derived from a finding endpoint."""
+    # Dir-mode origins (a filesystem path, not a URL) have no meaningful
+    # endpoint concatenation — fail closed to an empty target list.
+    if not origin.lower().startswith(("http://", "https://")):
+        return []
     target = normalize_finding_target(finding, origin)
     if not target:
         return []
@@ -156,7 +160,7 @@ def _parse_json_list(text: str) -> list[str]:
         lines = text.splitlines()
         if lines and lines[0].startswith("```"):
             lines = lines[1:]
-        if lines and lines and lines[-1].strip() == "```":
+        if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
     # Find a JSON array anywhere in the text.
@@ -311,6 +315,10 @@ class RagLoop:
             status = getattr(getattr(finding, "status", None), "value", str(getattr(finding, "status", "")))
             if status not in {"candidate", "theoretical", "verified"}:
                 continue
+            # High-water guard FIRST: a full queue must not burn an LLM call
+            # (and the finding stays un-followed so the next cycle retries it).
+            if pending >= self.config.high_water:
+                break
             origin = self._origin()
             targets = list(wonder_followups(self.config.provider, finding, self.config.scope, origin))
             # Pad to 4 with deterministic derivations when possible.
@@ -321,6 +329,7 @@ class RagLoop:
                     if len(targets) >= 4:
                         break
             # If still short, pad with the finding endpoint itself (already included) — stop.
+            enqueued_for_finding = 0
             for target in targets:
                 if pending >= self.config.high_water:
                     break
@@ -330,9 +339,13 @@ class RagLoop:
                     enqueued.append(target)
                     existing.add(target)
                     pending += 1
-            # Mark followed regardless of enqueue (avoid reprocessing).
-            mark_followed(self.state_dir, fid)
-            followed.add(fid)
+                    enqueued_for_finding += 1
+            # Mark followed only when real work happened: children were
+            # enqueued, or every derived target is already in the queue.
+            already_queued = bool(targets) and all(t in existing for t in targets)
+            if enqueued_for_finding > 0 or already_queued:
+                mark_followed(self.state_dir, fid)
+                followed.add(fid)
 
         # High-water guard: fill with REAL scope targets, not the seed URL
         # wearing a query-string hat. `?rag-cycle=N` dials the same endpoint
@@ -360,8 +373,8 @@ class RagLoop:
                 self.config.scope.check_url(candidate)
             except Exception:  # noqa: BLE001
                 continue
-            cycle += 1
             if self._enqueue(candidate):
+                cycle += 1
                 enqueued.append(candidate)
                 existing.add(candidate)
                 seen_hosts.add(("https", host))

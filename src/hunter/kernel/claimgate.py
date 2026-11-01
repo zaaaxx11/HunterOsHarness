@@ -97,19 +97,39 @@ def validate_code_location(data) -> None:
     line_start = data.get("line_start")
     line_end = data.get("line_end")
     expected = data.get("sha256")
-    if not path or not isinstance(line_start, int) or not isinstance(line_end, int) or not expected:
-        raise ClaimGateBlocked("BLOCKED: code_location requires path/line_start/line_end/sha256.")
+    # bool is an int subclass — never a line number.
+    if (
+        not path
+        or isinstance(line_start, bool)
+        or isinstance(line_end, bool)
+        or not isinstance(line_start, int)
+        or not isinstance(line_end, int)
+        or not expected
+        or not isinstance(expected, str)
+    ):
+        raise ClaimGateBlocked(
+            "BLOCKED: code_location requires path/line_start/line_end/sha256 "
+            "(line numbers must be ints, sha256 must be a string)."
+        )
     try:
         lines = Path(path).read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise ClaimGateBlocked(f"BLOCKED: cannot read code location {path!r}: {exc}") from exc
-    start = max(1, int(line_start))
-    end = min(len(lines), int(line_end))
-    if start > end or start > len(lines):
-        raise ClaimGateBlocked("BLOCKED: code_location line range is invalid.")
-    span = "\n".join(lines[start - 1 : end])
+    # EXACT range, no clamping: start..end must identify the claimed span
+    # precisely (a 1..10**9 "span" must not silently verify the whole file).
+    if not (1 <= line_start <= line_end <= len(lines)):
+        raise ClaimGateBlocked(
+            "BLOCKED: code_location line range is invalid "
+            f"(file has {len(lines)} lines; requested {line_start}..{line_end})."
+        )
+    span = "\n".join(lines[line_start - 1 : line_end])
+    if not span.strip():
+        raise ClaimGateBlocked("BLOCKED: code_location span is empty.")
+    expected_hex = expected.strip().lower()
+    if len(expected_hex) != 64 or any(c not in "0123456789abcdef" for c in expected_hex):
+        raise ClaimGateBlocked("BLOCKED: code_location sha256 is not a lowercase hex digest.")
     import hashlib
 
     actual = hashlib.sha256(span.encode("utf-8")).hexdigest()
-    if actual != str(expected).strip().lower():
+    if actual != expected_hex:
         raise ClaimGateBlocked("BLOCKED: code_location hash mismatch (RULE-E1 tamper-evidence).")
