@@ -33,7 +33,7 @@ __all__ = ["available_engines", "get_engine"]
 
 # Registry order is stable: it is what available_engines() and error
 # messages show, and what tests assert on.
-_ENGINES: tuple[str, ...] = ("deterministic", "llm", "mock", "review")
+_ENGINES: tuple[str, ...] = ("deterministic", "evm", "llm", "mock", "review")
 
 
 def available_engines() -> list[str]:
@@ -88,6 +88,10 @@ def get_engine(
         from hunter.engine.deterministic.engine import DeterministicEngine
 
         return DeterministicEngine()
+    if name == "evm":
+        from hunter.engine.evm import EvmEngine
+
+        return EvmEngine()
     if name == "mock":
         from hunter.engine.mock import MockEngine
 

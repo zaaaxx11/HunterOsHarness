@@ -477,8 +477,13 @@ def hunt(
     # the value is always a concrete engine string, so the narrow is real and
     # not a silenced Optional.
     selected_engine = engine
-    if selected_engine is not None and selected_engine not in {"deterministic", "mock", "llm", "review"}:
-        err_console.print("[hunter.error]BLOCKED:[/hunter.error] unknown engine; engines: deterministic, mock, llm, review")
+    if selected_engine is not None and selected_engine not in {
+        "deterministic", "evm", "mock", "llm", "review"
+    }:
+        err_console.print(
+            "[hunter.error]BLOCKED:[/hunter.error] unknown engine; "
+            "engines: deterministic, evm, mock, llm, review"
+        )
         raise typer.Exit(3)
     chosen_scope = None
     if kind == "dir":
