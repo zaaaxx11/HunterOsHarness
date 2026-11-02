@@ -63,31 +63,93 @@ def validate_finding_insert(finding: Finding, evidence_count: int) -> None:
 def validate_status_change(
     finding: Finding, new_status: FindingStatus, evidence_count: int
 ) -> None:
-    """RULE-E2/E4/E1 (v0.7 theoretical promotion). Validate a status transition."""
+    """Validate a status transition with burden-of-proof per ladder.
+
+    Ladder (ascending burden):
+    - THEORETICAL: hypothesis, no proof needed (0 evidence legal)
+    - CANDIDATE: proposal (>=1 evidence)
+    - VERIFIED: tested proposal + basic PoC (>=2 evidence, poc_path set)
+    - PROMOTED: additional proof + "if" conditions documented, retested
+               for mainnet (>=2 evidence, logs_path set, adversary survived)
+    - PROVEN_LIVE: proof of live execution + logs.txt (poc_path + logs_path set,
+                   independent second verification)
+    - RULED_OUT: terminal — can come from any status
+    """
     new_status = (
         new_status if isinstance(new_status, FindingStatus) else FindingStatus(new_status)
     )
-    if new_status == FindingStatus.VERIFIED and evidence_count < 2:
+
+    if new_status == FindingStatus.RULED_OUT:
+        return  # always allowed, keeps audit trail
+
+    # --- THEORETICAL rules ---
+    if finding.status == FindingStatus.THEORETICAL:
+        if new_status == FindingStatus.CANDIDATE and evidence_count < 1:
+            raise ClaimGateBlocked(
+                f"BLOCKED: THEORETICAL → CANDIDATE requires >=1 evidence "
+                f"(proposal must cite what you read)."
+            )
+        if new_status not in (FindingStatus.CANDIDATE, FindingStatus.RULED_OUT):
+            raise ClaimGateBlocked(
+                f"BLOCKED: THEORETICAL may only promote to CANDIDATE, not {new_status.value}."
+            )
+
+    # --- CANDIDATE → VERIFIED ---
+    if finding.status == FindingStatus.CANDIDATE and new_status == FindingStatus.VERIFIED:
+        if evidence_count < 2:
+            raise ClaimGateBlocked(
+                "BLOCKED: CANDIDATE → VERIFIED requires >=2 evidence "
+                "(independent re-read + re-verification of the claim)."
+            )
+        if not finding.poc_path:
+            raise ClaimGateBlocked(
+                "BLOCKED: CANDIDATE → VERIFIED requires poc_path — "
+                "a basic PoC artifact must exist on disk."
+            )
+
+    # --- VERIFIED → PROMOTED ---
+    if finding.status == FindingStatus.VERIFIED and new_status == FindingStatus.PROMOTED:
+        if not finding.logs_path:
+            raise ClaimGateBlocked(
+                "BLOCKED: VERIFIED → PROMOTED requires logs_path — "
+                "a plain-text verification log must exist on disk."
+            )
+        if not finding.falsifier or not finding.falsifier.strip():
+            raise ClaimGateBlocked(
+                "BLOCKED: VERIFIED → PROMOTED requires falsifier — "
+                "the adversary challenge must be recorded (what COULD disprove this)."
+            )
+        if not finding.poc_path:
+            raise ClaimGateBlocked(
+                "BLOCKED: VERIFIED → PROMOTED requires poc_path — "
+                "the PoC must have been re-tested for mainnet viability."
+            )
+
+    # --- PROMOTED → PROVEN_LIVE ---
+    if finding.status == FindingStatus.PROMOTED and new_status == FindingStatus.PROVEN_LIVE:
+        if not finding.poc_path or not finding.logs_path:
+            raise ClaimGateBlocked(
+                "BLOCKED: PROMOTED → PROVEN_LIVE requires poc_path AND logs_path — "
+                "proof of live execution + execution log are mandatory."
+            )
+        if evidence_count < 2:
+            raise ClaimGateBlocked(
+                "BLOCKED: PROMOTED → PROVEN_LIVE requires >=2 evidence — "
+                "the second independent verification must be bound."
+            )
+
+    # --- general: no backwards movement except to RULED_OUT ---
+    _order = {
+        FindingStatus.THEORETICAL: 0,
+        FindingStatus.CANDIDATE: 1,
+        FindingStatus.VERIFIED: 2,
+        FindingStatus.PROMOTED: 3,
+        FindingStatus.PROVEN_LIVE: 4,
+    }
+    if _order.get(new_status, -1) < _order.get(finding.status, -1):
         raise ClaimGateBlocked(
-            f"BLOCKED: finding '{finding.id}' cannot be VERIFIED with "
-            f"{evidence_count} evidence artifact(s); an independent replay "
-            "evidence is required (RULE-E2)."
-        )
-    # Theoretical -> candidate requires at least one bound evidence (RULE-E1).
-    if (
-        finding.status == FindingStatus.THEORETICAL
-        and new_status == FindingStatus.CANDIDATE
-        and evidence_count < 1
-    ):
-        raise ClaimGateBlocked(
-            f"BLOCKED: finding '{finding.id}' cannot be promoted from "
-            "THEORETICAL to CANDIDATE without evidence (RULE-E1)."
-        )
-    # Theoretical can never jump straight to verified.
-    if finding.status == FindingStatus.THEORETICAL and new_status == FindingStatus.VERIFIED:
-        raise ClaimGateBlocked(
-            f"BLOCKED: finding '{finding.id}' cannot jump from THEORETICAL to "
-            "VERIFIED; promote to CANDIDATE first (RULE-E1)."
+            f"BLOCKED: cannot move backwards from {finding.status.value} to "
+            f"{new_status.value}."
         )
 
 

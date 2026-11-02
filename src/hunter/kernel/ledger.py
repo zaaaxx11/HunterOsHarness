@@ -1060,7 +1060,10 @@ class Ledger:
         return created
 
     def set_finding_status(
-        self, finding_id: str, status: FindingStatus, reason: str
+        self, finding_id: str, status: FindingStatus, reason: str,
+        poc_path: str | None = None,
+        logs_path: str | None = None,
+        falsifier: str | None = None,
     ) -> Finding:
         """Applies RULE-E2 (verified needs replay evidence). Append-only trail."""
         new_status = (
@@ -1106,10 +1109,19 @@ class Ledger:
             # Validate all transitions (RULE-E1 for theoretical promotion, RULE-E2
             # for verified, RULE-E5 klass already fixed at insert).
             validate_status_change(current, new_status, len(evidence_ids))
-            conn.execute(
-                "UPDATE findings SET status = ?, evidence_ids = ? WHERE id = ?",
-                (_enum_value(new_status), canonical_json(evidence_ids), finding_id),
-            )
+            updates = ["status = ?", "evidence_ids = ?"]
+            params: list[Any] = [_enum_value(new_status), canonical_json(evidence_ids)]
+            if poc_path is not None:
+                updates.append("poc_path = ?")
+                params.append(poc_path)
+            if logs_path is not None:
+                updates.append("logs_path = ?")
+                params.append(logs_path)
+            if falsifier is not None:
+                updates.append("falsifier = ?")
+                params.append(falsifier)
+            params.append(finding_id)
+            conn.execute(f"UPDATE findings SET {', '.join(updates)} WHERE id = ?", params)
             updated = replace(current, status=new_status, evidence_ids=tuple(evidence_ids))
             self._append_event(
                 conn,

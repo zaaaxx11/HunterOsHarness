@@ -113,23 +113,9 @@ def verify_finding(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
 
         # confirmed → VERIFIED
         updated = ledger.set_finding_status(
-            finding_id, FindingStatus.VERIFIED, reason
+            finding_id, FindingStatus.VERIFIED, reason,
+            poc_path=poc_path, logs_path=logs_path,
         )
-
-        # Update poc_path and logs_path via direct SQL (set_finding_status
-        # doesn't handle these fields yet).
-        if poc_path or logs_path:
-            with ledger._write() as conn:
-                if poc_path:
-                    conn.execute(
-                        "UPDATE findings SET poc_path = ? WHERE id = ?",
-                        (poc_path, finding_id),
-                    )
-                if logs_path:
-                    conn.execute(
-                        "UPDATE findings SET logs_path = ? WHERE id = ?",
-                        (logs_path, finding_id),
-                    )
 
         lines = [f"Finding {finding_id} VERIFIED: {reason}"]
         if poc_path:
@@ -141,6 +127,8 @@ def verify_finding(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
             updated = ledger.set_finding_status(
                 finding_id, FindingStatus.PROMOTED,
                 f"Adversary challenge survived: {reason}",
+                falsifier=str(args.get("falsifier", "")) or None,
+                poc_path=poc_path, logs_path=logs_path,
             )
             lines.append(f"→ PROMOTED (challenge survived)")
 
@@ -148,6 +136,7 @@ def verify_finding(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
             updated = ledger.set_finding_status(
                 finding_id, FindingStatus.PROVEN_LIVE,
                 f"Independent verification confirmed: {reason}",
+                poc_path=poc_path, logs_path=logs_path,
             )
             lines.append(f"→ PROVEN_LIVE (independent verification)")
 
