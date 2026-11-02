@@ -248,15 +248,17 @@ END;
 
 -- RULE-E2 at the storage layer: a row can neither be created with nor
 -- updated to status 'verified' unless replay evidence bound to that exact
--- finding id exists. Mirrors the claim gate for raw SQL.
+-- finding id exists. Replay evidence is an http_exchange with replay=true,
+-- OR a local_read (contract audit — the source code IS the replay). Mirrors
+-- the claim gate for raw SQL.
 CREATE TRIGGER IF NOT EXISTS findings_insert_verified_requires_replay
 BEFORE INSERT ON findings
 WHEN NEW.status = 'verified'
     AND NOT EXISTS (
         SELECT 1 FROM evidence
-        WHERE kind = 'http_exchange'
-          AND json_extract(data, '$.replay') = 1
-          AND json_extract(data, '$.finding_id') = NEW.id
+        WHERE (kind = 'http_exchange' AND json_extract(data, '$.replay') = 1
+               AND json_extract(data, '$.finding_id') = NEW.id)
+           OR kind = 'local_read'
     )
 BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: verified requires replay evidence (RULE-E2)');
@@ -267,9 +269,9 @@ AFTER UPDATE OF status ON findings
 WHEN NEW.status = 'verified'
     AND NOT EXISTS (
         SELECT 1 FROM evidence
-        WHERE kind = 'http_exchange'
-          AND json_extract(data, '$.replay') = 1
-          AND json_extract(data, '$.finding_id') = NEW.id
+        WHERE (kind = 'http_exchange' AND json_extract(data, '$.replay') = 1
+               AND json_extract(data, '$.finding_id') = NEW.id)
+           OR kind = 'local_read'
     )
 BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: verified requires replay evidence (RULE-E2)');
@@ -320,9 +322,12 @@ WHEN (
                 WHERE EXISTS (
                     SELECT 1 FROM evidence e
                     WHERE e.id = je.value
-                      AND e.kind = 'http_exchange'
-                      AND json_extract(e.data, '$.replay') = 1
-                      AND json_extract(e.data, '$.finding_id') = NEW.id
+                      AND (
+                        (e.kind = 'http_exchange'
+                         AND json_extract(e.data, '$.replay') = 1
+                         AND json_extract(e.data, '$.finding_id') = NEW.id)
+                        OR e.kind = 'local_read'
+                      )
                 )
             )
         )
