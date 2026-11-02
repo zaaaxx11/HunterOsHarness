@@ -130,6 +130,98 @@ def test_non_daemon_process_is_ignored(tmp_path, monkeypatch):
     assert find_zombie_daemons() == []
 
 
+def test_daemon_with_no_pid_json_is_a_zombie(tmp_path, monkeypatch):
+    """A half-started daemon that never finished registering is dead weight."""
+    state = tmp_path / "half-state"
+    (state / "daemon").mkdir(parents=True)  # dir exists, but no pid.json
+
+    from hunter import daemon_health as health
+
+    monkeypatch.setattr(
+        health, "_proc_cmdline", lambda pid: f"python -m hunter.daemon --state {state}"
+    )
+    monkeypatch.setattr(health.os, "listdir", lambda p: ["333"] if p == "/proc" else os.listdir(p))
+    monkeypatch.setattr(
+        health.Path, "exists", lambda self: str(self).startswith(str(state)) or str(self) == "/proc"
+    )
+
+    zombies = find_zombie_daemons()
+    assert len(zombies) == 1
+    assert zombies[0].pid == 333
+    assert "never registered" in zombies[0].reason
+
+
+def test_fresh_heartbeat_saves_a_daemon_with_no_pid_json(tmp_path, monkeypatch):
+    """The regression that matters: a live daemon must never be reaped.
+
+    Some daemons write heartbeat.json but never pid.json. Judging liveness by
+    pid.json alone would kill a daemon that is actively polling.
+    """
+    import time as _time
+
+    state = tmp_path / "heartbeat-state"
+    (state / "daemon").mkdir(parents=True)
+    (state / "daemon" / "heartbeat.json").write_text(
+        json.dumps({"pid": 777, "ts": _time.time()}), encoding="utf-8"
+    )
+
+    from hunter import daemon_health as health
+
+    monkeypatch.setattr(
+        health, "_proc_cmdline", lambda pid: f"python -m hunter.daemon --state {state}"
+    )
+    monkeypatch.setattr(health.os, "listdir", lambda p: ["777"] if p == "/proc" else os.listdir(p))
+    monkeypatch.setattr(
+        health.Path, "exists", lambda self: str(self).startswith(str(state)) or str(self) == "/proc"
+    )
+
+    assert find_zombie_daemons() == [], "a fresh heartbeat proves the daemon is alive"
+
+
+def test_stale_heartbeat_does_not_save_a_daemon(tmp_path, monkeypatch):
+    """An old heartbeat is not evidence of life."""
+    import time as _time
+
+    state = tmp_path / "stale-state"
+    (state / "daemon").mkdir(parents=True)
+    (state / "daemon" / "heartbeat.json").write_text(
+        json.dumps({"pid": 888, "ts": _time.time() - 3600}), encoding="utf-8"
+    )
+
+    from hunter import daemon_health as health
+
+    monkeypatch.setattr(
+        health, "_proc_cmdline", lambda pid: f"python -m hunter.daemon --state {state}"
+    )
+    monkeypatch.setattr(health.os, "listdir", lambda p: ["888"] if p == "/proc" else os.listdir(p))
+    monkeypatch.setattr(
+        health.Path, "exists", lambda self: str(self).startswith(str(state)) or str(self) == "/proc"
+    )
+
+    zombies = find_zombie_daemons()
+    assert len(zombies) == 1
+    assert zombies[0].pid == 888
+
+
+def test_daemon_with_matching_pid_json_is_not_a_zombie(tmp_path, monkeypatch):
+    """The counter-case: a registered daemon is live even if it looks idle."""
+    state = tmp_path / "registered-state"
+    (state / "daemon").mkdir(parents=True)
+    (state / "daemon" / "pid.json").write_text(json.dumps({"pid": 555}), encoding="utf-8")
+
+    from hunter import daemon_health as health
+
+    monkeypatch.setattr(
+        health, "_proc_cmdline", lambda pid: f"python -m hunter.daemon --state {state}"
+    )
+    monkeypatch.setattr(health.os, "listdir", lambda p: ["555"] if p == "/proc" else os.listdir(p))
+    monkeypatch.setattr(
+        health.Path, "exists", lambda self: str(self).startswith(str(state)) or str(self) == "/proc"
+    )
+
+    assert find_zombie_daemons() == []
+
+
 def test_daemon_without_state_flag_is_left_alone(monkeypatch):
     """No --state means the default state dir; not provably a zombie."""
     from hunter import daemon_health as health

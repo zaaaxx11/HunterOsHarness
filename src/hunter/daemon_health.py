@@ -183,6 +183,34 @@ def _read_pid_record(state_dir: str | None) -> int | None:
         return None
 
 
+def _heartbeat_claims_pid(state_dir: str | None, pid: int, *, max_age_s: float = 120.0) -> bool:
+    """True when the state dir's heartbeat is FRESH and names this pid.
+
+    A daemon that is alive writes ``heartbeat.json`` every poll. Some daemons
+    never write ``pid.json`` at all (a half-started one, or an older layout),
+    so pid.json alone cannot decide liveness — a fresh heartbeat naming the
+    process is equally good evidence that it is live and must not be reaped.
+    """
+    if not state_dir:
+        return False
+    try:
+        import json
+        import time
+
+        path = Path(state_dir) / "daemon" / "heartbeat.json"
+        if not path.is_file():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if int(data.get("pid", 0) or 0) != pid:
+            return False
+        ts = float(data.get("ts", 0.0) or 0.0)
+        if ts <= 0:
+            return False
+        return (time.time() - ts) <= max_age_s
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def find_zombie_daemons(*, exclude_pid: int | None = None) -> list[ZombieRecord]:
     """Find daemon processes that are provably dead weight.
 
@@ -190,10 +218,11 @@ def find_zombie_daemons(*, exclude_pid: int | None = None) -> list[ZombieRecord]
 
     * its ``--state`` directory no longer exists (a test temp dir that was
       cleaned up under it), OR
-    * no ``pid.json`` in that state dir claims this pid (the state dir was
-      wiped, or the daemon is polling a directory it never registered in).
+    * that state directory holds no ``pid.json`` naming this pid — either the
+      file is missing (the daemon never finished registering, which is how a
+      half-started test daemon looks) or it names a different process.
 
-    A daemon whose state dir exists AND whose ``pid.json`` names it is left
+    A daemon whose state dir exists AND whose ``pid.json`` claims it is left
     alone no matter how idle it looks — that is a live daemon, and killing it
     would abort real work.
     """
@@ -226,7 +255,26 @@ def find_zombie_daemons(*, exclude_pid: int | None = None) -> list[ZombieRecord]
             )
             continue
         recorded = _read_pid_record(state_dir)
-        if recorded is not None and recorded != pid:
+        if recorded == pid:
+            # Registered and claimed: live, however idle it looks.
+            continue
+        if recorded is None and _heartbeat_claims_pid(state_dir, pid):
+            # No pid.json, but a FRESH heartbeat names this process. That is a
+            # live daemon under an older layout — reaping it would abort real
+            # work.
+            continue
+        if recorded is None:
+            # No pid.json and no fresh heartbeat: the daemon never finished
+            # registering, or it stopped writing long ago. Dead weight.
+            zombies.append(
+                ZombieRecord(
+                    pid=pid,
+                    state_dir=state_dir,
+                    reason="no pid.json and no fresh heartbeat (never registered)",
+                    cmdline=cmdline,
+                )
+            )
+        else:
             # The state dir belongs to a different (or already-dead) daemon.
             zombies.append(
                 ZombieRecord(
