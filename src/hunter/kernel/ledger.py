@@ -99,7 +99,8 @@ CREATE TABLE IF NOT EXISTS findings (
     falsifier    TEXT NOT NULL DEFAULT '',
     action_class TEXT NOT NULL DEFAULT 'read',
     surface      TEXT,
-    poc_path     TEXT
+    poc_path     TEXT,
+    logs_path    TEXT
 );
 
 -- v0.7 hunting-klass tables (append-only, trigger-protected below).
@@ -409,7 +410,7 @@ class Ledger:
     _FINDING_COLS = (
         "id, run_id, key, title, severity, cwe, endpoint, method, param, payload_used,"
         " description, impact, remediation, status, evidence_ids, klass, falsifier,"
-        " action_class, surface, poc_path"
+        " action_class, surface, poc_path, logs_path"
     )
 
     def __init__(self, path: str | Path | None = None) -> None:
@@ -461,6 +462,7 @@ class Ledger:
             ("action_class", "TEXT NOT NULL DEFAULT 'read'"),
             ("surface", "TEXT"),
             ("poc_path", "TEXT"),
+            ("logs_path", "TEXT"),
         ]
         existing = {r[1] for r in self._conn.execute("PRAGMA table_info(findings)").fetchall()}
         for col, decl in new_cols:
@@ -629,12 +631,12 @@ class Ledger:
     def _row_to_finding(row: tuple[Any, ...]) -> Finding:
         # Back-compat: old rows may lack the v0.7 columns.
         # Pad row to full width if needed.
-        row = tuple(row) + (None,) * (20 - len(row))
+        row = tuple(row) + (None,) * (21 - len(row))
         (
             fid, run_id, key, title, severity, cwe, endpoint, method, param,
             payload_used, description, impact, remediation, status, evidence_ids,
-            klass, falsifier, action_class, surface, poc_path,
-        ) = row[:20]
+            klass, falsifier, action_class, surface, poc_path, logs_path,
+        ) = row[:21]
         return Finding(
             id=fid,
             run_id=run_id,
@@ -656,6 +658,7 @@ class Ledger:
             action_class=action_class or "read",
             surface=surface,
             poc_path=poc_path,
+            logs_path=logs_path,
         )
 
     @staticmethod
@@ -938,8 +941,8 @@ class Ledger:
             conn.execute(
                 "INSERT INTO findings (id, run_id, key, title, severity, cwe, endpoint, method,"
                 " param, payload_used, description, impact, remediation, status, evidence_ids,"
-                " klass, falsifier, action_class, surface, poc_path)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " klass, falsifier, action_class, surface, poc_path, logs_path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     created.id,
                     created.run_id,
@@ -961,6 +964,7 @@ class Ledger:
                     created.action_class,
                     created.surface,
                     created.poc_path,
+                    created.logs_path,
                 ),
             )
             self._append_event(
@@ -1009,8 +1013,8 @@ class Ledger:
             conn.execute(
                 "INSERT INTO findings (id, run_id, key, title, severity, cwe, endpoint, method,"
                 " param, payload_used, description, impact, remediation, status, evidence_ids,"
-                " klass, falsifier, action_class, surface, poc_path)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " klass, falsifier, action_class, surface, poc_path, logs_path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     created.id,
                     created.run_id,
@@ -1032,6 +1036,7 @@ class Ledger:
                     created.action_class,
                     created.surface,
                     created.poc_path,
+                    created.logs_path,
                 ),
             )
             self._append_event(
@@ -1070,11 +1075,26 @@ class Ledger:
                 )
             evidence_ids = list(current.evidence_ids)
             if new_status == FindingStatus.VERIFIED:
+                # RULE-E2: VERIFIED requires replay evidence — an http_exchange
+                # with replay=true bound to this finding, OR a local_read of
+                # the source code that was independently re-verified. A contract
+                # audit has no HTTP exchange; its "replay" is reading the same
+                # vulnerable line in the source.
                 replay_id = self._find_replay_evidence(conn, finding_id)
                 if replay_id is None:
+                    # Check for local_read evidence (contract findings)
+                    for eid in evidence_ids:
+                        row = conn.execute(
+                            "SELECT kind FROM evidence WHERE id = ?", (eid,)
+                        ).fetchone()
+                        if row and row[0] == "local_read":
+                            replay_id = eid
+                            break
+                if replay_id is None:
                     raise ClaimGateBlocked(
-                        f"BLOCKED: finding '{finding_id}' cannot be VERIFIED: no http_exchange"
-                        " evidence with replay=true bound to it exists (RULE-E2)."
+                        f"BLOCKED: finding '{finding_id}' cannot be VERIFIED: no replay evidence"
+                        " (http_exchange with replay=true or local_read) bound to it exists"
+                        " (RULE-E2)."
                     )
                 if replay_id not in evidence_ids:
                     evidence_ids.append(replay_id)

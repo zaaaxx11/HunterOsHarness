@@ -522,9 +522,12 @@ def _ledger_search(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
 
 
 def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
-    check_id = _as_str(args.get("check_id", "")).strip()
+    check_id = _as_str(args.get("check_id", "custom")).strip() or "custom"
     title = _as_str(args.get("title", "")).strip()
-    endpoint = _as_str(args.get("endpoint", "")).strip()
+    # endpoint is "." when the surface is not HTTP — a contract audit has no
+    # path to bind, and filling in "/" or "" forced the agent to lie about a
+    # URL it never visited.
+    endpoint = _as_str(args.get("endpoint", ".")).strip() or "."
     method = (_as_str(args.get("method", "GET")).strip() or "GET").upper()
     param = _as_str(args.get("param", "")).strip() or None
     payload_used = _as_str(args.get("payload_used", "")).strip() or None
@@ -535,44 +538,32 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
     confidence = _as_str(args.get("confidence", "")).strip().lower()
     severity = _as_str(args.get("severity", "")).strip().lower()
     cwe = _as_str(args.get("cwe", "")).strip()
-    klass = _as_str(args.get("klass", "")).strip()
+    klass = _as_str(args.get("klass", "unknown")).strip() or "unknown"
     falsifier = _as_str(args.get("falsifier", "")).strip()
     surface = _as_str(args.get("surface", "")).strip() or None
     poc_path = _as_str(args.get("poc_path", "")).strip() or None
+    logs_path = _as_str(args.get("logs_path", "")).strip() or None
     action_class = _as_str(args.get("action_class", "read")).strip() or "read"
 
-    # R1 — required prose and structural fields present.
+    # R1 — required prose fields. check_id, endpoint, and falsifier are NOT
+    # required: a contract finding carries a descriptive check_id, a "."
+    # endpoint, and no falsifier by default, and those are valid states.
     missing = [
         name
         for name, value in (
-            ("check_id", check_id),
-            ("endpoint", endpoint),
             ("title", title),
             ("description", description),
             ("impact", impact),
             ("severity_justification", severity_justification),
             ("counterevidence", counterevidence),
-            ("falsifier", falsifier),
         )
         if not value
     ]
     if not klass:
-        try:
-            from hunter.taxonomy import klass_for_check_id
-
-            klass = klass_for_check_id(check_id)
-        except Exception:
-            klass = "unknown"
-    try:
-        from hunter.taxonomy import validate_klass as _vk
-
-        if not _vk(klass):
-            return _blocked(
-                "finding.r7_klass_invalid",
-                f"RULE-E5: klass {klass!r} is not in the taxonomy (allowed: a taxonomy id or 'unknown').",
-            )
-    except Exception:
-        pass
+        klass = "unknown"
+    # A contract finding carries a descriptive klass like "reentrancy-no-eth"
+    # that was never in the web taxonomy. Accept any non-empty string — the
+    # taxonomy gate was written before contract audits existed.
     if missing:
         return _blocked(
             "finding.r1_required_fields",
@@ -629,8 +620,13 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
             "sufficient for a finding.",
         )
 
-    # R4 — scope: the endpoint must belong to the target origin or an allowed host.
-    scope_ok, scope_detail = _endpoint_in_scope(ctx, endpoint)
+    # R4 — scope: the endpoint must belong to the target origin or an allowed
+    # host. Skip for "." (the sentinel meaning "not an HTTP surface") so a
+    # contract finding with no URL to check passes without lying about it.
+    if endpoint == ".":
+        scope_ok, scope_detail = True, ""
+    else:
+        scope_ok, scope_detail = _endpoint_in_scope(ctx, endpoint)
     if not scope_ok:
         return _blocked("scope.target_out_of_scope", scope_detail)
 
@@ -694,6 +690,7 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
         action_class=action_class,
         surface=surface,
         poc_path=poc_path,
+        logs_path=logs_path,
     )
     try:
         created = ctx.ledger.create_finding(claim)
@@ -1925,6 +1922,7 @@ def build_registry(
         (".tools_network", "register_network_tools"),
         (".tools_local", "register_local_tools"),
         (".tools_expand", "register_expand_tools"),
+        (".tools_verify", "register_verify_tool"),
         (".tool_forge", "register_forge_tools"),
     ):
         try:

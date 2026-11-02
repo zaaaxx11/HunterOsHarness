@@ -32,7 +32,10 @@ Turn 2: slither_run
 Turn 3: read_file for ONE vulnerable contract from slither output
 Turn 4: read_file to verify the vulnerable function in the source
 Turn 5: create_finding_request
-Turn 6: finish_scan
+Turn 6: verify_finding — re-read evidence, confirm claim, save POC + logs
+Turn 7: verify_finding with promote=true — adversary challenge
+Turn 8: verify_finding with prove=true — final independent verification
+Turn 9: finish_scan
 ```
 
 You get 6 turns. You must ship a finding by turn 5.

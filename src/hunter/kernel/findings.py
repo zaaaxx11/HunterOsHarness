@@ -62,6 +62,7 @@ class Finding:
     action_class: str = "read"       # recon|read|auth-test|mutate
     surface: str | None = None      # affected surface/row
     poc_path: str | None = None     # path to the PoC artifact on disk
+    logs_path: str | None = None    # path to the plain-text log on disk
 
 
 def dedupe_key(check_id: str, method: str, endpoint: str, param: str | None) -> str:
