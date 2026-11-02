@@ -984,3 +984,62 @@ def test_jail_cwd_creates_the_directory(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path)
     jail = toolchain._jail_cwd(ctx, {})
     assert jail.is_dir(), f"jail must exist on disk: {jail}"
+
+
+# ------------------------------------------------------------- install script
+
+
+def test_install_toolchain_script_exists_and_is_executable():
+    """toolchain.py registers eight tools that shell out to real binaries.
+
+    Without an installer, a fresh checkout has eight tools that all report
+    _unavailable — the failure is correct but the fix is undocumented. The
+    script is the documented fix, so it must ship and be runnable.
+    """
+    import os
+    import stat
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    script = root / "install-toolchain.sh"
+    assert script.is_file(), "install-toolchain.sh must ship with the repo"
+    assert os.stat(script).st_mode & stat.S_IXUSR, "install-toolchain.sh must be executable"
+
+
+def test_install_toolchain_covers_every_toolchain_binary():
+    """Every binary a toolchain tool resolves must have an installer.
+
+    A tool that shells out to a binary the installer never mentions is a tool
+    that cannot be made to work on a fresh host.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    script = (root / "install-toolchain.sh").read_text()
+    source = (root / "src" / "hunter" / "agent" / "toolchain.py").read_text()
+
+    resolved = set(re.findall(r'_resolve\("([a-z]+)"\)', source))
+    assert resolved, "no _resolve() calls found — the extraction regex is stale"
+    missing = sorted(b for b in resolved if f"install_{b}" not in script and b not in ("forge", "cast", "anvil"))
+    assert not missing, f"no installer for: {missing}"
+
+
+def test_install_toolchain_check_mode_reports_without_installing():
+    """--check is the operator's "what is missing" answer, and must be safe.
+
+    It is the mode a support reply points at, so it has to work on a host with
+    nothing installed and install nothing.
+    """
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        ["bash", str(root / "install-toolchain.sh"), "--check"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "[ok]" in result.stdout or "[!!]" in result.stdout
