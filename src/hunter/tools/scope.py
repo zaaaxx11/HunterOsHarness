@@ -59,21 +59,39 @@ def _unglue_scheme(candidate: str) -> str | None:
     ``rpc.example.comhttps`` -> ``https://rpc.example.com``
     ``rpc.example.comhttps/v1`` -> ``https://rpc.example.com/v1``
 
-    Returns ``None`` when the input does not show the malformation, so the
-    caller keeps its normal fail-closed path. The repair never widens scope:
-    the result is re-parsed and still has to pass the host allowlist.
+    A glued scheme is ``<host><https>://<path>`` — the ``://`` comes FROM the
+    scheme that is stuck to the host, so checking ``"://" in candidate`` and
+    bailing BEFORE ungluing rejects the very malformation it was written to
+    repair. One run recorded ``api.relay.linkhttps://v1/status`` producing a
+    ScopeViolation at second 3588 — 156 evidence items and one finding lost
+    because the last http_request hit a host the scope refused.
+
+    Unglue first. THEN refuse already-valid URLs.
     """
-    if not candidate or candidate.startswith("/") or "://" in candidate:
+    if not candidate or candidate.startswith("/"):
         return None
     head, sep, tail = candidate.partition("/")
     host_part = head.lower()
     for scheme in _GLUED_SCHEME_SUFFIXES:
+        # Two shapes: <host><scheme>         (no ://) → api.relay.linkhttps
+        #             <host><scheme>:        (:// split) → api.relay.linkhttps://v1
+        #
+        # In the second shape partition yields head="…https:", sep="/",
+        # tail="/v1". Tail already starts with '/' so we never re-add sep;
+        # adding it yields "https://api.relay.link//v1".
         if host_part.endswith(scheme) and len(host_part) > len(scheme):
-            # Keep only the single trailing label that is really a scheme.
             bare = head[: -len(scheme)]
-            if bare.endswith(".") or "." not in bare:
-                return None  # ends on a dot / no host at all -> not our shape
-            return f"{scheme}://{bare}" + (sep + tail if sep else "")
+            tail_sfx = sep + tail if sep else ""
+        elif host_part.endswith(scheme + ":") and len(host_part) > len(scheme) + 1:
+            bare = head[: -(len(scheme) + 1)]
+            tail_sfx = tail  # already starts with '/'
+        else:
+            continue
+        if bare.endswith(".") or "." not in bare:
+            return None
+        return f"{scheme}://{bare}" + tail_sfx
+    if "://" in candidate:
+        return None
     return None
 
 
