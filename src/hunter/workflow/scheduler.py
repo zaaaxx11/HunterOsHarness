@@ -70,18 +70,30 @@ class TaskBudget:
         }
 
 
-def _severity_of(finding: Any) -> str:
-    value = getattr(getattr(finding, "severity", None), "value", None)
-    if value is None:
-        value = getattr(finding, "severity", "")
+def _field_of(finding: Any, name: str) -> str:
+    """Read ``name`` off a Finding object OR a plain dict, lowercased.
+
+    The ledger hands out ``Finding`` dataclasses, but the RAG layer, JSON
+    reports, and the scheduler's own callers often hold dicts. Reading only
+    attributes made a dict look like a finding with no status and no
+    severity, which the actionable filter then dropped — silently, with an
+    empty plan and no error. Both shapes are supported now.
+    """
+    if isinstance(finding, dict):
+        value = finding.get(name, "")
+    else:
+        value = getattr(getattr(finding, name, None), "value", None)
+        if value is None:
+            value = getattr(finding, name, "")
     return str(value or "").strip().lower()
+
+
+def _severity_of(finding: Any) -> str:
+    return _field_of(finding, "severity")
 
 
 def _status_of(finding: Any) -> str:
-    value = getattr(getattr(finding, "status", None), "value", None)
-    if value is None:
-        value = getattr(finding, "status", "")
-    return str(value or "").strip().lower()
+    return _field_of(finding, "status")
 
 
 def task_budget(
@@ -144,7 +156,7 @@ def plan_children(
 
     actionable = []
     for finding in findings:
-        fid = str(getattr(finding, "id", "") or "")
+        fid = _field_of(finding, "id")
         if not fid or fid in followed:
             continue
         if _status_of(finding) not in {"candidate", "theoretical", "verified"}:
@@ -159,21 +171,26 @@ def plan_children(
         return (
             status_rank.get(_status_of(f), 9),
             severity_rank.get(_severity_of(f), 9),
-            str(getattr(f, "id", "")),
+            _field_of(f, "id"),
         )
 
     actionable.sort(key=_key)
 
     plan: list[tuple[Any, int]] = []
     remaining = budget.max_children
-    for finding in actionable:
+    for index, finding in enumerate(actionable):
         if remaining <= 0:
             break
-        allowance = min(SEVERITY_WEIGHTS.get(_severity_of(finding), 1), remaining)
+        weight = SEVERITY_WEIGHTS.get(_severity_of(finding), 1)
+        allowance = min(weight, remaining)
         if allowance <= 0:
             continue
         plan.append((finding, allowance))
         remaining -= allowance
+        # A finding that could not take its full weight means the budget ran
+        # out mid-cycle: stop rather than hand the scraps to the next one.
+        if allowance < weight:
+            break
     return plan
 
 

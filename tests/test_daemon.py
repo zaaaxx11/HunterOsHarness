@@ -386,3 +386,73 @@ def test_stop_file_stops_in_flight_hunt_budget(tmp_path, monkeypatch):
     assert budget_used.wall_seconds == pytest.approx(task["max_wall_seconds"])
     done = list(daemon.queue_dir(state).glob("done-*.json"))
     assert len(done) == 1
+
+
+def test_concurrent_starts_spawn_exactly_one_daemon(tmp_path):
+    """The double-start guard must hold under a real race, not just in sequence.
+
+    ``daemon_running()`` then ``spawn_detached()`` is a check-then-act pair.
+    Run sequentially it is airtight; run two callers at once and both pass the
+    check before either spawns — two daemons on one state dir, both claiming
+    tasks, both writing heartbeats. That is exactly what happened on a live
+    host (two daemons in .hunter-relay-contracts).
+
+    The start lock makes the pair one critical section. This test fires six
+    real processes at the same state dir and requires exactly one winner.
+    """
+    import contextlib
+    import os
+    import shutil
+    import signal
+    import subprocess
+    import time
+    from pathlib import Path
+
+    state = tmp_path / "state"
+    state.mkdir(parents=True)
+    snippet = (
+        "import sys; sys.path.insert(0, {src!r});"
+        "from hunter.daemon import start_daemon;"
+        "print(start_daemon({state!r}))"
+    ).format(src=str(Path(daemon.__file__).resolve().parent.parent), state=str(state))
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", snippet],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        for _ in range(6)
+    ]
+    codes = sorted(int(p.communicate()[0].strip()) for p in procs)
+    assert codes.count(0) == 1, f"exactly one start may win, got {codes}"
+    assert codes.count(3) == 5, f"the other five must be refused, got {codes}"
+
+    live = subprocess.run(
+        ["pgrep", "-f", f"hunter.daemon --state {state}"],
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert len(live) == 1, f"one daemon process expected, found {len(live)}: {live}"
+
+    # Cleanup must be unconditional: a leaked daemon from this test keeps
+    # claiming tasks in a tmp dir that no longer exists, and shows up as a
+    # phantom in every later test that counts daemon processes.
+    try:
+        daemon.stop_daemon(state, force=True)
+        remaining: list[str] = []
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            remaining = subprocess.run(
+                ["pgrep", "-f", f"hunter.daemon --state {state}"],
+                capture_output=True,
+                text=True,
+            ).stdout.split()
+            if not remaining:
+                break
+            time.sleep(0.2)
+        for pid in remaining:
+            with contextlib.suppress(Exception):
+                os.kill(int(pid), signal.SIGKILL)
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)

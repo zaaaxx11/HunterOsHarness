@@ -276,3 +276,58 @@ def test_ledger_is_in_keep():
 
 def test_daemon_runtime_is_in_discard():
     assert "daemon" in DISCARD_ON_CLOSE
+
+
+def test_close_checkpoints_the_wal_before_dropping_the_sidecars(root):
+    """A killed daemon leaves committed rows in ledger.db-wal.
+
+    close_session() deletes the sidecars to free disk. Without a checkpoint
+    first, every finding still sitting in the WAL dies with it — the ledger
+    stays on disk and silently loses data. This is the regression test.
+    """
+    import sqlite3
+
+    rec = create_session(target="t", state_dir=root, session_id="s1")
+    db = rec.state_dir / "ledger.db"
+    con = sqlite3.connect(str(db))
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("CREATE TABLE findings(x)")
+    con.execute("INSERT INTO findings VALUES ('CRITICAL')")
+    con.commit()
+    # Deliberately do NOT close: this is the killed-daemon case.
+    assert (rec.state_dir / "ledger.db-wal").stat().st_size > 0
+
+    result = close_session("s1", state_dir=root)
+
+    assert "ledger.db" in result["kept"]
+    con2 = sqlite3.connect(str(db))
+    assert list(con2.execute("SELECT x FROM findings")) == [("CRITICAL",)]
+    con2.close()
+
+
+def test_close_keeps_the_sidecars_when_the_checkpoint_cannot_run(root):
+    """A stale WAL is recoverable; a deleted one is not.
+
+    If the checkpoint fails (locked db, unreadable file), the sidecars must
+    survive the close instead of being dropped.
+    """
+    import sqlite3
+
+    rec = create_session(target="t", state_dir=root, session_id="s1")
+    db = rec.state_dir / "ledger.db"
+    con = sqlite3.connect(str(db))
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("CREATE TABLE findings(x)")
+    con.execute("INSERT INTO findings VALUES ('CRITICAL')")
+    con.commit()
+
+    import hunter.session as session_mod
+    original = session_mod._checkpoint_ledger
+    session_mod._checkpoint_ledger = lambda p: False
+    try:
+        result = close_session("s1", state_dir=root)
+    finally:
+        session_mod._checkpoint_ledger = original
+
+    assert "ledger.db-wal" in result["kept"]
+    assert "ledger.db-wal" not in result["discarded"]

@@ -318,6 +318,34 @@ def _is_within(path: Path, root: Path) -> bool:
     return resolved == root_resolved or root_resolved in resolved.parents
 
 
+def _checkpoint_ledger(ledger_path: Path) -> bool:
+    """Flush a WAL journal into the main db so the sidecars can be dropped.
+
+    Deleting ``ledger.db-wal`` while the daemon is being killed throws away
+    whatever has not been checkpointed yet — committed findings included. A
+    ``wal_checkpoint(TRUNCATE)`` folds the WAL back into ``ledger.db`` first,
+    so the sidecars are empty and removing them loses nothing.
+
+    Returns True when the checkpoint ran. Any failure (locked db, missing
+    file, not a sqlite db) is swallowed: the caller then keeps the sidecars
+    rather than risk the ledger.
+    """
+    import sqlite3
+
+    if not ledger_path.is_file():
+        return False
+    try:
+        con = sqlite3.connect(str(ledger_path), timeout=5.0)
+        try:
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            con.commit()
+        finally:
+            con.close()
+        return True
+    except sqlite3.Error:
+        return False
+
+
 def close_session(
     session_id: str,
     *,
@@ -343,6 +371,18 @@ def close_session(
     root = record.state_dir
     kept: list[str] = []
     discarded: list[str] = []
+
+    # The daemon is dead, so any WAL it left is frozen mid-flight. Fold it into
+    # ledger.db before the sidecars go — otherwise committed findings die with
+    # them. If the checkpoint cannot run (locked, unreadable), the sidecars are
+    # kept: a stale WAL is recoverable, a deleted one is not.
+    ledger_path = root / "ledger.db"
+    sidecars = ("ledger.db-wal", "ledger.db-shm", "ledger.db-journal")
+    if ledger_path.is_file() and _checkpoint_ledger(ledger_path):
+        pass
+    else:
+        keep = keep | frozenset(sidecars)
+
     if root.is_dir():
         for entry in sorted(root.iterdir()):
             name = entry.name

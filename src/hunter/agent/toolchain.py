@@ -252,6 +252,38 @@ def _run(
 # ---------------------------------------------------------------------------
 
 
+def _blocked_root(err: str, ctx: ToolContext) -> dict[str, Any]:
+    """A scope/root refusal the model can actually act on.
+
+    ``BLOCKED [toolchain.no_root]`` tells the agent nothing it can use — it
+    cannot tell whether to pass a ``path``, whether the path was wrong, or
+    whether the scope simply has no local_roots. Each code gets a sentence
+    that says what to do next.
+    """
+    roots = list(getattr(ctx.scope, "local_roots", ()) or ())
+    configured = ctx.config.get("local_root")
+    hints = {
+        "toolchain.no_root": (
+            "no local root was given. Pass `path` (a project directory), or run the "
+            "hunt against a directory so a local root is configured."
+        ),
+        "toolchain.bad_path": "the `path` argument is not a usable filesystem path.",
+        "toolchain.not_a_directory": "the `path` argument is not an existing directory.",
+        "scope.local_root_out_of_scope": (
+            f"the path is outside this hunt's scope. Allowed local roots: "
+            f"{roots or '(none — the scope has no local_roots)'}."
+        ),
+    }
+    detail = hints.get(err, err)
+    extra = f" Configured local_root: {configured}." if configured else ""
+    return {
+        "ok": False,
+        "blocked": True,
+        "code": err,
+        "result_for_model": f"BLOCKED [{err}] — {detail}{extra}",
+    }
+
+
 def _local_root(ctx: ToolContext, args: dict[str, Any]) -> tuple[Path | None, str | None]:
     """Resolve the working directory, fail-closed against the scope.
 
@@ -352,8 +384,7 @@ def forge_build(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """
     root, err = _local_root(ctx, args)
     if err:
-        return {"ok": False, "blocked": True, "code": err,
-                "result_for_model": f"BLOCKED [{err}]"}
+        return _blocked_root(err, ctx)
     binary = _resolve("forge")
     if binary is None:
         return _unavailable("forge_build", "forge")
@@ -375,8 +406,7 @@ def forge_test(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """
     root, err = _local_root(ctx, args)
     if err:
-        return {"ok": False, "blocked": True, "code": err,
-                "result_for_model": f"BLOCKED [{err}]"}
+        return _blocked_root(err, ctx)
 
     # Validate the model-supplied filter BEFORE resolving the binary. The
     # original order reported a hostile filter as "forge is not installed",
@@ -428,8 +458,7 @@ def slither_run(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """
     root, err = _local_root(ctx, args)
     if err:
-        return {"ok": False, "blocked": True, "code": err,
-                "result_for_model": f"BLOCKED [{err}]"}
+        return _blocked_root(err, ctx)
     binary = _resolve("slither")
     if binary is None:
         return _unavailable("slither_run", "slither")

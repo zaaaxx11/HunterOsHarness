@@ -625,6 +625,38 @@ def _scope_payload(scope: Any) -> dict[str, Any]:
     return {"name": "unknown", "hosts": [], "allow_subdomains": False}
 
 
+@contextlib.contextmanager
+def _daemon_start_lock(state: Path):
+    """Serialise daemon starts so two callers cannot both win the race.
+
+    ``start_daemon`` checks ``daemon_running()`` and then spawns. Between
+    those two steps a second caller runs the same check, sees nothing alive,
+    and spawns too — the classic TOCTOU double-start. The check is correct;
+    it is just not atomic.
+
+    An exclusive ``flock`` on ``daemon/start.lock`` makes the whole
+    check-then-spawn sequence one critical section. The lock is held for the
+    lifetime of the spawn (including the self-registration wait), so the
+    second caller either sees the first daemon's pid file and returns 3, or
+    waits and then sees it.
+
+    The lock file itself is never deleted: unlinking it would let a third
+    process lock a fresh inode while the second still holds the old one.
+    """
+    import fcntl
+
+    lock_path = state / "daemon" / "start.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
 def start_daemon(
     state_dir: str | Path,
     *,
@@ -644,6 +676,35 @@ def start_daemon(
     the queue empty so later chat requests can enqueue independently.
     """
     state = Path(state_dir)
+    # The check-then-spawn below is only correct as one critical section: two
+    # callers racing through it both see "no daemon" and both spawn. Hold the
+    # start lock across the whole sequence, registration wait included.
+    with _daemon_start_lock(state):
+        return _start_daemon_locked(
+            state,
+            target=target,
+            scope=scope,
+            engine=engine,
+            min_wall_seconds=min_wall_seconds,
+            max_wall_seconds=max_wall_seconds,
+            max_cost_usd=max_cost_usd,
+            max_iterations=max_iterations,
+            force=force,
+        )
+
+
+def _start_daemon_locked(
+    state: Path,
+    *,
+    target: str | None,
+    scope: Any | None,
+    engine: str,
+    min_wall_seconds: float,
+    max_wall_seconds: float,
+    max_cost_usd: float,
+    max_iterations: int,
+    force: bool,
+) -> int:
     if not force:
         running, _reason = daemon_running(state)
         if running:

@@ -169,3 +169,48 @@ def test_summary_respects_followed(monkeypatch):
     summary = schedule_summary(findings, followed={"f-1"}, high_water=8)
     assert summary["planned_findings"] == 1
     assert summary["planned_children"] == 3
+
+
+# ------------------------------------------------- dict-shaped findings (RAG/JSON)
+
+
+def test_plan_children_reads_dict_findings():
+    """The RAG layer and JSON reports hold dicts, not Finding objects.
+
+    Reading `finding.id` with getattr on a dict returns '' — which the
+    actionable filter treats as "no id" and drops. Every dict finding was
+    silently skipped, so the scheduler planned nothing and reported success.
+    """
+    findings = [
+        {"id": "F-1", "severity": "critical", "status": "candidate"},
+        {"id": "F-2", "severity": "high", "status": "verified"},
+    ]
+    budget = TaskBudget(max_children=8, max_total_pending=16, available_mb=2000, pressure="low", reason="test")
+    plan = plan_children(findings, budget=budget)
+    assert [f["id"] for f, _ in plan] == ["F-2", "F-1"]
+    assert [n for _, n in plan] == [3, 4]
+
+
+def test_plan_children_dict_and_object_shapes_agree():
+    """Same data, same plan — whichever shape the caller happens to hold."""
+    obj = _finding("f-1", "critical", "verified")
+    dic = {"id": "f-1", "severity": "critical", "status": "verified"}
+    budget = TaskBudget(max_children=8, max_total_pending=16, available_mb=2000, pressure="low", reason="test")
+    a = plan_children([obj], budget=budget)
+    b = plan_children([dic], budget=budget)
+    assert [(f.id, n) for f, n in a] == [(f["id"], n) for f, n in b] == [("f-1", 4)]
+
+
+def test_plan_children_spends_the_whole_budget():
+    """Leftover children go to the next finding rather than being wasted.
+
+    A cycle that stops at 4 of 5 children throws away a fifth of the budget
+    every round; the leftover belongs to the next-highest finding.
+    """
+    findings = [
+        _finding("f-1", "critical", "verified"),
+        _finding("f-2", "high", "candidate"),
+    ]
+    budget = TaskBudget(max_children=5, max_total_pending=16, available_mb=1000, pressure="low", reason="test")
+    plan = plan_children(findings, budget=budget)
+    assert [(f.id, n) for f, n in plan] == [("f-1", 4), ("f-2", 1)]

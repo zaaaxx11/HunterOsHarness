@@ -219,7 +219,12 @@ def test_hunt_aliases_start_and_status_are_available(monkeypatch, tmp_path):
         calls.append(str(state))
         return _status()
 
+    # start_daemon must be patched too: without it `hunter start` spawns a
+    # real daemon that outlives the test, which contradicts this module's
+    # contract ("a test can never spawn, poll, or kill a process") and leaks
+    # a daemon per run.
     _patch(monkeypatch, "daemon_status", fake_status)
+    _patch(monkeypatch, "start_daemon", lambda *a, **k: 0)
     start = runner.invoke(app, ["start", "--state", str(tmp_path)])
     status = runner.invoke(app, ["status", "--state", str(tmp_path)])
 
