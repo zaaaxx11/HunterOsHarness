@@ -35,6 +35,10 @@ STEP 9: call finish_scan
 DO NOT stop at step 5. Steps 6-8 are mandatory. A CANDIDATE finding is
 INCOMPLETE. Only PROVEN_LIVE is complete.
 
+**Verify immediately — do not batch.** After create_finding_request succeeds,
+you MUST call verify_finding on that finding BEFORE creating the next one.
+Pattern: FIND → VERIFY → PROMOTE → PROVE, then FIND the next one.
+
 ## 4. verify_finding parameters cheat sheet
 
 ```
