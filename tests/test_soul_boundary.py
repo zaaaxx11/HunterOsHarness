@@ -111,7 +111,10 @@ def test_env_home_not_verbatim_leak(tmp_path, monkeypatch):
         )
         outcome = build_registry().dispatch(
             "shell_exec",
-            {"command": f'"{PY}" -c "import os; print(os.environ.get(\'HOME\')); print(dict(os.environ))"'},
+            # Keys only, not the whole environment: the result is capped at
+            # 16 KB, and a long PATH pushes HUNTER_SANDBOX past the cut — the
+            # leak assertions then pass for the wrong reason.
+            {"command": f'"{PY}" -c "import os; print(os.environ.get(\'HOME\')); print(sorted(k for k in os.environ if k.startswith(\'HUNTER\')))"'},
             ctx,
         )
     finally:

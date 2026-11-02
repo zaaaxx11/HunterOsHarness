@@ -211,8 +211,16 @@ def test_shell_exec_denylist_quoting_and_escapes_refused(env):
 
 def test_shell_exec_env_is_minimal_no_canary_leak(env, monkeypatch):
     monkeypatch.setenv("HUNTER_CANARY", "canary-value-xyz")
+    # Print the keys the assertion actually cares about. Dumping the whole
+    # environment makes this test depend on truncation order: the result is
+    # capped at 16 KB, so on a host with a long PATH the canary check can pass
+    # by accident while HUNTER_SANDBOX falls off the end of the output.
     outcome = build_registry().dispatch(
-        "shell_exec", {"command": py_command("import os; print(os.environ)")}, env.ctx
+        "shell_exec",
+        {"command": py_command(
+            "import os; print(sorted(k for k in os.environ if k.startswith('HUNTER')))"
+        )},
+        env.ctx,
     )
     assert outcome.ok is True, outcome.result_for_model
     assert "HUNTER_CANARY" not in outcome.result_for_model

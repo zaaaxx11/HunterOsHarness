@@ -287,3 +287,108 @@ def test_scope_shows_last_scan_scope(ctx):
 def test_skills_lists_bundled(ctx):
     reply = safe_execute("skills", ctx)
     assert "recon-basics" in reply.text
+
+
+# ------------------------------------------- /model --list and --providers
+
+
+def test_model_providers_lists_configured_providers_without_leaking_keys(ctx):
+    """Multi-provider is only useful if you can see it without opening the YAML.
+
+    Key PRESENCE is reported; the key VALUE never is — a slash command that
+    echoes a secret into a scrollback is a leak, not a feature.
+    """
+    from hunter.chat.commands import _model_providers
+
+    from hunter.llm.config import ProviderConfig
+
+    ctx.config.providers["mygate"] = ProviderConfig(
+        key_env="SOME_KEY_ENV", api_key="", base_url="https://gw.example.com/v1", endpoint=""
+    )
+    reply = _model_providers(ctx.config)
+    assert "mygate" in reply.text
+    assert "https://gw.example.com/v1" in reply.text
+    assert "SOME_KEY_ENV" in reply.text
+    assert "NOT SET" in reply.text
+    assert "mygate" in reply.data["providers"]
+
+
+def test_model_providers_reports_the_fallback_chain(ctx):
+    from hunter.chat.commands import _model_providers
+
+    reply = _model_providers(ctx.config)
+    assert "fallback chain" in reply.text
+
+
+def test_model_list_reads_base_url_from_the_provider_block(ctx, monkeypatch):
+    """base_url lives on the provider block, not the tier.
+
+    `hunter config provider` writes it there, so reading only the tier finds
+    nothing on every normally-configured install and --list reports "nothing
+    to list" against a live endpoint.
+    """
+    from hunter.chat import commands as cmd_mod
+
+    seen = {}
+
+    def fake_list(base_url, api_key="", **kwargs):
+        seen["base_url"] = base_url
+        seen["api_key"] = api_key
+        return ["model-a", "model-b"]
+
+    monkeypatch.setattr(cmd_mod, "_split_options", cmd_mod._split_options)
+    import hunter.llm.probe as probe_mod
+    monkeypatch.setattr(probe_mod, "list_models", fake_list)
+
+    ctx.config.model_tiers["orchestrator"].provider = "jerouter"
+    ctx.config.model_tiers["orchestrator"].base_url = ""
+    from hunter.llm.config import ProviderConfig
+
+    ctx.config.providers["jerouter"] = ProviderConfig(
+        key_env="JEROUTER_API_KEY", api_key="", base_url="https://je.jerouter.web.id/v1", endpoint=""
+    )
+    monkeypatch.setenv("JEROUTER_API_KEY", "secret-value")
+
+    reply = cmd_mod._model_list(ctx.config)
+
+    assert seen["base_url"] == "https://je.jerouter.web.id/v1"
+    assert seen["api_key"] == "secret-value"
+    assert "model-a" in reply.text and "model-b" in reply.text
+    assert reply.data["models"] == ["model-a", "model-b"]
+
+
+def test_model_list_without_a_base_url_says_so_instead_of_probing(ctx):
+    """A tier with no base_url has nothing to dial.
+
+    Probing a blank URL returns [] on any failure, which reads as "the
+    provider has no models" — a misleading answer when the real cause is a
+    missing base_url.
+    """
+    from hunter.chat.commands import _model_list
+
+    ctx.config.model_tiers["orchestrator"].provider = "jerouter"
+    ctx.config.model_tiers["orchestrator"].base_url = ""
+    ctx.config.providers.pop("jerouter", None)
+
+    reply = _model_list(ctx.config)
+
+    assert "no base_url" in reply.text
+    assert reply.data["models"] == []
+
+
+def test_model_list_survives_a_dead_endpoint(ctx, monkeypatch):
+    """A dead provider must not kill the REPL."""
+    import hunter.llm.probe as probe_mod
+    from hunter.chat.commands import _model_list
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(probe_mod, "list_models", boom)
+    ctx.config.model_tiers["orchestrator"].provider = "jerouter"
+    ctx.config.model_tiers["orchestrator"].base_url = "https://dead.example.com/v1"
+
+    reply = _model_list(ctx.config)
+
+    assert "could not list models" in reply.text
+    assert reply.data.get("error")

@@ -127,7 +127,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[run_id]", busy_policy="reject"),
     # Configuration
     CommandDef("model", "Show or switch the model for a tier (session-scoped; --global persists)",
-               "Config", args_hint="[tier] [model] [--global]"),
+               "Config", args_hint="[tier] [model] [--global] | --list | --providers"),
     CommandDef("scope", "Show the active scope summary", "Config"),
     CommandDef("verbose", "Cycle chat verbosity (normal -> verbose -> quiet)", "Config"),
     # Info
@@ -612,6 +612,96 @@ def _exec_report(ctx: CommandContext) -> CommandReply:
 # -- configuration commands (/model, /scope, /verbose) -----------------------
 
 
+def _model_list(cfg) -> CommandReply:
+    """``/model --list`` — the models the active provider actually offers.
+
+    Without this the operator has to leave the REPL and run `hunter model`
+    to discover what is switchable, which defeats the point of switching
+    from inside a session. The probe is the same one `hunter model` uses, so
+    the two surfaces cannot disagree.
+    """
+    from hunter.llm.probe import list_models
+
+    tier = cfg.agent.tier if cfg.agent.tier in ("orchestrator", "hunter", "verifier", "utility") else "orchestrator"
+    tier_cfg = cfg.model_tiers.get(tier)
+    provider = (tier_cfg.provider if tier_cfg else "") or "auto"
+    # base_url lives on the provider block, not the tier — that is where
+    # `hunter config provider` writes it. Reading only the tier finds nothing
+    # on every config that declares credentials the normal way.
+    base_url = (tier_cfg.base_url if tier_cfg else "") or ""
+    provider_block = cfg.providers.get(provider)
+    if not base_url and provider_block is not None:
+        base_url = provider_block.base_url
+    key_env = (tier_cfg.key_env if tier_cfg else "") or ""
+    if not key_env and provider_block is not None:
+        key_env = provider_block.key_env
+    key_value = ""
+    if key_env:
+        import os
+
+        key_value = os.environ.get(key_env, "")
+    # list_models takes a base_url and a key, not a provider name: the probe
+    # dials the endpoint directly. A tier with no base_url has nothing to
+    # dial, so say that instead of probing a blank URL.
+    if not base_url:
+        return CommandReply(
+            f"tier '{tier}' has no base_url — nothing to list "
+            f"(provider '{provider}' resolves through LiteLLM defaults)",
+            data={"models": []},
+        )
+    try:
+        models = list_models(base_url, key_value)
+    except Exception as exc:  # noqa: BLE001 — a dead endpoint must not kill the REPL
+        return CommandReply(
+            f"could not list models for provider '{provider}': {exc}",
+            data={"models": [], "error": str(exc)},
+        )
+    if not models:
+        return CommandReply(
+            f"provider '{provider}' returned no models — check the endpoint and key",
+            data={"models": []},
+        )
+    lines = [f"models on {provider} ({len(models)}):"]
+    lines.extend(f"  {i}. {m}" for i, m in enumerate(models[:60], 1))
+    if len(models) > 60:
+        lines.append(f"  ... and {len(models) - 60} more")
+    lines.append("")
+    lines.append("switch with: /model <tier> <model> [--global]")
+    return CommandReply("\n".join(lines), data={"models": models})
+
+
+def _model_providers(cfg) -> CommandReply:
+    """``/model --providers`` — which providers are configured, and their keys.
+
+    Multi-provider is only useful if you can see what you configured without
+    opening the YAML. Key presence is reported as a boolean, never the value.
+    """
+    import os
+
+    lines = ["configured providers:"]
+    if not cfg.providers:
+        lines.append("  (none — every tier resolves through LiteLLM's env defaults)")
+    for name, block in sorted(cfg.providers.items()):
+        base = f"  {name}"
+        if block.base_url:
+            base += f" — {block.base_url}"
+        if block.key_env:
+            present = "set" if os.environ.get(block.key_env) else "NOT SET"
+            base += f" [key: {block.key_env} {present}]"
+        elif block.api_key:
+            base += " [key: inline]"
+        else:
+            base += " [keyless]"
+        lines.append(base)
+    lines.append("")
+    lines.append("fallback chain:")
+    if not cfg.fallback_providers:
+        lines.append("  (none)")
+    for entry in cfg.fallback_providers:
+        lines.append(f"  {entry.provider}/{entry.model}")
+    return CommandReply("\n".join(lines), data={"providers": sorted(cfg.providers)})
+
+
 def _exec_model(ctx: CommandContext) -> CommandReply:
     from hunter.llm.base import TIERS, normalize_tier
     from hunter.llm.config import resolve_model
@@ -622,8 +712,12 @@ def _exec_model(ctx: CommandContext) -> CommandReply:
             "no model configuration loaded — " + NO_MODEL_HINT, data={"configured": False}
         )
     tokens = _tokenize(ctx.args)
-    positionals, opts = _split_options(tokens, value_options=set(), flags={"--global"})
+    positionals, opts = _split_options(tokens, value_options=set(), flags={"--global", "--list", "--providers"})
     if not positionals:
+        if opts.get("providers"):
+            return _model_providers(cfg)
+        if opts.get("list"):
+            return _model_list(cfg)
         lines = ["model tiers:"]
         resolved: dict[str, str] = {}
         for tier in TIERS:
