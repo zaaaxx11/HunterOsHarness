@@ -632,6 +632,60 @@ def hunt(
     # NOTE: no reset here — `chosen_scope` may already hold the LLM-proposed
     # scope from the target-resolution pass above, and resetting it would
     # silently discard it. `kind == "dir"` re-binds it below regardless.
+    #
+    # Session lifecycle is resolved HERE, before the dir/URL branches, because
+    # the dir branch exits on its own and would otherwise skip it entirely —
+    # which is how a `--session` flag silently did nothing on a local audit.
+    from hunter.session import (
+        SessionExists,
+        SessionNotFound,
+        close_session,
+        create_session,
+        open_session,
+        resume_session,
+    )
+
+    active_session = None
+    if resume:
+        try:
+            active_session = resume_session(resume, state_dir=state)
+            if not json_out:
+                typer.echo(f"session {resume} resumed — target {active_session.target}")
+        except SessionNotFound as exc:
+            err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+            raise typer.Exit(3) from exc
+    elif session_id:
+        try:
+            active_session = create_session(
+                target=normalized,
+                engine=selected_engine or "llm",
+                state_dir=state,
+                session_id=session_id,
+            )
+        except SessionExists:
+            # Not fatal: attach to the running session rather than refusing.
+            try:
+                active_session = open_session(session_id, state_dir=state)
+                if not json_out:
+                    typer.echo(f"session {session_id} already active — attaching")
+            except SessionNotFound as exc:
+                err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+                raise typer.Exit(3) from exc
+
+    def _close_active_session() -> None:
+        """Teardown: stop the daemon, free RAM and disk, keep the value."""
+        if active_session is None:
+            return
+        try:
+            close_session(active_session.id, state_dir=state)
+            if not json_out:
+                typer.echo(
+                    f"session {active_session.id} closed — findings, PoCs, and skills kept; "
+                    "daemon and queue freed"
+                )
+        except SessionNotFound:  # pragma: no cover - closed concurrently
+            pass
+
     if kind == "dir":
         mount = mount_local_dir(normalized)
         with mount:
@@ -679,6 +733,7 @@ def hunt(
                 config={"local_root": normalized},
             )
             _render_hunt_outcome(outcome, json_out=json_out)
+            _close_active_session()
             raise typer.Exit(outcome.exit_code)
 
     host = (urlparse(normalized).hostname or "").lower()
@@ -758,47 +813,8 @@ def hunt(
                 "(single loop — no feeder, no per-task slicing)"
             )
 
-    # Session lifecycle. One daemon per session: `--session <id>` claims it,
-    # a second hunt with the same id attaches instead of spawning a twin, and
-    # `--resume <id>` picks a closed session back up with its findings, PoCs,
-    # and skills intact. When the hunt finishes the session is closed, which
-    # stops the daemon and frees RAM and disk while keeping the value.
-    from hunter.session import (
-        SessionExists,
-        SessionNotFound,
-        close_session,
-        create_session,
-        open_session,
-        resume_session,
-    )
-
-    active_session = None
-    if resume:
-        try:
-            active_session = resume_session(resume, state_dir=state)
-            if not json_out:
-                typer.echo(f"session {resume} resumed — target {active_session.target}")
-        except SessionNotFound as exc:
-            err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
-            raise typer.Exit(3) from exc
-    elif session_id:
-        try:
-            active_session = create_session(
-                target=normalized,
-                engine=selected_engine or "llm",
-                state_dir=state,
-                session_id=session_id,
-            )
-        except SessionExists as exc:
-            # Not fatal: attach to the running session rather than refusing.
-            try:
-                active_session = open_session(session_id, state_dir=state)
-                if not json_out:
-                    typer.echo(f"session {session_id} already active — attaching")
-            except SessionNotFound:
-                err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
-                raise typer.Exit(3) from exc
-
+    # Session lifecycle was resolved before the dir/URL branches (see above),
+    # so both paths share one claim and one teardown.
     outcome = run_hunt(
         normalized,
         scope=chosen_scope,
@@ -807,19 +823,7 @@ def hunt(
         budget=run_budget,
     )
     _render_hunt_outcome(outcome, json_out=json_out)
-
-    if active_session is not None:
-        # The hunt is over: free the daemon, the queue, and the WAL sidecars.
-        # Findings, PoCs, reports, and skills stay.
-        try:
-            close_session(active_session.id, state_dir=state)
-            if not json_out:
-                typer.echo(
-                    f"session {active_session.id} closed — findings, PoCs, and skills kept; "
-                    "daemon and queue freed"
-                )
-        except SessionNotFound:  # pragma: no cover - closed concurrently
-            pass
+    _close_active_session()
 
     raise typer.Exit(outcome.exit_code)
 
