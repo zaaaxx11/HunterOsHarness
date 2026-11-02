@@ -184,6 +184,12 @@ class AgentLoop:
             skills_index=str(skills_index),
             config_note=str(ctx.config.get("config_note", "")),
             soul_block=soul,
+            # The output format follows the role, not the target: a verifier
+            # returns a verdict block, an architect returns a map, an
+            # orchestrator returns a handoff. Rendering the hunter's finding
+            # format for all three produced agents that shipped findings they
+            # were supposed to be adjudicating.
+            state=role or "hunter",
         )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},

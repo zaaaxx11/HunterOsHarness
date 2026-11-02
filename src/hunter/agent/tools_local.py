@@ -691,6 +691,24 @@ def read_file(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
         truncated = True
     text = raw.decode("utf-8", errors="replace")
     lines = text.splitlines()
+    # An offset past the end of the file used to slice to an empty string and
+    # return ok=True with text "". The agent reads that as "this file is
+    # empty" — or, worse, retries the same offset and burns turn after turn on
+    # a file it already has. One run recorded 21 read_file calls that all
+    # returned {"hits":[],"text":""} for exactly this reason.
+    if offset > len(lines) and lines:
+        _emit(ctx, "read_file", {"code": "read.offset_past_end"})
+        return {
+            "ok": False,
+            "blocked": False,
+            "code": "read.offset_past_end",
+            "text": "",
+            "result_for_model": (
+                f"offset {offset} is past the end of {raw_path!r} "
+                f"({len(lines)} line(s)); the whole file is already shown — "
+                f"call read_file with no offset to get it from line 1"
+            ),
+        }
     page = "\n".join(lines[offset - 1 : offset - 1 + limit])
     safe = redact_text(page)
     if len(safe) > _MAX_FILE_BYTES + 256:

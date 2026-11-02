@@ -605,13 +605,28 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
                 "not match recomputed digest). The ledger refuses tampered evidence.",
             )
 
-    # R3 — kind-fit: at least one http_exchange (a note alone is NEVER sufficient).
-    if not any(rows[eid]["kind"] == "http_exchange" for eid in evidence_ids):
+    # R3 — kind-fit: at least one substantive evidence row (a note alone is
+    # NEVER sufficient).
+    #
+    # This gate used to demand an http_exchange specifically, which made every
+    # contract finding impossible: a local Solidity audit has no HTTP exchange
+    # to bind, so create_finding_request refused with r3_evidence_kind no
+    # matter how solid the source evidence was. Three LLM runs against a real
+    # contract project produced zero findings and the agent never even
+    # attempted one — the gate was invisible from the outside.
+    #
+    # The rule that actually matters is "your own notes never carry a
+    # finding": a note is self-assertion, while an exchange or a source read
+    # is something the harness itself observed. So accept either, and keep
+    # refusing note-only claims.
+    _SUBSTANTIVE_KINDS = ("http_exchange", "local_read")
+    if not any(rows[eid]["kind"] in _SUBSTANTIVE_KINDS for eid in evidence_ids):
         kinds = {rows[eid]["kind"] for eid in evidence_ids}
         return _blocked(
             "finding.r3_evidence_kind",
-            f"RULE-E1: bound evidence kinds {sorted(kinds)} — at least one 'http_exchange' "
-            "is required. A note alone is NEVER sufficient for a finding.",
+            f"RULE-E1: bound evidence kinds {sorted(kinds)} — at least one of "
+            f"{sorted(_SUBSTANTIVE_KINDS)} is required. A note alone is NEVER "
+            "sufficient for a finding.",
         )
 
     # R4 — scope: the endpoint must belong to the target origin or an allowed host.
@@ -724,7 +739,16 @@ def _endpoint_backed_by_evidence(
     endpoint: str, evidence_ids: list[str], rows: dict[str, dict[str, Any]]
 ) -> bool:
     """R4b: at least one bound http_exchange must have hit the claimed
-    endpoint (path match; a claim carrying a query must match path+query)."""
+    endpoint (path match; a claim carrying a query must match path+query).
+
+    A finding whose evidence is a source read rather than an exchange has no
+    URL to match, and demanding one here would undo the R3 fix: the agent
+    would pass kind-fit and then be refused for an endpoint no exchange ever
+    visited. When the only substantive evidence is a local_read, the claim is
+    backed by construction — the harness itself read the file.
+    """
+    if not any(rows[eid]["kind"] == "http_exchange" for eid in evidence_ids):
+        return any(rows[eid]["kind"] == "local_read" for eid in evidence_ids)
     claim = _claim_target(endpoint)
     for eid in evidence_ids:
         row = rows[eid]

@@ -19,6 +19,8 @@ from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hunter.agent.output_formats import output_format_block
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from hunter.engine.base import TargetSpec
 
@@ -64,9 +66,22 @@ Work like an auditor, not a scanner:
    trust boundaries are crossed.
 3. **Walkthrough** — exercise each risk class against the surface you mapped.
 
-Priority vulnerability classes, in order: IDOR / broken access control, SQL
-injection, XSS, SSRF, authentication and session weaknesses, business-logic
-flaws, then security headers and information disclosure.
+Priority vulnerability classes, in order — for a WEB surface: IDOR /
+broken access control, SQL injection, XSS, SSRF, authentication and session
+weaknesses, business-logic flaws, then security headers and information
+disclosure.
+
+For a SMART-CONTRACT surface (Solidity source, forge/slither output), the
+priority classes are different and the web list above does not apply:
+reentrancy (especially cross-function and cross-contract), access control on
+state-changing functions, unchecked external calls and return values,
+oracle/price manipulation, flash-loan and donation attacks, integer
+rounding and share inflation, signature replay and missing nonces,
+front-runnable approvals and permit, upgradeable-proxy storage collision,
+uninitialized implementations, and griefing via unbounded loops. Read the
+contract, then check whether forge_build / forge_test / slither_run already
+reported something in that class — a detector hit you can reproduce in the
+source is a finding, not noise to dismiss.
 
 Closure discipline:
 - "I moved on" is not a closure state. Close each risk area explicitly with
@@ -82,8 +97,11 @@ Closure discipline:
   Never invent, guess, transform, or reuse an id from another run.
 - create_finding_request re-validates every id against the ledger and
   recomputes its hash; forged or dangling ids are BLOCKED and recorded.
-- Bound at least one http_exchange: your own written notes never carry a
-  finding.
+- A local_read of the contract source is a first-class evidence id — a
+  source-code finding binds the read that shows the vulnerable code. An
+  http_exchange is required only when the surface is actually HTTP; a
+  contract audit has no exchange to bind and demanding one blocks every
+  legitimate finding.
 - Counter-evidence is part of the claim: record what you checked that did
   NOT reproduce. A finding without counterevidence analysis is incomplete.
 
@@ -221,6 +239,7 @@ def build_system_prompt(
     tier: str | None = None,  # DEPRECATED, ignored: one capability level.
     config_note: str = "",
     soul_block: str = "",
+    state: str | None = None,
 ) -> str:
     """Render the audit system prompt for one run.
 
@@ -232,6 +251,10 @@ def build_system_prompt(
         config_note: Optional extra harness note appended at the end.
         soul_block: Pre-rendered operating-character block (see
             ``hunter.agent.soul``); empty renders no character section body.
+        state: Which output-format section to render (``hunter``,
+            ``verifier``, ``architect``, ``orchestrator``; soul names such as
+            ``redteam`` or ``recon`` are aliased). ``None`` renders the
+            hunter format — the state that ships findings.
     """
     template = _load_template()
     prompt = template.format_map(
@@ -242,6 +265,7 @@ def build_system_prompt(
             tier_note="",
             skills_index=skills_index or "(no skills mounted)",
             soul_block=soul_block or "",
+            output_format_block=output_format_block(state),
         )
     )
     if config_note:
