@@ -42,9 +42,15 @@ from hunter.tools.scope import ScopeSet
 __all__ = [
     "DAEMON_STALE_SECONDS",
     "HEARTBEAT_INTERVAL_SECONDS",
+    "TASK_MAX_RETRIES_DEFAULT",
+    "TASK_RETRY_BACKOFF_BASE",
+    "TASK_SOFT_TIMEOUT_SECONDS",
     "_consume_restart_marker",
+    "_inject_cross_pollination",
+    "_process_task_bfs",
     "_scheduler_enabled",
     "_should_claim",
+    "_task_counts",
     "claim_task",
     "create_scheduler",
     "daemon_dir",
@@ -988,6 +994,25 @@ def _last_run_summary(state: Path) -> dict[str, Any] | None:
         return None
 
 
+def _task_counts(state: Path) -> dict[str, int]:
+    """Read task counts from the ledger for daemon status. Best-effort."""
+    from hunter.runtime_paths import RuntimePaths
+
+    try:
+        db = RuntimePaths.resolve(state=state, migrate=False).ledger
+        if not db.is_file():
+            return {}
+        from hunter.kernel.ledger import Ledger
+
+        ledger = Ledger(db)
+        try:
+            return ledger.task_count()
+        finally:
+            ledger.close()
+    except Exception:
+        return {}
+
+
 def daemon_status(state_dir: str | Path) -> dict[str, Any]:
     """The pinned status payload (human rendering + ``--json`` live here)."""
     state = Path(state_dir)
@@ -1064,12 +1089,251 @@ def daemon_status(state_dir: str | Path) -> dict[str, Any]:
         "draining": drain_flag_path(state).exists(),
         "queue_pending": pending,
         "queue_claimed": claimed,
+        "task_counts": _task_counts(state),
         "memory": health_memory,
         "zombie_daemons": health_zombies,
         "transports": transports,
         "last_run": _last_run_summary(state),
         "config_path": str(config_path) if config_path is not None else "",
     }
+
+
+# -- BFS task scheduler + error recovery ------------------------------------------
+
+
+TASK_SOFT_TIMEOUT_SECONDS = 1800  # per-task soft timeout (30 min)
+TASK_RETRY_BACKOFF_BASE = 2.0  # multiplicative backoff base for retries
+TASK_MAX_RETRIES_DEFAULT = 2
+
+
+def _inject_cross_pollination(task: dict[str, Any], state_dir: str | Path) -> None:
+    """Inject prior finding summaries into task context for cross-pollination.
+
+    Reads the ledger for existing findings, picks up to 10 compact summaries
+    (title + key_output), and stores them in the task's ``injected_context``
+    field so the hunt agent can reference them.
+    """
+    from hunter.runtime_paths import RuntimePaths
+
+    try:
+        db = RuntimePaths.resolve(state=state_dir, migrate=False).ledger
+        if not db.is_file():
+            return
+        from hunter.kernel.ledger import Ledger
+
+        ledger = Ledger(db)
+        try:
+            summaries = ledger.prior_finding_summaries(limit=10)
+            if summaries:
+                context = json.dumps(
+                    {"prior_findings": summaries}, indent=2, ensure_ascii=False
+                )
+                task["injected_context"] = context
+        finally:
+            ledger.close()
+    except Exception:
+        pass  # cross-pollination is best-effort; never block a task
+
+
+def _process_task_bfs(ledger, state: Path, task: dict[str, Any], *, stop_path: Path,
+                      heartbeat: dict[str, Any]) -> dict[str, Any]:
+    """Process one task from the ledger queue with timeout, retry, and
+    cross-pollination. Returns the outcome dict with keys: status, findings,
+    exit_code, run_id, re_queued, terminal.
+
+    Never raises — all errors are captured in the outcome dict.
+    """
+    import concurrent.futures
+
+    task_id = str(task.get("task_id") or "unknown")
+    outcome: dict[str, Any] = {
+        "task_id": task_id,
+        "status": "failed",
+        "findings": 0,
+        "exit_code": 1,
+        "run_id": None,
+        "re_queued": False,
+        "terminal": False,
+    }
+
+    max_retries = int(task.get("max_retries", TASK_MAX_RETRIES_DEFAULT))
+    retry_count = int(task.get("retry_count", 0))
+
+    # Cross-pollination: inject prior findings into task context
+    _inject_cross_pollination(task, state)
+
+    heartbeat["active_task"] = task_id
+    try:
+        heartbeat["loop_last"] = task_id
+        heartbeat["loop_ts"] = time.time()
+    except Exception:
+        pass
+
+    try:
+        # --------- soft timeout via thread executor ----------
+        def _execute() -> dict[str, Any]:
+            """Run the actual hunt inside a thread; returns result dict."""
+            budget = RunBudget(
+                max_cost_usd=float(task.get("max_cost_usd", 0.0) or 0.0),
+                wall_seconds=float(task.get("max_wall_s", 0.0) or 0.0),
+                min_wall_seconds=float(task.get("min_wall_seconds", 0.0) or 0.0),
+                max_iterations=int(task.get("max_turns", 0) or 0),
+                stop_file=str(stop_path),
+            )
+            budget.start()
+            from hunter.hunt import mount_local_dir, normalize_hunt_target
+
+            scope_data = task.get("scope") or {}
+            hosts = scope_data.get("hosts") or []
+            local_roots = tuple(str(r) for r in (scope_data.get("local_roots") or []))
+            scope = ScopeSet(
+                frozenset(str(host) for host in hosts),
+                bool(scope_data.get("allow_subdomains")),
+                name=str(scope_data.get("name", "daemon")),
+                local_roots=local_roots,
+            )
+            target_raw = str(task.get("target", ""))
+            _, kind = normalize_hunt_target(target_raw)
+
+            if kind == "dir":
+                from pathlib import Path as _P
+
+                if not _P(target_raw).is_dir():
+                    raise FileNotFoundError(f"local target is not a directory: {target_raw}")
+                if not scope.allows_local_root(target_raw):
+                    raise PermissionError(
+                        f"BLOCKED: local root {target_raw!r} is outside the "
+                        f"scope's local_roots (scope={scope.name!r})."
+                    )
+                with mount_local_dir(target_raw) as mount:
+                    outcome_obj = run_hunt(
+                        mount.url,
+                        scope=scope,
+                        engine_name=str(task.get("engine", "deterministic")),
+                        state_dir=str(state),
+                        budget=budget,
+                        config={
+                            "state_dir": str(state),
+                            "approval_auto_allow": True,
+                            "local_root": target_raw,
+                            "injected_context": task.get("injected_context", ""),
+                        },
+                    )
+            else:
+                outcome_obj = run_hunt(
+                    target_raw,
+                    scope=scope,
+                    engine_name=str(task.get("engine", "deterministic")),
+                    state_dir=str(state),
+                    budget=budget,
+                    config={
+                        "state_dir": str(state),
+                        "approval_auto_allow": True,
+                        "injected_context": task.get("injected_context", ""),
+                    },
+                )
+            return {
+                "run_id": str(getattr(outcome_obj, "run_id", "") or ""),
+                "status": str(getattr(outcome_obj, "status", "completed")),
+                "findings": int(getattr(outcome_obj, "findings", 0) or 0),
+                "exit_code": int(getattr(outcome_obj, "exit_code", 0)),
+            }
+
+        soft_timeout = float(task.get("max_wall_s", TASK_SOFT_TIMEOUT_SECONDS)
+                             or TASK_SOFT_TIMEOUT_SECONDS)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_execute)
+            try:
+                result = future.result(timeout=max(soft_timeout, 1.0))
+                outcome["run_id"] = result["run_id"] or None
+                outcome["status"] = result["status"]
+                outcome["findings"] = result["findings"]
+                outcome["exit_code"] = result["exit_code"]
+            except concurrent.futures.TimeoutError:
+                # Soft timeout: cancel the future, record failure
+                future.cancel()
+                error_msg = f"Task soft timeout after {soft_timeout:.0f}s"
+                heartbeat["last_error"] = error_msg
+                outcome["status"] = "failed"
+                outcome["exit_code"] = 1
+                outcome["error"] = error_msg
+            except Exception as exc:
+                error_msg = f"{type(exc).__name__}: {exc}"
+                heartbeat["last_error"] = error_msg
+                outcome["status"] = "failed"
+                outcome["exit_code"] = 1
+                outcome["error"] = error_msg
+
+        # --------- spawn children on success ----------
+        if outcome["status"] == "completed" and outcome["findings"] > 0:
+            _spawn_child_tasks_from_outcome(ledger, task, outcome, state)
+
+    except Exception as exc:
+        # Top-level catch: any error not caught above
+        error_msg = f"{type(exc).__name__}: {exc}"
+        heartbeat["last_error"] = error_msg
+        outcome["status"] = "failed"
+        outcome["exit_code"] = 1
+        outcome["error"] = error_msg
+
+    finally:
+        heartbeat["active_task"] = None
+        heartbeat["last_run_id"] = outcome.get("run_id")
+
+        # --------- retry logic with backoff ----------
+        if outcome["status"] == "failed":
+            error_msg = outcome.get("error", "unknown error")
+            task["last_error"] = error_msg
+            re_queued_id = ledger.mark_retrying(task_id, error_msg)
+            outcome["re_queued"] = re_queued_id is not None
+            outcome["terminal"] = re_queued_id is None
+            if re_queued_id:
+                backoff = TASK_RETRY_BACKOFF_BASE ** (retry_count + 1)
+                heartbeat["last_error"] = (
+                    f"{error_msg} (retry {retry_count + 1}/{max_retries},"
+                    f" backoff {backoff:.0f}s)"
+                )
+            else:
+                heartbeat["last_error"] = (
+                    f"{error_msg} (terminal after {max_retries} retries)"
+                )
+        else:
+            # Success: mark done
+            ledger.finish_task(task_id, state="completed")
+
+    return outcome
+
+
+def _spawn_child_tasks_from_outcome(ledger, parent_task: dict[str, Any],
+                                    outcome: dict[str, Any],
+                                    state_dir: Path) -> None:
+    """Spawn child tasks from a completed task's findings for deeper BFS exploration."""
+    run_id = outcome.get("run_id")
+    if not run_id:
+        return
+    try:
+        target = str(parent_task.get("target", ""))
+        target_kind = parent_task.get("target_kind", "url")
+        parent_depth = int(parent_task.get("depth", 0))
+        findings = ledger.findings(run_id)
+        for finding in findings[:5]:  # limit children to top 5 findings
+            chain = finding.title or ""
+            injected = json.dumps({
+                "parent_finding": finding.title,
+                "parent_severity": str(finding.severity) if hasattr(finding, 'severity') else "unknown",
+                "parent_endpoint": finding.endpoint if hasattr(finding, 'endpoint') else "",
+            }, indent=2, ensure_ascii=False)
+            ledger.spawn_child_task(
+                parent_id=parent_task["task_id"],
+                target=target,
+                target_kind=target_kind,
+                spawned_from_finding=finding.id if hasattr(finding, 'id') else None,
+                chain_hypothesis=chain,
+                injected_context=injected,
+                depth=parent_depth + 1,
+            )
+    except Exception:
+        pass  # child spawning is best-effort
 
 
 # -- the daemon process itself ----------------------------------------------------
@@ -1137,6 +1401,7 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
         findings = 0
         exit_code = 1
         budget: RunBudget | None = None
+        retry_count_before = int(task.get("retry_count", 0))
         try:
             # Budget construction is INSIDE the try: a malformed queued task
             # (e.g. "max_wall_seconds": "banana") must land as a failed done
@@ -1225,7 +1490,33 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
         except Exception as exc:  # noqa: BLE001 — a crashed hunt is a done task
             status = "failed"
             exit_code = 1
-            heartbeat["last_error"] = f"{type(exc).__name__}: {exc}"
+            error_msg = f"{type(exc).__name__}: {exc}"
+            heartbeat["last_error"] = error_msg
+
+            # -- retry / re-queue logic --
+            retry_count = int(task.get("retry_count", 0))
+            max_retries = int(task.get("max_retries", TASK_MAX_RETRIES_DEFAULT))
+            task["last_error"] = error_msg
+            if retry_count < max_retries:
+                # Re-queue: increment retry_count, write back to queue dir
+                task["retry_count"] = retry_count + 1
+                task["claimed_by"] = None
+                task["claimed_ts"] = None
+                with contextlib.suppress(OSError):
+                    # Remove claimed file, re-enqueue as task file
+                    claimed_path = queue_dir(state) / f"claimed-{task_id}.json"
+                    if claimed_path.exists():
+                        claimed_path.unlink()
+                    enqueue_task(state, task)
+                backoff = TASK_RETRY_BACKOFF_BASE ** (retry_count + 1)
+                heartbeat["last_error"] = (
+                    f"{error_msg} (retry {retry_count + 1}/{max_retries},"
+                    f" backoff {backoff:.0f}s)"
+                )
+            else:
+                heartbeat["last_error"] = (
+                    f"{error_msg} (terminal after {max_retries} retries)"
+                )
         finally:
             heartbeat["active_task"] = None
             heartbeat["last_run_id"] = run_id
@@ -1239,8 +1530,11 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
             }
             if task.get("local_root"):
                 done["local_root"] = task.get("local_root")
-            with contextlib.suppress(OSError):
-                write_json_atomic(queue_dir(state) / f"done-{task_id}.json", done)
+            # Only write a done file on terminal outcomes, not re-queues
+            re_enqueued = int(task.get("retry_count", 0)) > retry_count_before
+            if not (status == "failed" and re_enqueued):
+                with contextlib.suppress(OSError):
+                    write_json_atomic(queue_dir(state) / f"done-{task_id}.json", done)
 
 
 async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
@@ -1359,7 +1653,15 @@ async def _daemon_serve(state_dir: Path, *, poll_seconds: float) -> int:
 
     async def worker_loop() -> None:
         while not stop_path.is_file():
-            await hunt_worker(str(state_dir), stop_path=stop_path, heartbeat=heartbeat)
+            try:
+                await hunt_worker(str(state_dir), stop_path=stop_path, heartbeat=heartbeat)
+            except Exception:
+                # Never crash the daemon loop on task failure. Record the error
+                # and continue — the heartbeat and gateway stay alive.
+                heartbeat["last_error"] = f"worker_loop crash: task failure"
+                heartbeat["loop_last"] = heartbeat.get("active_task")
+                heartbeat["loop_ts"] = time.time()
+                pass
             # Drain-then-sleep: the worker returns when the queue is empty; an
             # in-flight hunt finishes even when a stop flag appears mid-run.
             for _ in range(int(max(0.0, poll_seconds) / 0.25) + 1):

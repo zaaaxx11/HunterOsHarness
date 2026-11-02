@@ -142,6 +142,29 @@ CREATE TABLE IF NOT EXISTS hunt_memory (
     created_seq INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id             TEXT PRIMARY KEY,
+    parent_id           TEXT,
+    target              TEXT NOT NULL,
+    target_kind         TEXT NOT NULL,
+    state               TEXT NOT NULL DEFAULT 'queued',
+    priority            INTEGER NOT NULL DEFAULT 0,
+    depth               INTEGER NOT NULL DEFAULT 0,
+    spawned_from_finding TEXT,
+    chain_hypothesis    TEXT,
+    injected_context    TEXT,
+    max_turns           INTEGER NOT NULL DEFAULT 8,
+    max_wall_s          INTEGER NOT NULL DEFAULT 300,
+    max_cost_usd        REAL    NOT NULL DEFAULT 0.50,
+    run_id              TEXT,
+    retry_count         INTEGER NOT NULL DEFAULT 0,
+    max_retries         INTEGER NOT NULL DEFAULT 2,
+    last_error          TEXT,
+    created_ts          REAL,
+    started_ts          REAL,
+    finished_ts         REAL
+);
+
 -- I1/I7: the ledger is append-only; direct SQL tampering must fail loudly.
 CREATE TRIGGER IF NOT EXISTS events_no_update
 BEFORE UPDATE ON events
@@ -416,6 +439,13 @@ class Ledger:
         "id, run_id, key, title, severity, cwe, endpoint, method, param, payload_used,"
         " description, impact, remediation, status, evidence_ids, klass, falsifier,"
         " action_class, surface, poc_path, logs_path"
+    )
+
+    _TASK_COLS = (
+        "task_id, parent_id, target, target_kind, state, priority, depth,"
+        " spawned_from_finding, chain_hypothesis, injected_context,"
+        " max_turns, max_wall_s, max_cost_usd, run_id,"
+        " retry_count, max_retries, last_error, created_ts, started_ts, finished_ts"
     )
 
     def __init__(self, path: str | Path | None = None) -> None:
@@ -1154,3 +1184,246 @@ class Ledger:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_finding(r) for r in rows]
+
+    # -- tasks ---------------------------------------------------------------
+
+    #: Allowed task states for the state machine.
+    TASK_STATES = frozenset({"queued", "running", "completed", "failed", "retrying"})
+
+    @staticmethod
+    def _next_task_id(conn: sqlite3.Connection) -> str:
+        """Generate the next global task id as T-0001, T-0002, etc."""
+        row = conn.execute(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(task_id, 3) AS INTEGER)), 0) FROM tasks"
+        ).fetchone()
+        number = int(row[0]) + 1
+        return f"T-{number:04d}"
+
+    def next_task_id(self) -> str:
+        """Public read-only peek at the next task id."""
+        with self._lock:
+            return self._next_task_id(self._conn)
+
+    def add_task(
+        self,
+        target: str,
+        target_kind: str,
+        parent_id: str | None = None,
+        depth: int = 0,
+        priority: int = 0,
+        spawned_from_finding: str | None = None,
+        chain_hypothesis: str | None = None,
+        injected_context: str | None = None,
+        max_turns: int = 8,
+        max_wall_s: int = 300,
+        max_cost_usd: float = 0.50,
+        run_id: str | None = None,
+    ) -> str:
+        """Enqueue a new task. Returns the assigned task_id.
+
+        The task enters the ``queued`` state and is a candidate for
+        ``claim_task`` / ``get_next_queued``.
+        """
+        with self._write() as conn:
+            task_id = self._next_task_id(conn)
+            now = time.time()
+            conn.execute(
+                "INSERT INTO tasks (task_id, parent_id, target, target_kind, state,"
+                " priority, depth, spawned_from_finding, chain_hypothesis,"
+                " injected_context, max_turns, max_wall_s, max_cost_usd, run_id,"
+                " created_ts)"
+                " VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task_id, parent_id, target, target_kind,
+                    priority, depth,
+                    spawned_from_finding, chain_hypothesis,
+                    injected_context, max_turns, max_wall_s, max_cost_usd,
+                    run_id, now,
+                ),
+            )
+        return task_id
+
+    def claim_task(self) -> dict[str, Any] | None:
+        """Atomically claim the next queued task (BFS order).
+
+        Returns the task row as a dict, or ``None`` when no queued tasks remain.
+        The returned task is now in ``running`` state and cannot be claimed by
+        another caller (the UPDATE runs inside a write transaction).
+        """
+        with self._write() as conn:
+            now = time.time()
+            # Find the highest-priority queued task in BFS order.
+            row = conn.execute(
+                "SELECT task_id FROM tasks"
+                " WHERE state = 'queued'"
+                " ORDER BY depth, priority, created_ts, task_id"
+                " LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            task_id = row[0]
+            conn.execute(
+                "UPDATE tasks SET state = 'running',"
+                " retry_count = retry_count + 1, started_ts = ?"
+                " WHERE task_id = ? AND state = 'queued'",
+                (now, task_id),
+            )
+            # Re-read under the same transaction to return full row.
+            row = conn.execute(
+                f"SELECT {self._TASK_COLS} FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        return self._row_to_task(row) if row else None
+
+    def finish_task(
+        self, task_id: str, state: str, error: str | None = None
+    ) -> None:
+        """Mark a task as ``completed`` or ``failed``.
+
+        ``state`` must be ``'completed'`` or ``'failed'``.
+        If ``error`` is given it is written to ``last_error``.
+        """
+        if state not in ("completed", "failed"):
+            raise ValueError(f"state must be 'completed' or 'failed', got {state!r}")
+        with self._write() as conn:
+            now = time.time()
+            cursor = conn.execute(
+                "UPDATE tasks SET state = ?, finished_ts = ?, last_error = ?"
+                " WHERE task_id = ?",
+                (state, now, error, task_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"task '{task_id}' not found")
+
+    def mark_retrying(self, task_id: str, error: str) -> str | None:
+        """Route a failed task into retry.
+
+        If ``retry_count < max_retries`` the task moves to ``retrying`` state
+        and then back to ``queued`` (so it can be claimed again).
+        Returns the task_id if retried, or ``None`` when retries are exhausted
+        (task stays ``failed``).
+        """
+        with self._write() as conn:
+            row = conn.execute(
+                "SELECT retry_count, max_retries FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"task '{task_id}' not found")
+            retry_count, max_retries = int(row[0]), int(row[1])
+            if retry_count >= max_retries:
+                # Exhausted — leave in failed state, just stamp the error.
+                conn.execute(
+                    "UPDATE tasks SET last_error = ? WHERE task_id = ?",
+                    (error, task_id),
+                )
+                return None
+            # Move: failed → retrying → queued
+            conn.execute(
+                "UPDATE tasks SET state = 'retrying', last_error = ?"
+                " WHERE task_id = ?",
+                (error, task_id),
+            )
+            conn.execute(
+                "UPDATE tasks SET state = 'queued' WHERE task_id = ?",
+                (task_id,),
+            )
+            return task_id
+
+    def get_next_queued(self) -> dict[str, Any] | None:
+        """Peek at the next queued task (BFS order) without claiming it.
+
+        BFS order: lowest ``depth`` first, then ``priority`` (higher = sooner),
+        then ``created_ts``.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {self._TASK_COLS} FROM tasks"
+                " WHERE state = 'queued'"
+                " ORDER BY depth, priority, created_ts, task_id"
+                " LIMIT 1"
+            ).fetchone()
+        return self._row_to_task(row) if row else None
+
+    def pending_count(self) -> int:
+        """Number of tasks currently in the ``queued`` state."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE state = 'queued'"
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    @staticmethod
+    def _row_to_task(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "task_id": row[0],
+            "parent_id": row[1],
+            "target": row[2],
+            "target_kind": row[3],
+            "state": row[4],
+            "priority": row[5],
+            "depth": row[6],
+            "spawned_from_finding": row[7],
+            "chain_hypothesis": row[8],
+            "injected_context": row[9],
+            "max_turns": row[10],
+            "max_wall_s": row[11],
+            "max_cost_usd": row[12],
+            "run_id": row[13],
+            "retry_count": row[14],
+            "max_retries": row[15],
+            "last_error": row[16],
+            "created_ts": row[17],
+            "started_ts": row[18],
+            "finished_ts": row[19],
+        }
+
+    def spawn_child_task(self, parent_id: str, *, target: str, target_kind: str,
+                         spawned_from_finding: str | None = None,
+                         chain_hypothesis: str | None = None,
+                         injected_context: str | None = None,
+                         max_turns: int = 8, max_wall_s: int = 300,
+                         max_cost_usd: float = 0.50,
+                         priority: int = 0, depth: int = 1,
+                         run_id: str | None = None) -> str:
+        """Spawn a child task derived from a parent finding."""
+        with self._write() as conn:
+            task_id = self._next_task_id(conn)
+            conn.execute(
+                "INSERT INTO tasks (task_id, parent_id, target, target_kind,"
+                " state, priority, depth, spawned_from_finding, chain_hypothesis,"
+                " injected_context, max_turns, max_wall_s, max_cost_usd, run_id,"
+                " retry_count, max_retries, created_ts)"
+                " VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 2, ?)",
+                (task_id, parent_id, target, target_kind, priority, depth,
+                 spawned_from_finding, chain_hypothesis, injected_context,
+                 max_turns, max_wall_s, max_cost_usd, run_id, time.time()),
+            )
+        return task_id
+
+    def prior_finding_summaries(self, run_id: str | None = None,
+                                limit: int = 10) -> list[dict[str, str]]:
+        """Return compact summaries (title + description) of prior findings
+        for cross-pollination injection. Most recent first."""
+        sql = (
+            "SELECT title, description FROM findings"
+        )
+        params: tuple[Any, ...] = ()
+        if run_id is not None:
+            sql += " WHERE run_id = ?"
+            params = (run_id,)
+        sql += " ORDER BY rowid DESC LIMIT ?"
+        params = (*params, limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {"title": r[0], "key_output": (r[1][:500] if r[1] else "")}
+            for r in rows
+        ]
+
+    def task_count(self) -> dict[str, int]:
+        """Return counts by state for daemon status."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT state, COUNT(*) FROM tasks GROUP BY state"
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
