@@ -99,7 +99,7 @@ def test_skills_match_le5_block_le16k_quarantined_inert():
     assert len(block) <= 16_000, "mounted block bounded at 16k"
     decoy = skills.Skill(
         name="decoy-quarantine", description="cross site scripting audit reflected xss",
-        version="0.1.0", min_tier="basic", tags=("decoy",), source="user",
+        version="0.1.0", tags=("decoy",), source="user",
         body="b", quarantined=True, path="",
     )
     assert decoy not in skills.match_skills(

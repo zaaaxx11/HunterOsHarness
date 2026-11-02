@@ -66,7 +66,6 @@ def test_malformed_frontmatter_skips_with_notes(tmp_path):
     malformed = {
         "missing-name": "---\ndescription: missing name\nversion: 0.1.0\n---\nbody\n",
         "wrong-name": _card("other-name"),
-        "bad-tier": _card("bad-tier", metadata="expert"),
         "empty-description": _card("empty-description", description="''"),
         "long-description": _card("long-description", description="x" * 201),
         "bad-yaml": "---\nname: [unclosed\ndescription: broken\n---\nbody\n",
@@ -174,7 +173,7 @@ def test_parse_skill_md_minimal_card_and_defaults():
     skill = parse_skill_md(card, directory_id="minimal")
     assert skill.name == "minimal"
     assert skill.version == "9.9.9"
-    assert skill.min_tier == "basic"
+    assert skill.min_tier is None
     assert skill.tags == ("valid-tag", "also-valid")
     assert skill.quarantined is False
     assert "name: minimal" not in skill.body
@@ -190,7 +189,6 @@ def test_write_skill_success_and_refusals(tmp_path, monkeypatch):
         name="saved-card",
         description="A saved card.",
         version="0.1.0",
-        min_tier="basic",
         tags=("curated", "verified-finding"),
         body="# Saved\n\nEvidence or nothing.",
         flagged=True,
@@ -200,7 +198,7 @@ def test_write_skill_success_and_refusals(tmp_path, monkeypatch):
     text = path.read_text(encoding="utf-8")
     assert text.startswith(
         "---\nname: saved-card\ndescription: A saved card.\nversion: 0.1.0\n"
-        "metadata:\n  min_tier: basic\ntags:\n- curated\n- verified-finding\nquarantined: true\n---\n"
+        "tags:\n- curated\n- verified-finding\nquarantined: true\n---\n"
     )
     assert "# Saved" in text
 

@@ -106,7 +106,6 @@ def test_prompt_template_renders_soul_block():
     prompt = build_system_prompt(
         target_url="http://127.0.0.1/",
         scope_summary={"name": "s"},
-        tier="basic",
         skills_index="",
         soul_block=block,
     )
@@ -115,7 +114,7 @@ def test_prompt_template_renders_soul_block():
     assert "One cut, on target." in prompt
     # omitting the kwarg never raises (soul defaults to empty/bundled)
     build_system_prompt(
-        target_url="http://127.0.0.1/", scope_summary="s", tier="basic", skills_index=""
+        target_url="http://127.0.0.1/", scope_summary="s", skills_index=""
     )
 
 
@@ -131,7 +130,6 @@ def test_format_map_survives_templates_without_soul_placeholder(monkeypatch):
     prompt = prompts_module.build_system_prompt(
         target_url="http://127.0.0.1/",
         scope_summary="s",
-        tier="basic",
         skills_index="idx",
         soul_block="OPERATING CHARACTER (soul) — binds every turn:\nX",
     )
@@ -147,7 +145,7 @@ def test_format_map_survives_templates_without_soul_placeholder(monkeypatch):
         lambda: "Soul: [{soul_block}]\nMystery: [{never_provided_key}]\nScope: {scope_block}",
     )
     rendered = prompts_module.build_system_prompt(
-        target_url="u", scope_summary="s", tier="basic", skills_index=""
+        target_url="u", scope_summary="s", skills_index=""
     )
     assert "Soul: []" in rendered
     assert "Mystery: []" in rendered

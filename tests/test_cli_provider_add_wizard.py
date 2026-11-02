@@ -146,7 +146,7 @@ def test_provider_add_wizard_auto_mode_writes_tiers(tmp_path):
         assert cfg.model_tiers[tier].model == table.default_model
     assert cfg.providers["groq"].key_env == "GROQ_API_KEY"
     assert cfg.budget.max_iterations == 42  # untouched elsewhere — merge preserved
-    assert cfg.agent.tier == "basic"
+    assert cfg.agent.tier == "orchestrator"
 
 
 def test_provider_add_wizard_custom_key_and_endpoint(tmp_path):

@@ -176,7 +176,7 @@ def test_t1_skill_linter_backtick_tool_linkage():
     tools_local = _require_tools_local()
     from hunter.agent.tools import build_registry
 
-    registry = build_registry("basic")
+    registry = build_registry()
     names = {s.name for s in registry.specs_for_tier("advanced")}
     linked = "---\nname: x\ndescription: short desc ok\n---\nUse `http_request` then bind evidence.\n"
     assert tools_local.lint_skill_card(linked, is_new=True, known_tools=names)["ok"] is True

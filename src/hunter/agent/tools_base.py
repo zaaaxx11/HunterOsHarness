@@ -26,19 +26,34 @@ from hunter.kernel.ledger import Ledger
 from hunter.tools.http_client import ScopedHttpClient
 from hunter.tools.scope import ScopeSet
 
-TIER_ORDER: dict[str, int] = {"basic": 0, "advanced": 1}
-
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
     name: str
     description: str
     parameters: dict[str, Any]  # JSON schema: {"type":"object","properties":{...},"required":[...]}
     handler: Callable[[dict[str, Any], ToolContext], ToolOutcome]
-    min_tier: str = "basic"
     lifecycle: str | None = None  # None | "respond_to_user" | "finish_scan"
     danger: str = "none"  # "none" | "approval" — approval-danger tools run ONLY
     #  through a configured approval gate (v0.5 F1); without one, dispatch
     #  fails closed (approval.unavailable) — never a silent bypass.
+    min_tier: str | None = None  # DEPRECATED, ignored. Kept so third-party
+    #  plugins and older callers still construct; it gates nothing.
+    min_danger: str | None = None  # DEPRECATED alias of ``danger``: when set it
+    #  overrides ``danger`` (see ``effective_danger``), so an older caller that
+    #  passes ``min_danger="approval"`` still gets the approval gate it asked for.
+
+    @property
+    def effective_danger(self) -> str:
+        """The danger level dispatch enforces: ``min_danger`` wins when given.
+
+        ``min_danger`` is the legacy spelling of ``danger`` (it was the old
+        minimum-danger declaration). It is honoured as an alias rather than
+        silently dropped, so a tool declared ``min_danger="approval"`` can never
+        run without a gate.
+        """
+        if self.min_danger:
+            return str(self.min_danger)
+        return str(self.danger or "none")
 
 
 @dataclass
@@ -112,21 +127,18 @@ class ToolRegistry:
     def register(self, spec: ToolSpec, *, override: bool = False) -> None:
         if spec.name in self._specs and not override:
             raise ValueError(f"tool '{spec.name}' already registered")
-        if spec.min_tier not in TIER_ORDER:
-            raise ValueError(f"tool '{spec.name}' has unknown min_tier {spec.min_tier!r}")
         self._specs[spec.name] = spec
 
     def get(self, name: str) -> ToolSpec | None:
         return self._specs.get(name)
 
-    def specs_for_tier(self, tier: str) -> list[ToolSpec]:
-        level = TIER_ORDER.get(tier)
-        if level is None:
-            raise ValueError(f"unknown tier {tier!r} (use basic|advanced)")
-        return [s for s in self._specs.values() if TIER_ORDER[s.min_tier] <= level]
+    def specs_for_tier(self, tier: str | None = None) -> list[ToolSpec]:
+        """All registered specs. `tier` is accepted for call-site compatibility
+        and ignored: every tool is available to every run."""
+        return list(self._specs.values())
 
-    def schemas_for_tier(self, tier: str) -> list[dict[str, Any]]:
-        """OpenAI function-tool format; out-of-tier tools are structurally absent."""
+    def schemas_for_tier(self, tier: str | None = None) -> list[dict[str, Any]]:
+        """OpenAI function-tool format for every registered tool."""
         return [
             {
                 "type": "function",
@@ -152,21 +164,10 @@ class ToolRegistry:
                 code="tool.tool_not_found",
                 result_for_model=(
                     f"unknown tool '{name}'. Available tools: "
-                    + ", ".join(sorted(s.name for s in self.specs_for_tier("advanced")))
+                    + ", ".join(sorted(s.name for s in self.specs_for_tier()))
                 ),
             )
-        level = TIER_ORDER.get(ctx.config.get("tier", "basic"), 0)
-        if TIER_ORDER[spec.min_tier] > level:
-            return ToolOutcome(
-                ok=False,
-                blocked=True,
-                code="tier.capability_locked",
-                result_for_model=(
-                    f"BLOCKED: tool '{name}' requires tier '{spec.min_tier}' "
-                    f"(current tier '{ctx.config.get('tier', 'basic')}')."
-                ),
-            )
-        if spec.danger == "approval":
+        if spec.effective_danger == "approval":
             # Approval metadata is valid for exactly one dispatch. Never let a
             # prior approved shell call release a later direct/blocked call.
             ctx.config.pop("approval_id", None)

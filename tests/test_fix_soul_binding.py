@@ -156,7 +156,7 @@ def test_loop_passes_pinned_soul_block(monkeypatch, tmp_path):
 
                 return ClassifiedError(reason="unknown")
 
-        loop = AgentLoop(DoneProvider(), build_registry("basic"), tier="basic")
+        loop = AgentLoop(DoneProvider(), build_registry())
         loop.run(ctx, "goal")
     finally:
         http.close()

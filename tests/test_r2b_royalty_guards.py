@@ -42,7 +42,7 @@ def _mock(text="ok", status=200):
     return httpx.MockTransport(handler)
 
 
-def _ctx(transport=None, events=None, tier="basic", jail=None, scope_hosts=None):
+def _ctx(transport=None, events=None, jail=None, scope_hosts=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -55,7 +55,7 @@ def _ctx(transport=None, events=None, tier="basic", jail=None, scope_hosts=None)
         name="r2b-royal",
     )
     http = ScopedHttpClient(scope, transport=transport or _mock(), min_interval=0)
-    config: dict[str, Any] = {"tier": tier}
+    config: dict[str, Any] = {}
     if jail is not None:
         config["jail"] = str(jail)
     return ToolContext(
@@ -65,7 +65,7 @@ def _ctx(transport=None, events=None, tier="basic", jail=None, scope_hosts=None)
     ), events
 
 
-def _chain_ctx(events=None, tier="basic", transport=None):
+def _chain_ctx(events=None, transport=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -78,7 +78,7 @@ def _chain_ctx(events=None, tier="basic", transport=None):
     return ToolContext(
         run_id="R-R2B-ROYAL", ledger=Ledger(":memory:"), http=http, scope=scope,
         target_url="http://rpc.example.com/", emit=lambda k, p: events.append((k, dict(p))),
-        config={"tier": tier, "chain_scope": [{"chain_id": 1, "address": ADDR}]},
+        config={"chain_scope": [{"chain_id": 1, "address": ADDR}]},
         state={},
     ), events
 
@@ -138,7 +138,7 @@ def test_r2b_royal_t2_dns_crt_http_preserved():
     ctx2, _ = _ctx(scope_hosts=frozenset({"example.com"}))
     assert net.crt_sh({"domain": "example.com"}, ctx2).get("blocked") is True
     ctx3, _ = _ctx(scope_hosts=frozenset({"example.com"}))
-    out = build_registry("basic").dispatch(
+    out = build_registry().dispatch(
         "http_request", {"method": "GET", "url": "http://example.com/", "timeout": 0}, ctx3)
     assert out.blocked and out.code == "http.timeout_bounds"
     for c in (ctx, ctx2, ctx3):
@@ -164,13 +164,14 @@ def test_r2b_royal_t1_jail_preserved(tmp_path: Path):
 
 
 def test_r2b_royal_t5_patch_approval_preserved(tmp_path: Path):
-    """Guard: patch_write danger=approval advanced; catastrophic pends; TTL 300."""
+    """Guard: patch_write danger=approval, tier-free; catastrophic pends; TTL 300."""
     from hunter.agent.approval import APPROVAL_TTL_SECONDS, ApprovalStore, make_approval_gate
     from hunter.agent.tools_patch import PATCH_WRITE_SPEC
     from hunter.kernel.ledger import Ledger
 
     assert PATCH_WRITE_SPEC["danger"] == "approval"
-    assert PATCH_WRITE_SPEC["min_tier"] == "advanced"
+    # Tier system deleted: the approval danger rating is the remaining guard.
+    assert PATCH_WRITE_SPEC.get("min_tier") is None
     assert APPROVAL_TTL_SECONDS == 300
     store = ApprovalStore(tmp_path / "approvals")
     ledger = Ledger(":memory:")

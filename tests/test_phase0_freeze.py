@@ -84,7 +84,7 @@ def test_repro_cat_absolute_allowed(shell):
     assert err is None and cwd == str(jail), "baseline: cwd default adalah state dir"
 
     # sisi eksekusi: baca file luar jail kini ok=True + secret bocor ke model
-    outcome = build_registry("advanced").dispatch(
+    outcome = build_registry().dispatch(
         "shell_exec", {"command": py_command(f"print(open('{abs_posix}').read())")}, ctx,
     )
     assert outcome.ok is True, \
@@ -122,7 +122,7 @@ def test_repro_skill_oversize_single_card():
     body = "A" * 20_000
     skill = Skill(
         name="oversize-repro", description="repro card", version="0.1.0",
-        min_tier="basic", tags=("core",), source="user", body=body,
+        tags=("core",), source="user", body=body,
         quarantined=False, path="",
     )
     rendered = render_block([skill], corpus_size=1)

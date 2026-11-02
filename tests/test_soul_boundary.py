@@ -109,7 +109,7 @@ def test_env_home_not_verbatim_leak(tmp_path, monkeypatch):
             config={"tier": "advanced", "state_dir": str(tmp_path),
                     "approval_gate": gate},
         )
-        outcome = build_registry("advanced").dispatch(
+        outcome = build_registry().dispatch(
             "shell_exec",
             {"command": f'"{PY}" -c "import os; print(os.environ.get(\'HOME\')); print(dict(os.environ))"'},
             ctx,

@@ -45,7 +45,7 @@ def _mock(text="ok", status=200):
     return httpx.MockTransport(handler)
 
 
-def _ctx(events=None, tier="advanced", transport=None, jail=None):
+def _ctx(events=None, transport=None, jail=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -55,7 +55,7 @@ def _ctx(events=None, tier="advanced", transport=None, jail=None):
         events = []
     scope = ScopeSet(frozenset({"example.com"}), name="r2c-matrix")
     http = ScopedHttpClient(scope, transport=transport or _mock(), min_interval=0)
-    config: dict = {"tier": tier, "jail": str(jail) if jail else "/tmp/jail-r2c"}
+    config: dict = {"jail": str(jail) if jail else "/tmp/jail-r2c"}
     return ToolContext(run_id="R-R2C", ledger=Ledger(":memory:"), http=http, scope=scope,
                        target_url="http://example.com/", emit=lambda k, p: events.append((k, dict(p))),
                        config=config, state={}), events

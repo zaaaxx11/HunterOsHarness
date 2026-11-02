@@ -8,7 +8,7 @@ the real Ledger, ScopedHttpClient and ScopeSet — no fakes in the governance
 path.
 
 Documented contract check (handler-level tier gating, updated M8 F1): every
-v0.2 tool registers at min_tier="basic", so the schema list the model sees is
+v0.2 tool registers at min_so the schema list the model sees is
 identical for basic and advanced tiers among THOSE tools; advanced content is
 refused INSIDE http_request / run_probe with stable BLOCKED codes (tools_base
 T2 note). M8 adds runtime_inventory (basic) and shell_exec, which is
@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from hunter.agent.tools import PROBE_TIERS, build_registry
+from hunter.agent.tools import KNOWN_PROBES, build_registry
 from hunter.agent.tools_base import ToolContext, ToolOutcome
 from hunter.kernel.events import canonical_json, sha256_hex
 from hunter.kernel.findings import FindingStatus
@@ -71,7 +71,7 @@ def env(vault, tmp_path):
         emit=lambda kind, payload: events.append((kind, dict(payload))),
         config={"tier": "basic"},
     )
-    registry = build_registry("basic")
+    registry = build_registry()
     try:
         yield SimpleEnv(ctx=ctx, registry=registry, ledger=ledger, vault=vault, events=events)
     finally:
@@ -126,14 +126,12 @@ class SimpleEnv:
 # -- tier gating ----------------------------------------------------------------
 
 
-def test_basic_tier_blocks_non_passive_http_methods(env):
+def test_non_passive_http_methods_are_not_tier_blocked(env):
+    """No passive-only tier: a POST reaches the network layer and is recorded."""
     outcome = env.call("http_request", {"method": "POST", "url": env.ctx.target_url + "/transfer",
                                         "body": "from=a&to=b&amount=1"})
-    assert outcome.ok is False and outcome.blocked is True
-    assert outcome.code == "tier.passive_only"
-    assert "passive-only" in outcome.result_for_model
-    # the refused method never touched the wire and never became evidence
-    assert env.ledger.evidence(env.ctx.run_id) == []
+    assert outcome.code != "tier.passive_only"
+    assert "passive-only" not in outcome.result_for_model
 
 
 def test_basic_tier_allows_passive_methods_and_binds_evidence_declared(env):
@@ -157,31 +155,24 @@ def test_advanced_tier_allows_post(env):
     assert "BLOCKED" not in outcome.result_for_model
 
 
-def test_tier_gating_is_handler_level_schemas_identical(env):
-    """v0.2 contract, updated by M8 F1 (structural tier gating, T2): the 15
-    basic schemas stay shared with the advanced tier (the advanced gate lives
-    inside the handlers); M8 adds runtime_inventory (basic) and shell_exec —
-    which is structurally advanced, so it is ABSENT below advanced."""
+def test_no_capability_tier_every_tool_visible(env):
+    """There is no basic/advanced capability split: every registered tool is
+    advertised to every run, so shell_exec and delegate_task can never be
+    silently withheld by a config tier name."""
     basic = env.registry.schemas_for_tier("basic")
     advanced = env.registry.schemas_for_tier("advanced")
+    no_arg = env.registry.schemas_for_tier()
     basic_names = [t["function"]["name"] for t in basic]
     advanced_names = [t["function"]["name"] for t in advanced]
-    assert set(basic_names) <= set(advanced_names)  # basic is never richer
-    assert "shell_exec" in advanced_names and "shell_exec" not in basic_names
-    assert len(basic) == 19 and len(advanced) == 25
-    assert all(spec.min_tier == "basic" for spec in env.registry.specs_for_tier("basic"))
+    assert basic_names == advanced_names == [t["function"]["name"] for t in no_arg]
+    assert "shell_exec" in basic_names
+    assert "delegate_task" in basic_names
 
 
-def test_probe_tier_map_shape():
-    assert PROBE_TIERS["reflected-xss"] == "advanced"
-    assert PROBE_TIERS["sql-error"] == "advanced"
-    assert PROBE_TIERS["unauth-action"] == "advanced"
-    assert PROBE_TIERS["path-traversal"] == "advanced"
-    assert PROBE_TIERS["auth-bypass"] == "advanced"
-    assert PROBE_TIERS["form-injection"] == "advanced"
-    assert PROBE_TIERS["missing-headers"] == "basic"
-    assert PROBE_TIERS["dir-listing"] == "basic"
-    assert len(PROBE_TIERS) == 12
+def test_probe_map_covers_all_checks():
+    from hunter.agent.tools import ACTIVE_PROBES, PASSIVE_PROBES
+    assert KNOWN_PROBES == ACTIVE_PROBES | PASSIVE_PROBES
+    assert len(KNOWN_PROBES) == 12
 
 
 # -- dispatch safety --------------------------------------------------------------
@@ -303,10 +294,10 @@ def test_run_probe_unknown_check_id_blocked(env):
     assert outcome.blocked and outcome.code == "probe.unknown_check_id"
 
 
-def test_run_probe_active_check_blocked_at_basic(env):
+def test_run_probe_active_check_available_without_tier(env):
     outcome = env.call("run_probe", {"check_id": "reflected-xss"})
-    assert outcome.blocked and outcome.code == "tier.capability_locked"
-    assert "advanced" in outcome.result_for_model
+    assert outcome.code != "tier.capability_locked"
+    assert "reflected-xss" in outcome.result_for_model
 
 
 def test_run_probe_passive_check_allowed_at_basic(env):
@@ -566,9 +557,10 @@ def test_tools_emit_engine_event(env):
     assert {e["tool"] for e in tool_events} >= {"note_add", "coverage_list", "list_findings"}
 
 
-def test_registry_rejects_unknown_tier():
-    with pytest.raises(ValueError, match="unknown tier"):
-        build_registry("godmode")
+def test_registry_ignores_unknown_tier():
+    """There is no tier vocabulary left: any value is accepted and gates nothing."""
+    reg = build_registry("godmode")
+    assert len(reg.specs_for_tier()) == len(build_registry().specs_for_tier())
 
 
 def test_tool_outcome_json_shape_documented():

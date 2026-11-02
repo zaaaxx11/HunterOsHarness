@@ -72,7 +72,7 @@ class _Env:
             scope=self.scope,
             target_url="http://127.0.0.1/",
             emit=emit,
-            config={"tier": tier, **(config or {})},
+            config={**(config or {})},
         )
         self.store = ApprovalStore(Path(tmp_path) / "approvals")
 
@@ -95,7 +95,7 @@ def env(tmp_path):
 
 def _gated_registry(ran: list[dict[str, Any]]):
     """The real registry plus one test-only approval-danger tool."""
-    registry = build_registry("advanced")
+    registry = build_registry()
 
     def handler(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
         ran.append(dict(args))
@@ -107,8 +107,7 @@ def _gated_registry(ran: list[dict[str, Any]]):
             description="test-only approval-gated tool (no side effects)",
             parameters={"type": "object", "properties": {}, "required": [], "additionalProperties": False},
             handler=handler,
-            min_tier="advanced",
-            danger="approval",
+            min_danger="approval",
         )
     )
     return registry

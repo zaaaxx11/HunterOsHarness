@@ -39,12 +39,12 @@ class SkillDraft:
     name: str
     description: str
     version: str = "0.1.0"
-    min_tier: str = "basic"
     tags: tuple[str, ...] = ("curated",)
     body: str = ""
     flagged: bool = False
     flag_reasons: tuple[str, ...] = ()
     duplicates: tuple[str, ...] = ()
+    min_tier: str | None = None  # DEPRECATED, ignored.
 
 
 def _status(finding: Any) -> str:
@@ -166,7 +166,7 @@ def draft_skill(candidate: Candidate, *, provider: Any = None) -> SkillDraft:
         name = _slug(values.get("name", candidate.title), candidate.origin)
         description = _clamp_description(values.get("description", candidate.summary))
         tags = ("curated", candidate.origin)
-        validation = "---\n" + f"name: {name}\ndescription: {description}\nversion: 0.1.0\nmetadata:\n  min_tier: basic\n" + "---\n\n" + "\n".join(body) + "\n"
+        validation = "---\n" + f"name: {name}\ndescription: {description}\nversion: 0.1.0\n" + "---\n\n" + "\n".join(body) + "\n"
         if parse_skill_md(validation, directory_id=name) is None:
             raise ValueError("provider card failed validation")
         flagged, reasons = scan_draft(description + "\n" + "\n".join(body))
@@ -199,7 +199,7 @@ def review_and_save(
     duplicates = draft.duplicates or dedupe_candidate(Candidate(draft.name, draft.description, (), "curated"), corpus)
     draft.duplicates = duplicates
     verdict = f"duplicates existing skill(s): {', '.join(duplicates)}" if duplicates else f"unique against {len(corpus.skills)} skills"
-    lines = [f"name: {draft.name}", f"description: {draft.description}", f"tier: {draft.min_tier}", f"tags: {', '.join(draft.tags)}", verdict, f"target: {target}", "", draft.body]
+    lines = [f"name: {draft.name}", f"description: {draft.description}", f"tags: {', '.join(draft.tags)}", verdict, f"target: {target}", "", draft.body]
     if draft.flagged:
         lines.extend(["", f"warning: draft contains instruction-like text: {', '.join(draft.flag_reasons)}", "this skill will be saved INERT (quarantined: true) and never mounted until you edit the file"])
     if target.parent.exists():

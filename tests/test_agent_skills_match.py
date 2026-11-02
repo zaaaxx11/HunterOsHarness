@@ -32,7 +32,6 @@ def _skill(
         name=name,
         description=description,
         version="0.1.0",
-        min_tier="basic",
         tags=tags,
         source=source,
         body=body or f"---\nname: {name}\n---\n\n# {name}\n\n{description}",
@@ -109,7 +108,6 @@ def test_no_core_tags_renders_empty_block():
     prompt = build_system_prompt(
         target_url="https://example.test/",
         scope_summary="example",
-        tier="basic",
         skills_index="",
     )
     assert "(no skills mounted)" in prompt
@@ -197,18 +195,18 @@ def test_agent_loop_auto_installs_and_override_wins(tmp_path):
             config={"tier": "basic"},
         )
         provider = Provider()
-        loop = AgentLoop(provider, build_registry("basic"), tier="basic")
+        loop = AgentLoop(provider, build_registry())
         loop.run(ctx, "Audit https://example.test/ verification evidence")
         assert "# Skills mounted for this run" in provider.calls[0][0]["content"]
 
         ctx.config["skills_index"] = "OVERRIDE"
         provider_override = Provider()
-        AgentLoop(provider_override, build_registry("basic"), tier="basic").run(ctx, "goal")
+        AgentLoop(provider_override, build_registry()).run(ctx, "goal")
         assert "OVERRIDE" in provider_override.calls[0][0]["content"]
 
         install_skill_selector(lambda _question: "EXPLICIT")
         provider_explicit = Provider()
-        AgentLoop(provider_explicit, build_registry("basic"), tier="basic").run(ctx, "goal")
+        AgentLoop(provider_explicit, build_registry()).run(ctx, "goal")
         assert "EXPLICIT" in provider_explicit.calls[0][0]["content"]
     finally:
         http.close()

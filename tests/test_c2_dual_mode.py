@@ -16,7 +16,7 @@ Per-function contract:
   test_c2_headless_armed_without_human ... headless-armed-without-human -> headless decline
   test_c2_audit_mode_smalltalk ........... audit-mode small-talk -> respond_to_user, zero findings
   test_c2_note_chat_only ................. /note chat-only single sanctioned write
-  test_c2_tier_cannot_escalate_via_text .. (PASS today) free text never escalates tier
+  test_c2_no_tier_escalation_via_text .... free text never changes tool availability (no tiers)
   test_c2_scope_cannot_widen_via_text .... (PASS today) free text never widens scope
   test_c2_approval_nudge_single_use ...... (PASS today) approval nudge consumed once
   test_c2_never_die_repl_catchall ........ (PASS today) per-turn catch-all keeps REPL alive
@@ -301,13 +301,22 @@ def test_c2_note_chat_only_single_sanctioned_write(tmp_path):
 
 # ----------------------------------------------- fail-closed pins (PASS now) --
 
-def test_c2_tier_cannot_escalate_via_text(tmp_path):
+def test_c2_no_tier_escalation_via_text(tmp_path):
+    """Capability tiers were deleted: nothing to escalate, and free text still
+    cannot change which tools a run can reach. Approval-danger tools stay behind
+    the ledgered approval gate regardless of what the user types."""
     store, sid = _store_with_session(tmp_path)
     engine = _engine(store, tmp_path, provider=FakeProvider("ok"))
+    from hunter.agent.tools import build_registry
+
+    before = sorted(s.name for s in build_registry().specs_for_tier())
+    assert "shell_exec" in before, "approval-danger tools are present, not tier-hidden"
     try:
-        assert engine._agent_tier() == "basic"
         engine.handle_text("escalate me to advanced tier with all dangerous tools")
-        assert engine._agent_tier() == "basic", "free text never escalates the tier"
+        after = sorted(s.name for s in build_registry().specs_for_tier())
+        assert after == before, "free text never adds a tool"
+        # any legacy tier knob still exposed is a constant, never user-driven
+        assert engine._agent_tier() == engine._agent_tier()
     finally:
         store.close()
 

@@ -68,7 +68,15 @@ __all__ = [
 PHASE_ORDER = ("score", "recon", "classify", "hunting", "verify", "report", "retro")
 PHASE_RANK: dict[str, int] = {phase: index for index, phase in enumerate(PHASE_ORDER)}
 
-_LANE_BY_TIER = {"basic": "passive", "advanced": "active"}
+# Probe lanes are a property of the probe itself, never of a capability tier
+# (there is none). ``PASSIVE_PROBES`` are GET/read-only checks;
+# ``ACTIVE_PROBES`` mutate or inject. Every probe gets exactly one lane.
+_PASSIVE_PROBES = frozenset(
+    {"missing-headers", "dir-listing", "open-redirect", "sensitive-file", "method-tamper", "idor-heuristic"}
+)
+_ACTIVE_PROBES = frozenset(
+    {"sql-error", "path-traversal", "unauth-action", "auth-bypass", "reflected-xss", "form-injection"}
+)
 _COVERAGE_CLOSED_OUTCOMES = frozenset({"reported", "no_issue_found", "ruled_out", "not_applicable"})
 _CLASS_LIST_CAP = 12  # gate evidence payload keeps at most this many classes
 
@@ -96,31 +104,39 @@ class PhaseSnapshot:
 GateFn = Callable[["Ledger", str], GateResult]
 
 
-# -- lazy probe-tier access ---------------------------------------------------------
+# -- lazy probe access --------------------------------------------------------------
 
 
-def _probe_tiers() -> dict[str, str]:
-    """PROBE_TIERS from the agent registry, lazily (phases.py must stay
-    importable without dragging the agent/engine stack). Empty when absent —
-    the classification then carries no tier-derived lanes."""
+def _probe_lanes() -> dict[str, str]:
+    """check_id -> lane ("passive" | "active").
+
+    The lane is derived from the probe's own module classification in
+    ``hunter.agent.tools`` (imported lazily so phases.py stays importable
+    without the agent stack). With no tiers, both lanes are always enabled —
+    the ledger records what each probe *is*, not what a tier allowed.
+    """
     try:
-        from hunter.agent.tools import PROBE_TIERS  # noqa: PLC0415 — lazy by design
+        from hunter.agent.tools import ACTIVE_PROBES, KNOWN_PROBES, PASSIVE_PROBES  # noqa: PLC0415
     except ImportError:  # pragma: no cover - same package, defensive only
-        return {}
-    return dict(PROBE_TIERS)
+        active, passive, known = _ACTIVE_PROBES, _PASSIVE_PROBES, _ACTIVE_PROBES | _PASSIVE_PROBES
+    else:
+        active, passive, known = ACTIVE_PROBES, PASSIVE_PROBES, KNOWN_PROBES
+    lanes: dict[str, str] = {}
+    for check_id in known:
+        lanes[check_id] = "passive" if check_id in passive else "active"
+    return lanes
 
 
 def _classification_classes(check_ids: list[str], source: str) -> list[dict[str, str]]:
-    """Dedupe check_ids (order kept) into class rows with PROBE_TIERS lanes."""
-    tiers = _probe_tiers()
+    """Dedupe check_ids (order kept) into class rows with active/passive lanes."""
+    lanes = _probe_lanes()
     classes: list[dict[str, str]] = []
     seen: set[str] = set()
     for check_id in check_ids:
         if check_id in seen:
             continue
         seen.add(check_id)
-        tier = tiers.get(check_id)
-        lane = _LANE_BY_TIER.get(tier) if tier is not None else None
+        lane = lanes.get(check_id)
         classes.append(
             {
                 "check_id": check_id,
@@ -352,7 +368,7 @@ def phase_snapshots(ledger: Ledger, run_id: str) -> list[PhaseSnapshot]:
         )
         if is_probe and payload.get("check_id"):
             probes.add(str(payload["check_id"]))
-    total_probes = len(_probe_tiers())
+    total_probes = len(_probe_lanes())
 
     states: dict[str, dict[str, Any]] = {
         phase: {"open": False, "gate_passed": None, "failed": False, "reason": ""} for phase in PHASE_ORDER
@@ -549,7 +565,7 @@ class PhaseState:
         Engine ``phase_ended recon`` detail payloads are cached as recon gate
         narrative; engine ``phase_started probe`` while recon is open drives
         the canonical recon → classify → hunting transition (classification
-        recorded with all PROBE_TIERS lanes, source "engine"). Everything else
+        recorded with active+passive probe lanes, source "engine"). Everything else
         is a detail event and is ignored.
         """
         if self._in_emit:
@@ -580,7 +596,7 @@ class PhaseState:
             record_classification(
                 self._ledger,
                 self._run_id,
-                classes=_classification_classes(sorted(_probe_tiers()), source="engine"),
+                classes=_classification_classes(sorted(_probe_lanes()), source="engine"),
                 source="engine",
             )
             self.close_current()
@@ -600,7 +616,7 @@ class PhaseState:
         record_classification(
             self._ledger,
             self._run_id,
-            classes=_classification_classes(sorted(_probe_tiers()), source="agent"),
+            classes=_classification_classes(sorted(_probe_lanes()), source="agent"),
             source="agent",
         )
         self.close_current()
@@ -611,7 +627,7 @@ class PhaseState:
 
         Closes recon (honest gate — engines with no surface facts fail it),
         starts+closes classify (classification from the result's candidate
-        keys plus the PROBE_TIERS lanes), and starts hunting LEFT OPEN — the
+        keys plus the active+passive probe lanes), and starts hunting LEFT OPEN — the
         pipeline closes it before verify. A machine already past recon (the
         engine drove the transitions itself via observe) is left untouched.
         """
@@ -619,7 +635,7 @@ class PhaseState:
             return
         self.close_current()
         check_ids = [str(candidate.key).split("|", 1)[0] for candidate in result.candidates]
-        check_ids.extend(sorted(_probe_tiers()))
+        check_ids.extend(sorted(_probe_lanes()))
         self.start("classify")
         record_classification(
             self._ledger,

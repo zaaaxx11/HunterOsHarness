@@ -80,6 +80,20 @@ def _ctx(root: Path, *, scope: Any | None = None, config: dict | None = None) ->
     return ctx
 
 
+def _stub_binary_present(monkeypatch, binary: str, path: str = "/usr/local/bin") -> Path:
+    """Pretend ``binary`` is installed, without touching the host's PATH.
+
+    ``_resolve`` consults ``shutil.which`` (which reads ``$PATH`` *and* the
+    cwd) and caches per process. Stubbing ``_resolve`` itself would bypass the
+    very path this module is supposed to take, so instead point the cache at a
+    real, existing executable: the result is a genuinely-resolved absolute
+    path that ``subprocess`` would accept, and the cache stays coherent.
+    """
+    resolved = f"{path}/{binary}"
+    monkeypatch.setattr(toolchain, "_RESOLVE_CACHE", {binary: resolved})
+    return Path(resolved)
+
+
 def _scope_with_roots(tmp_path: Path, *roots: Path) -> ScopeSet:
     manifest = tmp_path / "scope.json"
     manifest.write_text(
@@ -227,18 +241,15 @@ def test_registration_registers_present_binaries(tmp_path, monkeypatch):
         assert name not in registry._unavailable
 
 
-def test_registered_specs_have_sane_tiers(tmp_path, monkeypatch):
+def test_registered_toolchain_specs_all_present(tmp_path, monkeypatch):
     registry = ToolRegistry()
     monkeypatch.setattr(toolchain, "_resolve", lambda name: f"/usr/bin/{name}")
     register_toolchain_tools(registry)
 
-    # slither is advanced-only: it is the heavy analyser.
-    slither_spec = registry.get("slither_run")
-    assert slither_spec is not None and slither_spec.min_tier == "advanced"
-    # the rest are basic — a compile step is not a privilege.
-    for name in ("forge_build", "forge_test", "cast_call"):
+    # No capability tier: every toolchain tool is registered unconditionally.
+    for name in ("slither_run", "forge_build", "forge_test", "cast_call"):
         spec = registry.get(name)
-        assert spec is not None and spec.min_tier == "basic", name
+        assert spec is not None, name
 
 
 # ------------------------------------------------------------ cast_call -------
@@ -535,7 +546,7 @@ def test_toolchain_tools_are_wired_into_build_registry(monkeypatch):
     from hunter.agent.tools import build_registry
 
     monkeypatch.setattr(toolchain, "_resolve", lambda name: f"/usr/bin/{name}")
-    registry = build_registry("advanced")
+    registry = build_registry()
     names = {s.name for s in registry.specs_for_tier("advanced")}
 
     for name in ("forge_build", "forge_test", "slither_run", "cast_call"):
@@ -673,6 +684,9 @@ def test_port_scan_passes_an_ip_not_a_hostname(tmp_path, monkeypatch):
     with `unknown command-line parameter "api.relay.link"`. The tool now
     resolves the name itself so the failure is ours to explain.
     """
+    # Resolve the binary through the _resolve seam: these tests are about argv,
+    # not about whether masscan happens to be installed on the test machine.
+    _stub_binary_present(monkeypatch, "masscan")
     monkeypatch.setattr(toolchain, "_run",
                         lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
                                             "stdout": "", "stderr": ""})
@@ -701,6 +715,7 @@ def test_port_scan_reports_a_resolution_failure(tmp_path, monkeypatch):
 
 def test_port_scan_reports_a_missing_privilege(tmp_path, monkeypatch):
     """masscan needs raw sockets; saying so beats a bare exit code."""
+    _stub_binary_present(monkeypatch, "masscan")
     monkeypatch.setattr(toolchain.socket, "gethostbyname", lambda h: "203.0.113.9")
     monkeypatch.setattr(toolchain, "_run",
                         lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 1,

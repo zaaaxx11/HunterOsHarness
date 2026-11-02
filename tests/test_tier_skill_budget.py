@@ -15,36 +15,25 @@ from hunter.agent.tools import build_registry
 def _oversize_skill(body: str, name: str = "oversize-card") -> Skill:
     return Skill(
         name=name, description="oversize budget probe", version="0.1.0",
-        min_tier="basic", tags=("core",), source="user", body=body,
+        tags=("core",), source="user", body=body,
         quarantined=False, path="",
     )
 
 
-def test_basic_16_advanced_17_shell_exec_only_advanced():
-    """LOOSE terdokumentasi (harus GREEN): pin kontrak tier struktural v0.2+M8.
+def test_no_tier_every_tool_registered_once():
+    """No capability tier exists: one flat registry, one tool surface.
 
-    Plugins are disabled here on purpose. This test pins the BUILT-IN tool
-    surface, and ``build_registry`` otherwise loads whatever drop-in tools live
-    in ``~/.hunter/tools`` — so on a developer box with plugins installed the
-    counts drift and the pin fails for a reason that has nothing to do with the
-    tier contract.
+    Plugins are disabled here on purpose so the pin describes the BUILT-IN
+    surface instead of whatever drop-in tools live in ``~/.hunter/tools``.
     """
-    basic = build_registry("basic", plugins_enabled=False).schemas_for_tier("basic")
-    advanced = build_registry("advanced", plugins_enabled=False).schemas_for_tier("advanced")
-    basic_names = [t["function"]["name"] for t in basic]
-    advanced_names = [t["function"]["name"] for t in advanced]
-    # 19 basic / 26 advanced: advanced carries shell_exec and delegate_task,
-    # so every role that reaches advanced tooling can spawn a real sub-agent.
-    # The 8 toolchain tools (forge_build/test, cast_call, slither_run,
-    # port_scan, nuclei_scan, gobuster_dir, sqlmap_test) are the only
-    # advanced-only additions beyond that pair.
-    assert len(basic) == 19 and len(advanced) == 26, \
-        f"pin counts: basic={len(basic)} advanced={len(advanced)}"
-    assert set(advanced_names) - set(basic_names) == {
-        "shell_exec", "delegate_task", "slither_run", "port_scan",
-        "nuclei_scan", "gobuster_dir", "sqlmap_test",
-    }, f"advanced-only drift: {sorted(set(advanced_names) - set(basic_names))}"
-    assert set(basic_names) <= set(advanced_names), "basic tak boleh lebih kaya"
+    registry = build_registry(plugins_enabled=False)
+    names = [t["function"]["name"] for t in registry.schemas_for_tier()]
+    assert len(names) == len(set(names)), "no duplicate tool names"
+    assert len(names) == 23, f"pin count: {len(names)}"
+    for expected in ("shell_exec", "delegate_task", "nuclei_scan", "sqlmap_test"):
+        assert expected in names, expected
+    # tier requests are inert: the same surface comes back either way
+    assert registry.schemas_for_tier("basic") == registry.schemas_for_tier("advanced")
     assert load_corpus() is not None and MAX_MOUNTED == 5, "pin konstanta skill"
 
 

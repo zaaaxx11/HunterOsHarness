@@ -36,7 +36,6 @@ __all__ = [
 ]
 
 CONTRACT_READ_METHODS = ("eth_call", "eth_getCode", "eth_getBalance", "eth_getStorageAt")
-_BASIC_METHODS = frozenset({"eth_call", "eth_getCode", "eth_getBalance"})
 
 EXPLORER_ALLOWLIST = frozenset(
     {
@@ -74,7 +73,6 @@ _CONTRACT_READ_SPEC: dict[str, Any] = {
     "name": "contract_read",
     "description": "Readonly JSON-RPC contract read (no sends) behind exact on-chain scope.",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -92,7 +90,6 @@ _SOURCE_SPEC: dict[str, Any] = {
     "name": "contract_source_fetch",
     "description": "Fetch verified contract source from an explorer allowlist host.",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -108,7 +105,6 @@ _ABI_SPEC: dict[str, Any] = {
     "name": "abi_decode_hint",
     "description": "Pure-stdlib ABI decode hint (no network, no scope).",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -136,13 +132,6 @@ def _emit(ctx: Any, tool: str, extra: dict[str, Any] | None = None) -> None:
 
 def _blocked(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "blocked": True, "code": code, "result_for_model": message}
-
-
-def _tier(ctx: Any) -> str:
-    try:
-        return str((getattr(ctx, "config", {}) or {}).get("tier", "basic"))
-    except Exception:
-        return "basic"
 
 
 def _chain_scope(ctx: Any) -> list[dict[str, Any]]:
@@ -196,12 +185,6 @@ def contract_read(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     except ScopeViolation as exc:
         _emit(ctx, "contract_read", {"code": "scope.target_out_of_scope"})
         return _blocked("scope.target_out_of_scope", str(exc))
-    if method not in _BASIC_METHODS and _tier(ctx) != "advanced":
-        _emit(ctx, "contract_read", {"code": "tier.capability_locked", "method": method})
-        return _blocked(
-            "tier.capability_locked",
-            f"BLOCKED [tier.capability_locked] method '{method}' needs advanced tier.",
-        )
     addr = address.lower()
     if method == "eth_call":
         params: list[Any] = [{"to": addr, "data": calldata}, "latest"]
@@ -473,9 +456,6 @@ def ladder_read(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
                      "is not in the on-chain scope manifest.")
     if method not in CONTRACT_READ_METHODS:
         return _fail("contract.unknown_method", f"unknown method {method!r} not allowlisted.")
-    if method not in _BASIC_METHODS and _tier(ctx) != "advanced":
-        return _fail("tier.capability_locked",
-                     f"BLOCKED [tier.capability_locked] '{method}' needs advanced tier.")
     # Replay analog short-circuit: diverging hosts never rule out (fail-closed).
     prior = args.get("prior_result")
     fresh = args.get("fresh_result")
@@ -605,7 +585,6 @@ def register_web3_tools(registry: Any) -> Any:
                 description=str(spec["description"]),
                 parameters=dict(spec["parameters"]),
                 handler=_wrap(name),
-                min_tier="basic",
                 danger="none",
             )
         )
@@ -627,5 +606,4 @@ def build_web3_registry(tier: str = "basic") -> Any:
 
     registry = ToolRegistry()
     register_web3_tools(registry)
-    registry.built_for_tier = tier  # type: ignore[attr-defined]
     return registry

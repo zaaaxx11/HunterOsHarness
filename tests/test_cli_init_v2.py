@@ -159,7 +159,7 @@ def test_wizard_auto_mode_writes_all_four_tiers(tmp_path):
     for tier in TIERS:
         assert cfg.model_tiers[tier].provider == "groq"
         assert cfg.model_tiers[tier].model == table.default_model
-    assert cfg.agent.tier == "basic"
+    assert cfg.agent.tier == "orchestrator"
     assert cfg.agent.browser is False
 
 

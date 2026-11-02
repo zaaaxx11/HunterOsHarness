@@ -60,7 +60,7 @@ def _require_generator():
     return heavy, gen
 
 
-def _ctx(events=None, tier="advanced", transport=None, jail=None):
+def _ctx(events=None, transport=None, jail=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -74,7 +74,7 @@ def _ctx(events=None, tier="advanced", transport=None, jail=None):
         transport = httpx.MockTransport(_ok)
     scope = ScopeSet(frozenset({"rpc.example.com"}), name="r2b-matrix")
     http = ScopedHttpClient(scope, transport=transport, min_interval=0)
-    config: dict[str, Any] = {"tier": tier, "jail": str(jail) if jail else "/tmp/jail-r2b"}
+    config: dict[str, Any] = {"jail": str(jail) if jail else "/tmp/jail-r2b"}
     return ToolContext(run_id="R-MATRIX", ledger=Ledger(":memory:"), http=http, scope=scope,
                        target_url="http://rpc.example.com/", emit=lambda k, p: events.append((k, dict(p))),
                        config=config, state={}), events

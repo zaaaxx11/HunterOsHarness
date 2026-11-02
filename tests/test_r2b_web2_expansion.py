@@ -60,7 +60,7 @@ def _mock(routes, events=None):
     return httpx.MockTransport(handler)
 
 
-def _ctx(scope_hosts=frozenset({"example.com"}), transport=None, events=None, tier="basic", jail=None):
+def _ctx(scope_hosts=frozenset({"example.com"}), transport=None, events=None, jail=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -70,7 +70,7 @@ def _ctx(scope_hosts=frozenset({"example.com"}), transport=None, events=None, ti
         events = []
     scope = ScopeSet(scope_hosts, name="r2b-web2")
     http = ScopedHttpClient(scope, transport=transport or _mock([], events), min_interval=0)
-    config: dict[str, Any] = {"tier": tier}
+    config: dict[str, Any] = {}
     if jail is not None:
         config["jail"] = str(jail)
     return ToolContext(
@@ -128,7 +128,7 @@ def test_r2b_web2_tls_inventory_basic():
     import hunter.agent.tools_network as net
 
     spec = getattr(net, "TLS_AUDIT_SPEC", {})
-    assert spec.get("min_tier") == "basic", "tls inventory stays passive/basic"
+    assert spec.get("min_tier") is None, "no capability tiers"
     assert spec.get("danger") == "none"
     transport = _mock([("example.com", 200, {"strict-transport-security": "max-age=63072000"}, "hi")])
     ctx, events = _ctx(transport=transport)
@@ -156,20 +156,19 @@ def test_r2b_web2_search_glob_jailed(tmp_path: Path):
         assert blocked.get("blocked") is True, evil
 
 
-def test_r2b_web2_archive_advanced_locked(tmp_path: Path):
-    """archive_read: advanced lock — basic -> tier.capability_locked."""
+def test_r2b_web2_archive_not_tier_locked(tmp_path: Path):
+    """archive_read: no tier lock — the call reaches the handler at any time."""
     fn = _require_local_attr("archive_read")
     import hunter.agent.tools_local as loc
 
     spec = getattr(loc, "ARCHIVE_READ_SPEC", {})
-    assert spec.get("min_tier") == "advanced", "archive extraction is advanced-only"
+    assert spec.get("min_tier") is None, "no capability tiers"
     jail = _jail(tmp_path)
-    ctx_basic, _ = _ctx(tier="basic", jail=jail)
-    locked = fn({"path": "docs/audit.md", "archive": "bundle.zip"}, ctx_basic)
-    assert locked.get("blocked") is True and locked.get("code") == "tier.capability_locked"
-    ctx_adv, _ = _ctx(tier="advanced", jail=jail)
-    out = fn({"path": "docs/audit.md", "archive": "bundle.zip"}, ctx_adv)
-    assert out.get("ok") is True or out.get("code") in ("archive.not_found", "archive.bad_envelope")
+    ctx, _ = _ctx(jail=jail)
+    out = fn({"path": "docs/audit.md", "archive": "bundle.zip"}, ctx)
+    # jail/scope checks still apply; a missing archive is the only expected block
+    assert out.get("ok") is True or out.get("code") in (
+        "archive.not_found", "archive.bad_envelope", "archive.invalid")
 
 
 def test_r2b_web2_archive_jail_escape_blocked(tmp_path: Path):
@@ -177,7 +176,7 @@ def test_r2b_web2_archive_jail_escape_blocked(tmp_path: Path):
     fn = _require_local_attr("archive_read")
     jail = _jail(tmp_path)
     (tmp_path / "outside.txt").write_text("outside secret", encoding="utf-8")
-    ctx, _ = _ctx(tier="advanced", jail=jail)
+    ctx, _ = _ctx(jail=jail)
     for evil in ("../outside.txt", "..\\outside.txt", "/etc/passwd", "docs/../../outside.txt"):
         blocked = fn({"path": evil, "archive": "bundle.zip"}, ctx)
         assert blocked.get("blocked") is True and "jail" in blocked.get("code", "").lower(), evil

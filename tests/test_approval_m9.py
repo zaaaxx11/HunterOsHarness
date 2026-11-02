@@ -76,7 +76,7 @@ def test_hunter_auto_allow_is_readonly_only(env, monkeypatch):
     env.ctx.config["approval_gate"] = make_approval_gate(
         env.store, ledger=env.ledger, run_id=env.run_id, auto_allow=True, surface="repl"
     )
-    registry = build_registry("advanced")
+    registry = build_registry()
 
     readonly = registry.dispatch("shell_exec", {"command": "pwd"}, env.ctx)
     mutating = registry.dispatch("shell_exec", {"command": "touch marker"}, env.ctx)
@@ -100,7 +100,7 @@ def test_mutating_command_requires_approval_in_hunter_mode(env, monkeypatch):
     env.ctx.config["approval_gate"] = make_approval_gate(
         env.store, ledger=env.ledger, run_id=env.run_id, auto_allow=True, surface="repl"
     )
-    outcome = build_registry("advanced").dispatch(
+    outcome = build_registry().dispatch(
         "shell_exec", {"command": "touch marker"}, env.ctx
     )
 
@@ -115,7 +115,7 @@ def test_catastrophic_returns_special_code_and_ledger_marker(env, monkeypatch):
         raise AssertionError("catastrophic command reached subprocess while pending")
 
     monkeypatch.setattr("hunter.agent.tools.subprocess.run", sentinel)
-    outcome = build_registry("advanced").dispatch(
+    outcome = build_registry().dispatch(
         "shell_exec", {"command": "rm -rf /"}, env.ctx
     )
 
@@ -141,7 +141,7 @@ def test_catastrophic_approval_is_explicit_and_single_use(env, monkeypatch):
         return _completed()
 
     monkeypatch.setattr("hunter.agent.tools.subprocess.run", fake_run)
-    registry = build_registry("advanced")
+    registry = build_registry()
     args = {"command": "rm -rf /"}
     first = registry.dispatch("shell_exec", args, env.ctx)
     request_id = _request_id(first.result_for_model)
@@ -175,7 +175,7 @@ def test_catastrophic_never_calls_confirm_or_auto_allow(env, monkeypatch):
         confirm_fn=confirm,
         surface="repl",
     )
-    outcome = build_registry("advanced").dispatch(
+    outcome = build_registry().dispatch(
         "shell_exec", {"command": "format C:"}, env.ctx
     )
 
@@ -199,7 +199,7 @@ def test_approval_gate_without_gate_fails_closed_for_shell():
             emit=lambda *_args: None,
             config={"tier": "advanced"},
         )
-        outcome = build_registry("advanced").dispatch("shell_exec", {"command": "pwd"}, ctx)
+        outcome = build_registry().dispatch("shell_exec", {"command": "pwd"}, ctx)
     finally:
         http.close()
         ledger.close()
@@ -212,7 +212,7 @@ def test_shell_approval_events_include_class_and_fingerprint(env, monkeypatch):
     env.ctx.config["approval_gate"] = make_approval_gate(
         env.store, ledger=env.ledger, run_id=env.run_id, auto_allow=True, surface="repl"
     )
-    registry = build_registry("advanced")
+    registry = build_registry()
     readonly = registry.dispatch("shell_exec", {"command": "echo ok"}, env.ctx)
     pending = registry.dispatch("shell_exec", {"command": "touch marker"}, env.ctx)
     assert readonly.ok is True and pending.code == "approval.required"
@@ -224,10 +224,10 @@ def test_shell_approval_events_include_class_and_fingerprint(env, monkeypatch):
 
 
 def test_shell_spec_no_longer_hard_denies_catastrophic_commands(env):
-    spec = build_registry("advanced").get("shell_exec")
+    spec = build_registry().get("shell_exec")
     assert spec is not None
     assert spec.danger == "approval"
-    outcome = build_registry("advanced").dispatch(
+    outcome = build_registry().dispatch(
         "shell_exec", {"command": "format C:"}, env.ctx
     )
     assert outcome.code == "approval.catastrophic"

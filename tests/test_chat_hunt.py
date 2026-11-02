@@ -403,9 +403,9 @@ def test_audit_bare_status_finish_unchanged(store, tmp_path):
 def test_banner_mode_indicator(store, tmp_path):
     from hunter._data.branding import banner_lines
 
-    lines = banner_lines(version="9.9.9", tier="basic", model="m", session_id="s", mode="hunt")
+    lines = banner_lines(version="9.9.9", model="m", session_id="s", mode="hunt")
     assert lines[1].endswith("mode: hunt")
-    default = banner_lines(version="9.9.9", tier="basic", model="m", session_id="s")
+    default = banner_lines(version="9.9.9", model="m", session_id="s")
     assert default[1].endswith("mode: chat")
     # The existing lines survive the additive suffix.
     assert lines[0] == default[0] and lines[2] == default[2]

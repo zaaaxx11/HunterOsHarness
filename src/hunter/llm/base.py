@@ -22,10 +22,14 @@ TIERS: tuple[str, ...] = ("orchestrator", "hunter", "verifier", "utility")
 # only for hint text; keep the rename history order. These are the ONLY
 # places the old-name string literals may live in src/hunter (static scan).
 LEGACY_TIERS: tuple[str, ...] = ("planner", "exploit", "verify")
+# The deleted capability-tier words also live here so old config files keep
+# loading: they select the default model role and gate nothing.
 LEGACY_TIER_ALIASES: dict[str, str] = {
     "planner": "orchestrator",
     "exploit": "hunter",
     "verify": "verifier",
+    "basic": "orchestrator",
+    "advanced": "orchestrator",
 }
 
 

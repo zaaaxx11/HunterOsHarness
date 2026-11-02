@@ -48,7 +48,7 @@ def test_royal_no_handler_fabricates_ids():
     from hunter.agent.tools import build_registry
 
     ctx, _ = _ctx()
-    out = build_registry("basic").dispatch(
+    out = build_registry().dispatch(
         "http_request", {"method": "GET", "url": "http://127.0.0.1:9/"}, ctx
     )
     assert out.ok and "EV-" not in out.result_for_model
@@ -63,7 +63,7 @@ def test_royal_r2_forged_evidence_blocked_rehash_verified():
     from hunter.kernel.redaction import redact_payload
 
     ctx, _ = _ctx()
-    registry = build_registry("basic")
+    registry = build_registry()
     base = {
         "check_id": "reflected-xss", "title": "T", "severity": "high", "cwe": "CWE-79",
         "endpoint": "/search", "method": "GET", "description": "D", "impact": "I",
@@ -84,7 +84,7 @@ def test_royal_rule_e1_e4_claim_gate_matrix():
     from hunter.agent.tools import build_registry
 
     ctx, _ = _ctx()
-    registry = build_registry("basic")
+    registry = build_registry()
     base = {
         "check_id": "c", "title": "T", "severity": "high", "cwe": "CWE-79",
         "endpoint": "http://evil.example.net/x", "method": "GET", "description": "D",
@@ -166,7 +166,7 @@ def test_royal_shell_runs_are_ledgered(tmp_path):
         "tier": "advanced", "state_dir": str(tmp_path),
         "approval_gate": lambda *a: None,  # pass-through: reach the handler's cwd jail
     })
-    out = build_registry("advanced").dispatch("shell_exec", {"command": "ls", "cwd": "../.."}, ctx)
+    out = build_registry().dispatch("shell_exec", {"command": "ls", "cwd": "../.."}, ctx)
     assert out.blocked and out.code == "shell.cwd_outside_state"
     assert any(k == "engine_event" and p.get("tool") == "shell_exec" for k, p in events)
 
@@ -178,7 +178,7 @@ def test_royal_approval_fail_closed_without_gate():
     from hunter.agent.tools import build_registry
 
     ctx, _ = _ctx(config={"tier": "advanced", "state_dir": "x"})
-    out = build_registry("advanced").dispatch("shell_exec", {"command": "ls"}, ctx)
+    out = build_registry().dispatch("shell_exec", {"command": "ls"}, ctx)
     assert out.blocked and out.code == "approval.unavailable"
     assert "approval gate" in out.result_for_model.lower()
 

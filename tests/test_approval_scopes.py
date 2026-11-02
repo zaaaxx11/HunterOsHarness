@@ -57,7 +57,7 @@ def test_once_single_use(tmp_path, monkeypatch):
     monkeypatch.setattr("hunter.agent.tools.subprocess.run", lambda *a, **k: _completed())
     ledger, http, store, ctx = _env(tmp_path, "R-ONCE")
     try:
-        reg = build_registry("advanced")
+        reg = build_registry()
         args: dict[str, Any] = {"command": "touch marker_once"}
         first = reg.dispatch("shell_exec", args, ctx)
         assert first.code == "approval.required", "syarat: mutating butuh approval"
@@ -82,7 +82,7 @@ def test_session_reusable_same_run(tmp_path, monkeypatch):
     monkeypatch.setattr("hunter.agent.tools.subprocess.run", lambda *a, **k: _completed())
     ledger, http, store, ctx = _env(tmp_path, "R-SESS")
     try:
-        reg = build_registry("advanced")
+        reg = build_registry()
         args: dict[str, Any] = {"command": "touch marker_sess"}
         req = store.create("shell_exec", args, surface="repl", scope="session", run_id="R-SESS")
         assert req.scope == "session", "scope wajib tersimpan session"
@@ -103,7 +103,7 @@ def test_session_isolated_across_runs(tmp_path, monkeypatch):
         args: dict[str, Any] = {"command": "touch marker_iso"}
         req = store.create("shell_exec", args, surface="repl", scope="session", run_id="R-A")
         assert store.decide(req.request_id, "approved") is not None, "approve sesi R-A wajib ok"
-        assert build_registry("advanced").dispatch("shell_exec", args, ctx).ok is True, "R-A wajib ok"
+        assert build_registry().dispatch("shell_exec", args, ctx).ok is True, "R-A wajib ok"
         ledger2 = ledger
         http2 = ScopedHttpClient(localhost_scope(), min_interval=0)
         ctx2 = ToolContext(run_id="R-B", ledger=ledger2, http=http2, scope=localhost_scope(),
@@ -113,7 +113,7 @@ def test_session_isolated_across_runs(tmp_path, monkeypatch):
                                    "approval_gate": make_approval_gate(
                                        store, ledger=ledger2, run_id="R-B", surface="repl")})
         try:
-            out = build_registry("advanced").dispatch("shell_exec", args, ctx2)
+            out = build_registry().dispatch("shell_exec", args, ctx2)
             assert out.code == "approval.required", f"RED: sesi R-A bocor ke R-B ({out.code})"
         finally:
             http2.close()
@@ -134,7 +134,7 @@ def test_always_persisted_reload(tmp_path, monkeypatch):
         assert req.scope == "always", "scope always wajib tersimpan"
         assert "command_class" in ApprovalRequest.__dataclass_fields__, "Q2: field command_class wajib ada"
         assert store.decide(req.request_id, "approved") is not None, "approve always wajib ok"
-        reg = build_registry("advanced")
+        reg = build_registry()
         assert reg.dispatch("shell_exec", {"command": "touch a_always"}, ctx).ok is True, "run-1 always ok"
         store2 = ApprovalStore(tmp_path / "approvals")
         ctx.config["approval_gate"] = make_approval_gate(

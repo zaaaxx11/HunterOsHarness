@@ -16,7 +16,6 @@ built-in handler gets — a ``ToolContext`` — and nothing else:
 * it never sees the provider, the API keys, or ``os.environ`` credentials;
 * it is dispatched through the same :class:`ToolRegistry`, so tier gating and
   the approval gate apply unchanged;
-* its declared ``min_tier`` must be ``basic`` or ``advanced`` — anything else
   is refused at load time rather than ignored;
 * ``danger="approval"`` cannot be claimed by a plugin.  Approval-danger is a
   property of the *governed* tool set; letting a file declare it would let a
@@ -179,14 +178,6 @@ def _load_module(path: Path) -> Any:
     return module
 
 
-def _declared_tier(fn: Callable[..., Any]) -> str | None:
-    """``min_tier`` the plugin claims, validated against the real tier set."""
-    tier = str(getattr(fn, "min_tier", "basic") or "basic").strip().lower()
-    if tier not in ("basic", "advanced"):
-        return None
-    return tier
-
-
 def _discover_file(path: Path, *, origin: str) -> tuple[list[PluginTool], list[tuple[str, str]]]:
     loaded: list[PluginTool] = []
     skipped: list[tuple[str, str]] = []
@@ -207,10 +198,6 @@ def _discover_file(path: Path, *, origin: str) -> tuple[list[PluginTool], list[t
         if not _valid_name(name):
             skipped.append((attr, f"invalid tool name {name!r}"))
             continue
-        tier = _declared_tier(fn)
-        if tier is None:
-            skipped.append((attr, f"invalid min_tier {getattr(fn, 'min_tier', None)!r}"))
-            continue
         schema = _coerce_schema(fn)
         if schema is None:
             skipped.append((attr, "missing/malformed parameter schema"))
@@ -221,7 +208,6 @@ def _discover_file(path: Path, *, origin: str) -> tuple[list[PluginTool], list[t
             description=description.strip().splitlines()[0][:300],
             parameters=schema,
             handler=_make_handler(fn),
-            min_tier=tier,
             # Plugins never claim approval-danger: that would let a drop-in
             # file pretend to be pre-approved.  They stay "none".
             danger="none",
@@ -339,7 +325,6 @@ tool___NAME__.schema = {
     },
     "required": [],
 }
-tool___NAME__.min_tier = "basic"
 tool___NAME__.description = "__DESC__"
 '''
 

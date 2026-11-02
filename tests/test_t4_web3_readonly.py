@@ -64,7 +64,7 @@ def _rpc_transport(result="0x", events=None):
     return httpx.MockTransport(handler)
 
 
-def _ctx(rpc_host="rpc.example.com", events=None, tier="basic", transport=None):
+def _ctx(rpc_host="rpc.example.com", events=None, transport=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -78,7 +78,6 @@ def _ctx(rpc_host="rpc.example.com", events=None, tier="basic", transport=None):
         run_id="R-T4", ledger=Ledger(":memory:"), http=http, scope=scope,
         target_url="http://rpc.example.com/", emit=lambda k, p: events.append((k, dict(p))),
         config={
-            "tier": tier,
             "chain_scope": [{"chain_id": 1, "address": "0xabc0000000000000000000000000000000000def"}],
         },
         state={},
@@ -141,21 +140,39 @@ def test_t4_no_send_methods_registered():
     assert "eth_sendTransaction" not in str(getattr(w3, "CONTRACT_READ_METHODS", "")).lower()
 
 
-def test_t4_basic_vs_advanced_storage_gating():
-    """Contract: basic allows eth_call/getCode/getBalance; getStorageAt needs advanced."""
+def test_t4_no_tier_gating_all_methods_reachable():
+    """Contract: the tier system is gone — every allowlisted read method is reachable.
+
+    ``eth_getStorageAt`` used to be locked behind the advanced tier. With the
+    tier system deleted there is no capability gate left; what must still hold
+    is that reachability does not depend on ``ctx.config["tier"]``, and that
+    the real security checks (URL scope, chain_scope) are unaffected.
+    """
     w3 = _require_web3()
-    ctx, _ = _ctx(tier="basic")
-    for method in ("eth_call", "eth_getCode", "eth_getBalance"):
+    ctx, _ = _ctx()
+    for method in ("eth_call", "eth_getCode", "eth_getBalance", "eth_getStorageAt"):
         out = w3.contract_read({"chain_id": 1, "address": ADDR, "method": method, "rpc_url": RPC}, ctx)
-        assert out["ok"], f"{method} must work at basic tier"
-    locked = w3.contract_read(
-        {"chain_id": 1, "address": ADDR, "method": "eth_getStorageAt", "rpc_url": RPC}, ctx
-    )
-    assert locked.get("code") == "tier.capability_locked"
-    ctx2, _ = _ctx(tier="advanced")
+        assert out["ok"], f"{method} must be reachable without any tier"
+    # A leftover tier value in the run config must change nothing.
+    ctx2, _ = _ctx()
+    ctx2.config["tier"] = "basic"
     assert w3.contract_read(
         {"chain_id": 1, "address": ADDR, "method": "eth_getStorageAt", "rpc_url": RPC}, ctx2
     )["ok"]
+    # ... and the scope / chain_scope checks still bite.
+    ctx3, _ = _ctx()
+    out_of_scope = w3.contract_read(
+        {"chain_id": 1, "address": "0x" + "0" * 40, "method": "eth_getStorageAt", "rpc_url": RPC}, ctx3
+    )
+    assert out_of_scope.get("code") == "scope.onchain_out_of_scope"
+    ctx4, _ = _ctx()
+    ctx4.config["tier"] = "advanced"
+    bad_url = w3.contract_read(
+        {"chain_id": 1, "address": ADDR, "method": "eth_getStorageAt", "rpc_url": "https://evil.example.net/"},
+        ctx4,
+    )
+    assert bad_url.get("code") == "scope.target_out_of_scope", "URL scope must still be enforced"
+    assert "tier.capability_locked" not in str(bad_url)
 
 
 def test_t4_httpx_jsonrpc_no_web3_dep():

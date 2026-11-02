@@ -311,7 +311,7 @@ def test_render_config_output_loads(tmp_path):
     path = tmp_path / "c.yaml"
     path.write_text(text, encoding="utf-8")
     cfg = load_config(path, env={}, home=tmp_path)
-    assert cfg.agent.tier == "basic" and cfg.providers == {}
+    assert cfg.agent.tier == "orchestrator" and cfg.providers == {}
 
 
 def test_write_config_refuses_env_path_outside_home(monkeypatch, tmp_path):

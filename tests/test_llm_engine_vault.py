@@ -207,7 +207,7 @@ def vault(no_proxy):
 
 def test_llm_engine_full_scan_against_vault(vault, tmp_path, monkeypatch):
     provider = FakeProvider(audit_script())
-    engine = LLMEngine(provider, tier="advanced")
+    engine = LLMEngine(provider)
     real_get_engine = __import__("hunter.tools.registry", fromlist=["get_engine"]).get_engine
 
     def scripted_get_engine(name, **kwargs):
@@ -261,7 +261,7 @@ def test_llm_engine_collect_returns_zero_candidates_by_design(vault, tmp_path, m
     """Agent findings are already in the ledger, so EngineResult.candidates
     is empty and the pipeline's collect phase adds nothing — documented."""
     provider = FakeProvider(audit_script())
-    engine = LLMEngine(provider, tier="advanced")
+    engine = LLMEngine(provider)
     scope = localhost_scope()
     events: list[tuple[str, dict]] = []
     http = ScopedHttpClient(scope)
@@ -305,7 +305,7 @@ def tool_env(vault, tmp_path):
         emit=lambda kind, payload: events.append((kind, dict(payload))),
         config={"tier": "advanced"},
     )
-    registry = build_registry("advanced")
+    registry = build_registry()
     try:
         yield DebunkEnv(ctx=ctx, ledger=ledger, registry=registry, vault=vault)
     finally:
@@ -405,11 +405,13 @@ def test_debunk_pass_unknown_check_needs_follow_up(tool_env):
 
 
 def test_llm_engine_plan_declares_v02_phases(vault):
-    engine = LLMEngine(FakeProvider([]), tier="advanced")
+    engine = LLMEngine(FakeProvider([]))
     plan = engine.plan(TargetSpec(url=vault.url, scope=localhost_scope()))
     assert plan.engine == "llm"
     assert plan.phases == ["brief", "audit", "finish"]
-    assert plan.notes["tier"] == "advanced"
+    # No capability tier exists: the flat tool surface is declared, not a tier.
+    assert "tier" not in plan.notes
+    assert plan.notes["strategy"] == "governed-agent-loop"
 
 
 def test_llm_engine_run_requires_ledger(vault):

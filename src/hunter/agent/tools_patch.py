@@ -35,7 +35,6 @@ PATCH_WRITE_SPEC: dict[str, Any] = {
     "name": "patch_write",
     "description": "Apply a unified diff inside the jail (preview + backup + dry-run). Approval-gated.",
     "danger": "approval",
-    "min_tier": "advanced",
     "parameters": {
         "type": "object",
         "properties": {
@@ -385,7 +384,6 @@ def register_patch_tools(registry: Any) -> Any:
             description=str(PATCH_WRITE_SPEC["description"]),
             parameters=dict(PATCH_WRITE_SPEC["parameters"]),
             handler=handler,
-            min_tier="advanced",
             danger="approval",
         )
     )

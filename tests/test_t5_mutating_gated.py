@@ -29,7 +29,7 @@ def _require_patch():
     return patch
 
 
-def _ctx(tmp_path=None, approval_gate=None, tier="advanced"):
+def _ctx(tmp_path=None, approval_gate=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -37,7 +37,7 @@ def _ctx(tmp_path=None, approval_gate=None, tier="advanced"):
 
     scope = localhost_scope()
     http = ScopedHttpClient(scope, transport=_never_transport())
-    config: dict = {"tier": tier}
+    config: dict = {}
     if approval_gate is not None:
         config["approval_gate"] = approval_gate
     return ToolContext(
@@ -62,7 +62,8 @@ def test_t5_patch_write_importorskip(tmp_path):
     """Contract: the future module exists and exposes a danger=approval spec."""
     patch = _require_patch()
     assert patch.PATCH_WRITE_SPEC["danger"] == "approval"
-    assert patch.PATCH_WRITE_SPEC["min_tier"] == "advanced"
+    # No tier system: approval is the gate, not a tier.
+    assert patch.PATCH_WRITE_SPEC.get("min_tier") is None
 
 
 def test_t5_patch_write_diff_preview_backup_jail(tmp_path):

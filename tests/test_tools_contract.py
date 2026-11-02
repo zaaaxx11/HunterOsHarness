@@ -35,7 +35,7 @@ FUTURE_TOOLS = {
 }
 
 
-def _ctx(transport=None, events=None, tier="basic"):
+def _ctx(transport=None, events=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -48,7 +48,7 @@ def _ctx(transport=None, events=None, tier="basic"):
     return ToolContext(
         run_id="R-C", ledger=Ledger(":memory:"), http=http, scope=scope,
         target_url="http://127.0.0.1:9/", emit=lambda k, p: events.append((k, dict(p))),
-        config={"tier": tier}, state={},
+        config={}, state={},
     ), events
 
 
@@ -91,28 +91,25 @@ def test_contract_transport_error_retryable_shape():
     from hunter.agent.tools import build_registry
 
     ctx, _ = _ctx(transport=_boom_transport())
-    out = build_registry("basic").dispatch(
+    out = build_registry().dispatch(
         "http_request", {"method": "GET", "url": "http://127.0.0.1:9/"}, ctx
     )
     assert out.ok is False and out.blocked is False and out.code == "http.transport_error"
 
 
-def test_contract_identical_schemas_across_tiers():
-    """Contract: schemas_for_tier equal for basic/advanced among v0.2 tools; refusal inside handler."""
+def test_contract_single_schema_surface_no_tier():
+    """Contract: one flat tool surface. Tier arguments are inert leftovers, so
+    the schema list is identical whatever tier name is passed, and there is no
+    tier refusal left on http_request."""
     from hunter.agent.tools import build_registry
 
-    basic = build_registry("basic").schemas_for_tier("basic")
-    advanced = build_registry("advanced").schemas_for_tier("advanced")
-    basic_names = {s["function"]["name"] for s in basic}
-    for name in basic_names:
-        if name in ("shell_exec",):  # M8 structural exception: advanced-only + approval-danger
-            continue
-        assert name in {s["function"]["name"] for s in advanced}
-    ctx, _ = _ctx(tier="basic")
-    out = build_registry("basic").dispatch(
-        "http_request", {"method": "POST", "url": "http://127.0.0.1:9/"}, ctx
-    )
-    assert out.blocked and out.code == "tier.passive_only"
+    registry = build_registry()
+    flat = registry.schemas_for_tier()
+    assert registry.schemas_for_tier("basic") == flat
+    assert registry.schemas_for_tier("advanced") == flat
+    names = {s["function"]["name"] for s in flat}
+    assert "shell_exec" in names  # approval-danger, not tier-gated
+    assert "http_request" in names
 
 
 def test_contract_handlers_never_persist_ids_loop_does():
@@ -129,7 +126,7 @@ def test_contract_handlers_never_persist_ids_loop_does():
     ctx, _ = _ctx()
     from hunter.agent.tools import build_registry
 
-    out = build_registry("basic").dispatch(
+    out = build_registry().dispatch(
         "http_request", {"method": "GET", "url": "http://127.0.0.1:9/"}, ctx
     )
     assert "EV-" not in out.result_for_model, "handlers must never fabricate evidence ids"
@@ -139,7 +136,7 @@ def test_contract_every_handler_emits_one_engine_event_even_on_error():
     """Contract: success AND error paths emit exactly one engine_event each."""
     from hunter.agent.tools import build_registry
 
-    registry = build_registry("basic")
+    registry = build_registry()
     ctx, events = _ctx()
     registry.dispatch("http_request", {"method": "GET", "url": "http://127.0.0.1:9/"}, ctx)
     assert sum(1 for k, p in events if k == "engine_event" and p.get("tool") == "http_request") == 1
@@ -189,7 +186,7 @@ def test_contract_unknown_tool_lists_available():
     from hunter.agent.tools import build_registry
 
     ctx, _ = _ctx()
-    out = build_registry("basic").dispatch("sendTransaction", {}, ctx)
+    out = build_registry().dispatch("sendTransaction", {}, ctx)
     assert out.ok is False and out.code == "tool.tool_not_found"
     assert "http_request" in out.result_for_model
-    assert "sendTransaction" not in {s.name for s in build_registry("basic").specs_for_tier("advanced")}
+    assert "sendTransaction" not in {s.name for s in build_registry().specs_for_tier("advanced")}

@@ -38,7 +38,6 @@ def _draft_card(name: str, *, flagged: bool = False):
         name=name,
         description="A concise curated doctrine card.",
         version="0.1.0",
-        min_tier="basic",
         tags=("curated", "verified-finding"),
         body="# Curated doctrine\n\nEvidence or nothing.",
         flagged=flagged,
@@ -177,7 +176,7 @@ def test_template_draft_is_canonical_and_valid():
     parsed = parse_skill_md(text, directory_id=draft.name)
     assert parsed.name == draft.name
     assert draft.version == "0.1.0"
-    assert draft.min_tier == "basic"
+    assert draft.min_tier is None  # no tiers
     assert "curated" in draft.tags and "verified-finding" in draft.tags
     assert len(draft.description) <= 60
     assert 0 < len(draft.body.splitlines()) <= 45

@@ -45,7 +45,7 @@ def _mock_rpc(result="0x1234", hits=None, status=200):
     return httpx.MockTransport(handler)
 
 
-def _ctx(transport=None, events=None, tier="basic"):
+def _ctx(transport=None, events=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -56,7 +56,7 @@ def _ctx(transport=None, events=None, tier="basic"):
     http = ScopedHttpClient(scope, transport=transport or _mock_rpc(), min_interval=0)
     return ToolContext(run_id="R-LADDER", ledger=Ledger(":memory:"), http=http, scope=scope,
                        target_url=ANVIL, emit=lambda k, p: events.append((k, dict(p))),
-                       config={"tier": tier, "chain_scope": [{"chain_id": 31337, "address": ADDR}]},
+                       config={"chain_scope": [{"chain_id": 31337, "address": ADDR}]},
                        state={}), events
 
 

@@ -276,7 +276,7 @@ def test_min_time_nudge_contains_slash50(tmp_path):
                 return ClassifiedError(reason="unknown")
 
         provider = FakeProvider([hold, release])
-        loop = AgentLoop(provider, build_registry("basic"), tier="basic", budget=budget)
+        loop = AgentLoop(provider, build_registry(), budget=budget)
         result = loop.run(ctx, "Audit the target.")
         assert result.finished is True
         held = provider.calls[1]["messages"][-1]

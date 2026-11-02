@@ -132,10 +132,10 @@ def test_render_config_browser_line_and_roundtrip(tmp_path):
     cfg = load_config(_write(tmp_path, default_text), env={}, home=tmp_path)
     assert cfg.agent.browser is False
 
-    browser_text = render_config({"agent": {"tier": "advanced", "browser": True}})
+    browser_text = render_config({"agent": {"tier": "orchestrator", "browser": True}})
     assert "browser: true" in browser_text
     cfg_on = load_config(_write(tmp_path, browser_text), env={}, home=tmp_path)
-    assert cfg_on.agent.tier == "advanced"
+    assert cfg_on.agent.tier == "orchestrator"
     assert cfg_on.agent.browser is True
 
 

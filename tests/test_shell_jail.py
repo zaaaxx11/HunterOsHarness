@@ -86,11 +86,11 @@ def test_readonly_outside_approve_lalu_jalan(shell):
     gate = make_approval_gate(shell["store"], ledger=shell["ledger"],
                               run_id=shell["run_id"], auto_allow=False, surface="repl")
     shell["ctx"].config["approval_gate"] = gate
-    blocked = build_registry("advanced").dispatch("shell_exec", {"command": cmd}, shell["ctx"])
+    blocked = build_registry().dispatch("shell_exec", {"command": cmd}, shell["ctx"])
     assert blocked.code == "approval.required", f"syarat: tanpa auto wajib required ({blocked.code})"
     rid = REQ_RE.search(blocked.result_for_model).group(0)
     assert shell["store"].decide(rid, "approved") is not None, "approve wajib ok"
-    ok = build_registry("advanced").dispatch("shell_exec", {"command": cmd}, shell["ctx"])
+    ok = build_registry().dispatch("shell_exec", {"command": cmd}, shell["ctx"])
     assert ok.code != "shell.cwd_outside_state", f"RED: argv-luar tak boleh hard-block cwd ({ok.code})"
     assert ok.ok is True, f"approve->runs wajib ok: {ok.code}"
 
@@ -102,11 +102,11 @@ def test_mutating_outside_butuh_approval_lalu_jalan(shell):
     gate = make_approval_gate(shell["store"], ledger=shell["ledger"],
                               run_id=shell["run_id"], auto_allow=True, surface="repl")
     shell["ctx"].config["approval_gate"] = gate
-    blocked = build_registry("advanced").dispatch("shell_exec", {"command": cmd}, shell["ctx"])
+    blocked = build_registry().dispatch("shell_exec", {"command": cmd}, shell["ctx"])
     assert blocked.code == "approval.required", f"mutating luar wajib required ({blocked.code})"
     rid = REQ_RE.search(blocked.result_for_model).group(0)
     assert shell["store"].decide(rid, "approved") is not None, "approve mutating wajib ok"
-    ok = build_registry("advanced").dispatch("shell_exec", {"command": cmd}, shell["ctx"])
+    ok = build_registry().dispatch("shell_exec", {"command": cmd}, shell["ctx"])
     assert ok.ok is True, f"mutating approve->runs wajib ok: {ok.code}"
 
 
@@ -126,7 +126,7 @@ def test_readonly_inside_ok_dan_cwd_tetap_dijaga(shell):
     assert classify_shell_command("cat notes.txt") == "readonly", "syarat readonly"
     assert _strict_gate(shell)("shell_exec", {"command": "cat notes.txt"}, shell["ctx"]) is None, \
         "dalam-jail wajib auto None"
-    ok = build_registry("advanced").dispatch(
+    ok = build_registry().dispatch(
         "shell_exec", {"command": py_command("print(open('notes.txt').read())")}, shell["ctx"])
     assert ok.ok is True and len(ok.result_for_model) <= _SHELL_OUTPUT_LIMIT + 1200, "dalam-jail jalan+cap"
     assert _shell_cwd({"cwd": "..", "command": "pwd"}, shell["ctx"])[1] == "shell.cwd_outside_state", \

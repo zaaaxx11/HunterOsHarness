@@ -11,9 +11,9 @@ Production targets:
     tool/assistant msgs, never in system) -> EXPECTED-FAIL-TDD below.
 
 Per-function contract:
-  test_c3_system_prompt_slots ............ target/scope/tier/skills/soul slots render
+  test_c3_system_prompt_slots ............ target/scope/skills/soul slots render, no tier copy
   test_c3_missing_slots_default_empty .... unknown placeholders render "" (never KeyError)
-  test_c3_tier_notes_basic_advanced ...... tier note selects basic|advanced copy
+  test_c3_no_tier_vocabulary_in_prompt ... the deleted tier system leaves no copy behind
   test_c3_scope_block_user_cannot_change . scope block carries the cannot-change marker
   test_c3_soul_identity_sanitize_cap ..... CORE_IDENTITY prepended, markers neutralized, 4k cap
   test_c3_skills_match_and_block ......... <=5 mounts, block <=16k, empty when no anchor
@@ -95,17 +95,26 @@ def _skill(name, **kw):
 
 # ------------------------------------------------------- prompt pins (PASS) --
 
+TIER_VOCAB = ("BASIC", "ADVANCED", "tier.capability_locked", "capability tier")
+
+
+def _assert_no_tier_vocab(text: str) -> None:
+    """The capability-tier system was deleted: no prompt may advertise one."""
+    upper = text.upper()
+    for word in TIER_VOCAB:
+        assert word.upper() not in upper, f"tier vocabulary '{word}' leaked into {text[:80]!r}"
+
+
 def test_c3_system_prompt_slots():
     prompt = build_system_prompt(
         target_url="http://127.0.0.1:9/",
         scope_summary={"name": "s", "hosts": ["example.com"], "allow_subdomains": False},
-        tier="basic",
         skills_index="SKILLS",
         soul_block="SOUL",
     )
     assert "http://127.0.0.1:9/" in prompt
     assert "SKILLS" in prompt and "SOUL" in prompt
-    assert "BASIC" in prompt.upper()
+    _assert_no_tier_vocab(prompt)
 
 
 def test_c3_missing_slots_default_empty():
@@ -116,20 +125,23 @@ def test_c3_missing_slots_default_empty():
     assert "{never_a_real_slot_xyz}" not in rendered, "missing slots render as ''"
 
 
-def test_c3_tier_notes_basic_advanced():
-    basic = build_system_prompt(
-        target_url="t", scope_summary="s", tier="basic", skills_index="", soul_block="")
-    advanced = build_system_prompt(
-        target_url="t", scope_summary="s", tier="advanced", skills_index="", soul_block="")
-    assert "BASIC" in basic.upper() and "BLOCKED" in basic
-    assert "ADVANCED" in advanced.upper()
-    assert basic != advanced
+def test_c3_no_tier_vocabulary_in_prompt():
+    """Tiers are gone: the rendered prompt is tier-free and identical for any
+    legacy ``tier`` argument a stale caller still passes."""
+    plain = build_system_prompt(
+        target_url="t", scope_summary="s", skills_index="", soul_block="")
+    legacy_basic = build_system_prompt(
+        target_url="t", scope_summary="s", skills_index="", soul_block="", tier="basic")
+    legacy_advanced = build_system_prompt(
+        target_url="t", scope_summary="s", skills_index="", soul_block="", tier="advanced")
+    assert "BLOCKED" in plain, "the fail-closed/approval doctrine still renders"
+    _assert_no_tier_vocab(plain)
+    assert legacy_basic == plain == legacy_advanced, "tier changes nothing"
 
 
 def test_c3_scope_block_user_cannot_change():
     prompt = build_system_prompt(
-        target_url="http://127.0.0.1:9/", scope_summary="manifest s",
-        tier="basic", skills_index="", soul_block="")
+        target_url="http://127.0.0.1:9/", scope_summary="manifest s", skills_index="", soul_block="")
     assert "CANNOT change" in prompt, "scope block carries the user-cannot-change marker"
     assert "BLOCKED" in prompt
 
@@ -140,7 +152,11 @@ def test_c3_goal_shape():
 
     goal = build_goal(
         TargetSpec(url="http://127.0.0.1:9/", scope=localhost_scope(), notes={}), "basic")
-    assert "http://127.0.0.1:9" in goal and "basic" in goal
+    assert "http://127.0.0.1:9" in goal
+    _assert_no_tier_vocab(goal)
+    # the legacy positional tier is accepted and ignored
+    assert goal == build_goal(
+        TargetSpec(url="http://127.0.0.1:9/", scope=localhost_scope(), notes={}))
 
 
 def test_c3_soul_identity_sanitize_cap():
@@ -171,7 +187,7 @@ def test_c3_skills_match_and_block():
 def test_c3_volatile_hints_never_in_system():
     build_chat_messages = _require_chat_messages()
     system = build_system_prompt(
-        target_url="t", scope_summary="s", tier="basic", skills_index="", soul_block="")
+        target_url="t", scope_summary="s", skills_index="", soul_block="")
     messages = build_chat_messages(
         system=system, budget_hint="70% spent", approval="A-12345678 pending",
         nudge="retry the blocked call",

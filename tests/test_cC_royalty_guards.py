@@ -255,10 +255,10 @@ def test_royalty_quarantine_inert():
     from hunter.agent.skills import Skill, match_skills, render_block
 
     good = Skill(name="recon-basics", description="probe the target surface",
-                 version="1", min_tier="basic", tags=("recon",), source="bundled",
+                 version="1", tags=("recon",), source="bundled",
                  body="steps", quarantined=False, path="")
     bad = Skill(name="evil-card", description="probe the target surface",
-                version="1", min_tier="basic", tags=("recon",), source="user",
+                version="1", tags=("recon",), source="user",
                 body="steps", quarantined=True, path="")
     picked = match_skills("probe target", "probe target", [good, bad])
     assert good in picked and bad not in picked

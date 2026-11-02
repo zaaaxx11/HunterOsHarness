@@ -263,8 +263,7 @@ class ChatEngine:
                             name=str(scope_data.get("name", "chat-audit")),
                         ),
                         notes={},
-                    ),
-                    self._agent_tier(),
+                    )
                 )
             opening = self._audit_open(spec, goal_text=goal)
 
@@ -277,8 +276,7 @@ class ChatEngine:
                     from hunter.engine.base import TargetSpec
 
                     goal = build_goal(
-                        TargetSpec(url=spec["target"], scope=self._audit["ctx"].scope, notes={}),
-                        self._audit["tier"],
+                        TargetSpec(url=spec["target"], scope=self._audit["ctx"].scope, notes={})
                     )
                     out_text, result = self._audit_turn_result(goal)
                     parts = [opening, out_text]
@@ -328,6 +326,11 @@ class ChatEngine:
             )
 
     # -- conversational turns ------------------------------------------------------
+
+    def _agent_tier(self) -> str:
+        """DEPRECATED, compatibility only. There are no capability tiers left:
+        every tool is reachable and approval-danger tools stay behind the gate."""
+        return "advanced"
 
     def _build_history(self) -> list[dict[str, Any]]:
         """The conversational view of the session (M8 F8):
@@ -635,12 +638,8 @@ class ChatEngine:
         )
         http = ScopedHttpClient(scope)
         budget = self._build_budget()
-        # The audit tier follows the configured agent.tier (M3 invariant: free
-        # text can never escalate it) — an operator must explicitly opt into
-        # "advanced" for approval-danger tools. When they are in tier, the
-        # approval gate below mediates every call; they are reachable exactly
-        # through that gate, never around it.
-        tier = self._agent_tier()
+        # No capability tier: every tool is reachable, and approval-danger
+        # tools are mediated by the approval gate below — never around it.
         from hunter.agent.approval import ApprovalStore, make_approval_gate
         from hunter.agent.tools_base import ToolContext
 
@@ -675,7 +674,6 @@ class ChatEngine:
             # chain and discard the returned Event, exactly as before.
             emit=_append_event,
             config={
-                "tier": tier,
                 "browser_enabled": bool(getattr(getattr(self.config, "agent", None), "browser", False)),
                 "browser_cloak": bool(
                     getattr(getattr(self.config, "agent", None), "browser_cloak", True)
@@ -703,7 +701,6 @@ class ChatEngine:
             "http": http,
             "ctx": tool_ctx,
             "budget": budget,
-            "tier": tier,
             "target": target,
             "phase_machine": phase_machine,
         }
@@ -765,10 +762,8 @@ class ChatEngine:
             # path unreachable here.
             cast("ChatProvider", self.provider),
             build_registry(
-                audit["tier"],
                 browser_enabled=bool(audit["ctx"].config.get("browser_enabled", False)),
             ),
-            tier=audit["tier"],
             budget=audit["budget"],
         )
         try:
@@ -852,13 +847,6 @@ class ChatEngine:
                 min_wall_seconds=getattr(cfg.budget, "min_wall_seconds", 0.0),
             )
         return RunBudget()
-
-    def _agent_tier(self) -> str:
-        """Map config agent.tier (basic|orchestrator|...) onto loop tiers
-        (basic|advanced): anything pinned above basic is an active audit."""
-        tier = self.config.agent.tier if self.config is not None else "basic"
-        return "basic" if tier == "basic" else "advanced"
-
 
 # --------------------------------------------------------------------------
 # REPL surface

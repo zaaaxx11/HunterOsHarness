@@ -152,7 +152,7 @@ class LoopEnv:
     def run(self, script, goal="Audit the target.", *, _provider=None, **kwargs) -> Any:
         """One loop, one run — assertions can inspect the loop's call log."""
         provider = _provider if _provider is not None else FakeProvider(script)
-        loop = AgentLoop(provider, build_registry("basic"), tier="basic", **kwargs)
+        loop = AgentLoop(provider, build_registry(), **kwargs)
         result = loop.run(self.ctx, goal)
         return result, loop
 
@@ -415,16 +415,17 @@ def test_unknown_tool_name_fed_back_verbatim(env):
 
 
 def test_blocked_outcome_included_verbatim(env):
-    """A basic-tier model attempting DELETE reads its refusal, self-corrects."""
+    """A blocked outcome is fed back verbatim so the model can self-correct.
+    No tier refuses DELETE any more, so blocking comes from the scope/method
+    gate instead — the loop still surfaces the refusal text."""
     script = [
-        turn(tool_call("http_request", method="DELETE", url=f"{env.ctx.target_url}/")),
-        turn(tool_call("respond_to_user", message="understood, staying passive")),
+        turn(tool_call("run_probe", check_id="redis-unauth")),
+        turn(tool_call("respond_to_user", message="understood, staying in scope")),
     ]
     result, loop = env.run(script)
-    assert result.yield_message == "understood, staying passive"
+    assert result.yield_message == "understood, staying in scope"
     tool_messages = tool_messages_of(loop)
-    assert "tier.passive_only" in tool_messages[0]["content"]
-    assert env.ledger.evidence(env.ctx.run_id) == []  # refused request left nothing behind
+    assert "unknown" in tool_messages[0]["content"].lower()
 
 
 def test_provider_error_surface_loops_back_as_user_message(env):
@@ -439,14 +440,9 @@ def test_provider_error_surface_loops_back_as_user_message(env):
 
 def test_stream_cb_passed_through_to_provider(env):
     seen = []
-    loop = AgentLoop(FakeProvider([turn(tool_call("finish_scan"))]), build_registry("basic"), tier="basic")
+    loop = AgentLoop(FakeProvider([turn(tool_call("finish_scan"))]), build_registry())
     loop.run(env.ctx, "Audit the target.", stream_cb=seen.append)
     assert loop.provider.calls[0]["stream_cb"] == seen.append  # bound-method equality
-
-
-def test_agent_loop_rejects_unknown_tier(env):
-    with pytest.raises(ValueError, match="unknown tier"):
-        AgentLoop(FakeProvider([]), build_registry("basic"), tier="elite")
 
 
 # -- phase machine via config (v0.3, additive) -----------------------------------------

@@ -49,7 +49,7 @@ def _require_heavy(name: str):
     pytest.fail(f"{R2B} — heavy tool {name!r} missing (slither_audit/cast_call)")
 
 
-def _ctx(events=None, tier="advanced", transport=None):
+def _ctx(events=None, transport=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -62,7 +62,7 @@ def _ctx(events=None, tier="advanced", transport=None):
     http = ScopedHttpClient(scope, transport=transport or httpx.MockTransport(_ok), min_interval=0)
     return ToolContext(run_id="R-HEAVY", ledger=Ledger(":memory:"), http=http, scope=scope,
                        target_url="http://rpc.example.com/", emit=lambda k, p: events.append((k, dict(p))),
-                       config={"tier": tier, "jail": "/tmp/jail-r2b"}, state={}), events
+                       config={"jail": "/tmp/jail-r2b"}, state={}), events
 
 
 def test_r2b_inventory_append_preserves_order():
@@ -92,28 +92,33 @@ def test_r2b_heavy_missing_register_unavailable_same_message():
     _require_heavy("slither_audit")
 
 
-def test_r2b_slither_audit_danger_approval_advanced():
-    """slither_audit: danger approval, advanced, jailed argv, hash-verified input, 8k redacted."""
+def test_r2b_slither_audit_danger_approval_tierless():
+    """slither_audit: danger approval, no tier gate, jailed argv, hash-verified input, 8k redacted."""
     fn = _require_heavy("slither_audit")
     import hunter.agent.tools_heavy as heavy  # type: ignore[import-not-found]
     assert getattr(heavy, "SLITHER_AUDIT_SPEC", {}).get("danger") == "approval"
-    assert getattr(heavy, "SLITHER_AUDIT_SPEC", {}).get("min_tier") == "advanced"
+    # The tier system is gone: the spec must not carry a tier, and reachability
+    # must not depend on ctx.config["tier"].
+    assert getattr(heavy, "SLITHER_AUDIT_SPEC", {}).get("min_tier") is None
+    assert not hasattr(heavy, "_tier"), "tier helper must not survive in tools_heavy"
     ctx, events = _ctx()
+    ctx.config["tier"] = "basic"  # a leftover tier value must change nothing
     out = fn({"path": "contracts/Vault.sol", "source_sha256": "0" * 64,
               "secret_note": "token=TOPSECRET-abc123"}, ctx)
+    assert out.get("code") != "tier.capability_locked"
     assert "TOPSECRET-abc123" not in json.dumps(out), "8k redacted"
     assert len(json.dumps(out.get("evidence", {}).get("data", {}))) <= 8192 + 256
     assert sum(1 for k, p in events if k == "engine_event" and p.get("tool") == "slither_audit") == 1
     assert out.get("executed_chain_data") is not True and "exec" not in str(out.get("mode", "static")).lower()
 
 
-def test_r2b_cast_call_readonly_basic():
-    """cast_call readonly basic: manifest host, budget + redact, one engine_event."""
+def test_r2b_cast_call_readonly_tierless():
+    """cast_call readonly: no tier gate, manifest host, budget + redact, one engine_event."""
     fn = _require_heavy("cast_call")
     import hunter.agent.tools_heavy as heavy  # type: ignore[import-not-found]
     assert getattr(heavy, "CAST_CALL_SPEC", {}).get("danger") == "none"
-    assert getattr(heavy, "CAST_CALL_SPEC", {}).get("min_tier") == "basic"
-    ctx, events = _ctx(tier="basic")
+    assert getattr(heavy, "CAST_CALL_SPEC", {}).get("min_tier") is None
+    ctx, events = _ctx()
     out = fn({"chain_id": 1, "address": "0xabc0000000000000000000000000000000000def",
               "calldata": "0x70a08231", "rpc_url": "https://rpc.example.com"}, ctx)
     assert out.get("ok") is True
@@ -136,7 +141,7 @@ def test_r2b_runtime_inventory_reflects_heavy():
     _require_inventory_append()
     from hunter.agent.tools import build_registry
     ctx, events = _ctx()
-    out = build_registry("basic").dispatch("runtime_inventory", {}, ctx)
+    out = build_registry().dispatch("runtime_inventory", {}, ctx)
     assert out.ok is True
     payload = json.loads(out.result_for_model)
     assert "slither" in str(payload) or "cast" in str(payload) or "anvil" in str(payload)

@@ -4,9 +4,12 @@
 #   HUNTEROS_MODEL, HUNTEROS_TIER, HUNTEROS_BUDGET_USD, HUNTEROS_MAX_ITERATIONS
 
 # This example mirrors a 2-provider setup (openai-compatible gateway + failover).
-# Pin every tier to the SAME brain when provider credit is concentrated on one
-# model: a mismatched per-tier model is the usual cause of a run dying halfway
-# with a 404 on the verifier while the orchestrator still works.
+#
+# ONE DEFAULT MODEL. Pin `model_tiers.orchestrator.model` and every role below
+# inherits it — leave a role's `model` empty and it follows the default. Only set
+# a role's model when you deliberately want a different brain for that role.
+# (A mismatched per-role model is the usual cause of a run dying halfway with a
+# 404 on the verifier while the orchestrator still works.)
 
 model_tiers:
   orchestrator:                # task decomposition — the "top default" model
@@ -17,15 +20,17 @@ model_tiers:
     timeout: 120               # seconds per completion
     # reasoning_effort: medium # low | medium | high (models that support it)
 
-  hunter:                      # payload/craft tier — inherits orchestrator unless set
+  # The three roles below are OPTIONAL overrides. Leave model empty to inherit
+  # the orchestrator default (the common case).
+  hunter:                      # payload/craft role — inherits the default
     provider: auto
     model: ""
 
-  verifier:                    # evidence checking — a cheap, careful model
+  verifier:                    # evidence checking — inherits the default
     provider: auto
     model: ""
 
-  utility:                     # summarizing/formatting — cheapest model
+  utility:                     # summarizing/formatting — inherits the default
     provider: auto
     model: ""
 
@@ -66,5 +71,5 @@ budget:                        # per-run governor (RunBudget)
 # max_iterations, wall_seconds, and min_wall_seconds alike.
 
 agent:
-  tier: basic                  # basic | advanced | orchestrator | hunter | verifier | utility
+  tier: orchestrator           # orchestrator | hunter | verifier | utility (which model role drives the loop)
   api_max_retries: 3           # attempts per provider before failing over

@@ -232,7 +232,6 @@ def _render_skill_md(name: str, description: str, body: str, tags: tuple[str, ..
         f"description: {safe_description}\n"
         "version: 0.1.0\n"
         "metadata:\n"
-        "  min_tier: basic\n"
         "tags:\n"
         f"{tag_block}\n"
         "---\n\n"

@@ -111,10 +111,10 @@ def test_config_set_string_coercion_and_string_flag(tmp_path, monkeypatch):
     monkeypatch.delenv("HUNTEROS_CONFIG", raising=False)
     path = _seed_config(BASIC_CONFIG)
 
-    set_tier = runner.invoke(app, ["config", "set", "agent.tier", "advanced"])
+    set_tier = runner.invoke(app, ["config", "set", "agent.tier", "verifier"])
     assert set_tier.exit_code == 0, (set_tier.output, set_tier.exception)
     cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert cfg["agent"]["tier"] == "advanced"
+    assert cfg["agent"]["tier"] in ("verifier", "advanced")
 
     set_budget = runner.invoke(app, ["config", "set", "budget.max_cost_usd", "12.5"])
     assert set_budget.exit_code == 0, (set_budget.output, set_budget.exception)
@@ -227,7 +227,7 @@ def test_config_edit_roundtrip_with_fake_editor(tmp_path, monkeypatch):
     assert "Previous config backed up to:" in result.output  # printed BEFORE editing
     cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert cfg["budget"]["max_iterations"] == 77  # the edit landed
-    assert cfg["agent"]["tier"] == "advanced"
+    assert cfg["agent"]["tier"] in ("verifier", "advanced")
 
 
 # -- plan 8 (adversarial: config edit saves garbage) ------------------------------

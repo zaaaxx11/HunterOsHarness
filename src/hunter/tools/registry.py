@@ -99,6 +99,9 @@ def get_engine(
     if name == "llm":
         from hunter.engine.llm import LLMEngine
 
+        # No tier is passed: `LLMEngine` runs every tool the registry holds.
+        # (The old basic/advanced capability split was removed — a capability
+        # must never be decided by a config tier name.)
         return LLMEngine(
             provider if provider is not None else _default_llm_provider(config),
             budget=budget,

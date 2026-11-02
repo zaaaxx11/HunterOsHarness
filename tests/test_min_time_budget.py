@@ -151,7 +151,7 @@ def test_loop_holds_finish_scan_until_min_time(env):
         return turn(tool_call("finish_scan"))
 
     provider = FakeProvider([hold, release])
-    loop = AgentLoop(provider, build_registry("basic"), tier="basic", budget=budget)
+    loop = AgentLoop(provider, build_registry(), budget=budget)
     result = loop.run(env, "Audit the target.")
     assert result.finished is True
     assert "findings: 0" in result.summary
@@ -172,7 +172,7 @@ def test_loop_holds_respond_to_user_until_min_time(env):
         return turn(tool_call("respond_to_user", message="need creds to test /admin"))
 
     provider = FakeProvider([hold, release])
-    loop = AgentLoop(provider, build_registry("basic"), tier="basic", budget=budget)
+    loop = AgentLoop(provider, build_registry(), budget=budget)
     result = loop.run(env, "Audit the target.")
     assert result.yield_message == "need creds to test /admin"
     assert result.finished is False
@@ -201,7 +201,7 @@ def test_loop_min_time_nudges_bounded_at_50(env):
 
         script.append(_held)
     provider = FakeProvider(script)
-    loop = AgentLoop(provider, build_registry("basic"), tier="basic", budget=budget, max_time_nudges=50)
+    loop = AgentLoop(provider, build_registry(), budget=budget, max_time_nudges=50)
     result = loop.run(env, "Audit the target.")
     # the first 50 lifecycle calls were held with bounded nudges...
     final_tool = [m for m in provider.calls[-1]["messages"] if m.get("role") == "tool"]
@@ -223,7 +223,7 @@ def test_nudge_text_names_minutes_left(env):
         return turn(tool_call("respond_to_user", message="done"))
 
     provider = FakeProvider([spend_five_of_ten_minutes, release])
-    loop = AgentLoop(provider, build_registry("basic"), tier="basic", budget=budget)
+    loop = AgentLoop(provider, build_registry(), budget=budget)
     result = loop.run(env, "Audit the target.")
     held = provider.calls[1]["messages"][-1]
     assert "time left 1m" in held["content"]

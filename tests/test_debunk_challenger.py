@@ -48,7 +48,7 @@ def tool_env(vault, tmp_path):
         emit=lambda kind, payload: events.append((kind, dict(payload))),
         config={"tier": "advanced"},
     )
-    registry = build_registry("advanced")
+    registry = build_registry()
     try:
         yield ChallengerEnv(ctx=ctx, ledger=ledger, registry=registry, vault=vault)
     finally:

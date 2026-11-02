@@ -36,6 +36,10 @@ SENTINEL = "m6-typed-secret-never-returned-314159"
 def sandbox_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # No real drop-in tool plugins in the count pins below: the point a plugin
+    # search dir at nothing so ~/.hunter/tools (the operator's own install)
+    # can never change the built-in tool surface under test.
+    monkeypatch.setenv("HUNTEROS_TOOL_DIRS", str(tmp_path / "no-tool-plugins"))
     monkeypatch.delenv("HUNTER_STATE_DIR", raising=False)
     monkeypatch.delenv("HUNTEROS_CONFIG", raising=False)
 
@@ -290,7 +294,7 @@ def _close_env(env: BrowserEnv) -> None:
 def _registry(*, enabled: bool, module: Any = None):
     from hunter.agent.tools import build_registry
 
-    return build_registry("basic", browser_enabled=enabled, playwright_module=module)
+    return build_registry(browser_enabled=enabled, playwright_module=module)
 
 
 def _browser_action_data(outcome: Any) -> list[dict[str, Any]]:
@@ -304,16 +308,16 @@ def test_registry_adds_exact_browser_tools_only_when_available():
     from hunter.agent.tools import build_registry
 
     module = FakePlaywrightModule()
-    default_registry = build_registry("basic")
-    # M8 drift: runtime_inventory joins the basic tier (15 → 16).
-    assert len(default_registry.schemas_for_tier("basic")) == 19
+    default_registry = build_registry()
+    # Flat tool surface (no capability tier): 23 built-in tools without a browser.
+    assert len(default_registry.schemas_for_tier("basic")) == 23
     assert not (BROWSER_NAMES & {s["function"]["name"] for s in default_registry.schemas_for_tier("basic")})
     assert module.drivers == []
 
-    registry = build_registry("basic", browser_enabled=True, playwright_module=module)
+    registry = build_registry(browser_enabled=True, playwright_module=module)
     schemas = registry.schemas_for_tier("basic")
     names = [schema["function"]["name"] for schema in schemas]
-    assert len(names) == 23
+    assert len(names) == 27
     assert set(names) >= BROWSER_NAMES
     assert names == sorted(names)
 
@@ -338,7 +342,8 @@ def test_registry_adds_exact_browser_tools_only_when_available():
     for name, (properties, required) in expected.items():
         spec = registry.get(name)
         assert spec is not None
-        assert spec.min_tier == "basic"
+        # Flat surface: browser tools carry no tier gate at all.
+        assert spec.min_tier is None
         schema = next(item["function"] for item in schemas if item["function"]["name"] == name)
         parameters = schema["parameters"]
         assert parameters["properties"] == properties
@@ -587,7 +592,7 @@ def test_type_never_echoes_or_records_typed_secret(tmp_path):
                 return SimpleNamespace(reason="unknown")
 
         provider = TypeProvider()
-        result = AgentLoop(provider, registry, tier="basic").run(env.ctx, "type the value")
+        result = AgentLoop(provider, registry).run(env.ctx, "type the value")
         assert result.yield_message == "typed"
         all_messages = json.dumps(provider.calls)
         assert SENTINEL not in all_messages

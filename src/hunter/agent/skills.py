@@ -45,13 +45,13 @@ class Skill:
     name: str
     description: str
     version: str
-    min_tier: str
     tags: tuple[str, ...]
     source: str
     body: str
     quarantined: bool
     path: str
     hunter: dict[str, Any] = field(default_factory=dict)
+    min_tier: str | None = None  # DEPRECATED, ignored — skills are not tier-gated.
 
 
 @dataclass(frozen=True)
@@ -109,9 +109,6 @@ def parse_skill_md(text: str, *, directory_id: str, source: str = "user", path: 
         metadata = {}
     if not isinstance(metadata, dict):
         return None
-    min_tier = metadata.get("min_tier", "basic")
-    if not isinstance(min_tier, str) or min_tier not in {"basic", "advanced"}:
-        return None
     raw_tags = front.get("tags")
     if raw_tags is None:
         raw_tags = ()
@@ -145,7 +142,6 @@ def parse_skill_md(text: str, *, directory_id: str, source: str = "user", path: 
         name=name,
         description=description,
         version=version,
-        min_tier=min_tier,
         tags=tags,
         source=source,
         body=body,
@@ -305,7 +301,7 @@ def match_skills(
     query = set(_distinct((*tokenize(target), *tokenize(instruction))))
     available = [skill for skill in skills if not skill.quarantined]
     scored = [(skill, _score(skill, query)) for skill in available]
-    # A matched topic should not mount advanced-only cards alongside the
+    # A matched topic should not mount unrelated cards alongside the
     # canonical basic evidence/recon pair when the query is the generated goal.
     if target and any(skill.name == "verification-ladder" and score >= 2 for skill, score in scored):
         scored = [(skill, score) for skill, score in scored if skill.name != "eliminate-trace-walkthrough"]
@@ -326,7 +322,7 @@ def match_skills(
 
 
 def _card_text(skill: Skill) -> str:
-    lines = ["---", f"name: {skill.name}", f"description: {skill.description}", f"version: {skill.version}", "metadata:", f"  min_tier: {skill.min_tier}"]
+    lines = ["---", f"name: {skill.name}", f"description: {skill.description}", f"version: {skill.version}"]
     if skill.tags:
         lines.append("tags:")
         lines.extend(f"- {tag}" for tag in skill.tags)
@@ -409,11 +405,10 @@ def write_skill(draft: Any, *, home: Path | None = None) -> Path:
         raise HunterError("skills.exists", "config", f"skill '{name}' already exists", hint="edit the existing card instead")
     description = str(getattr(draft, "description", "")).strip()
     version = str(getattr(draft, "version", "0.1.0"))
-    min_tier = str(getattr(draft, "min_tier", "basic"))
     tags = tuple(getattr(draft, "tags", ()) or ())
     body = str(getattr(draft, "body", "")).rstrip()
     quarantined = bool(getattr(draft, "flagged", False))
-    lines = ["---", f"name: {name}", f"description: {description}", f"version: {version}", "metadata:", f"  min_tier: {min_tier}", "tags:"]
+    lines = ["---", f"name: {name}", f"description: {description}", f"version: {version}", "tags:"]
     lines.extend(f"- {tag}" for tag in tags)
     if quarantined:
         lines.append("quarantined: true")

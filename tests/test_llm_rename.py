@@ -101,6 +101,8 @@ def test_tier_vocabulary_and_normalize():
         "planner": "orchestrator",
         "exploit": "hunter",
         "verify": "verifier",
+        "basic": "orchestrator",
+        "advanced": "orchestrator",
     }
     assert normalize_tier("planner") == "orchestrator"
     assert normalize_tier("exploit") == "hunter"
@@ -257,7 +259,7 @@ def test_render_and_example_yaml_new_vocabulary(tmp_path):
         assert f"\n  {tier}:" in text
     assert "payload/craft tier — inherits orchestrator unless set" in text
     assert "inherits planner" not in text
-    assert "basic | advanced | orchestrator | hunter | verifier | utility" in text
+    assert "orchestrator | hunter | verifier | utility" in text
     path = tmp_path / "rendered.yaml"
     path.write_text(text, encoding="utf-8")
     assert set(load_config(path, env={}, home=tmp_path).model_tiers) == set(TIERS)

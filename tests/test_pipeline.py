@@ -196,7 +196,7 @@ def test_run_scan_all_seven_phases_and_gates_green(vault, tmp_path):
             assert starts[0].seq < closes[0].seq
             assert previous_close_seq < starts[0].seq, "phases must open in rank order"
             previous_close_seq = closes[0].seq
-        # engine-sourced classification with the full PROBE_TIERS lane map
+        # engine-sourced classification with the full KNOWN_PROBES lane map
         classifications = [e for e in events if e.kind_value() == "classification_recorded"]
         assert len(classifications) == 1
         assert classifications[0].payload["source"] == "engine"

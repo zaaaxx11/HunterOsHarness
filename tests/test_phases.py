@@ -502,7 +502,7 @@ def test_observe_ignores_early_probe_wrapper_then_transitions_on_engine_probe(tm
     assert payload["source"] == "engine"
     lanes = {row["lane"] for row in payload["classes"]}
     assert lanes == {"passive", "active"}
-    assert len(payload["classes"]) == 12  # all PROBE_TIERS checks classified
+    assert len(payload["classes"]) == 12  # all KNOWN_PROBES checks classified
 
 
 def test_observe_ignores_detail_events_once_hunting(tmp_path):
@@ -567,7 +567,7 @@ def test_engine_run_done_closes_recon_records_classification_opens_hunting(tmp_p
     classification = next(e for e in ledger.events(RUN) if e.kind_value() == "classification_recorded")
     check_ids = [row["check_id"] for row in classification.payload["classes"]]
     assert check_ids[0] == "mock"  # the candidate's check id comes first
-    assert "reflected-xss" in check_ids  # + the PROBE_TIERS lanes
+    assert "reflected-xss" in check_ids  # + the KNOWN_PROBES lanes
     before = len(ledger.events(RUN))
     state.engine_run_done(result)  # already past recon: no-op
     assert len(ledger.events(RUN)) == before

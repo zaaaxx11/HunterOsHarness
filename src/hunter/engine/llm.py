@@ -61,11 +61,10 @@ class LLMEngine:
         self,
         provider: ChatProvider | None = None,
         *,
-        tier: str = "basic",
+        tier: str | None = None,  # DEPRECATED, ignored: there is no capability tier.
         budget: RunBudget | None = None,
     ) -> None:
         self._provider = provider
-        self.tier = tier
         self._budget = budget
 
     # -- EngineDriver ------------------------------------------------------------
@@ -76,7 +75,6 @@ class LLMEngine:
             phases=["brief", "audit", "finish"],
             notes={
                 "brain": getattr(self._provider, "name", "none") if self._provider else "none",
-                "tier": self.tier,
                 "strategy": "governed-agent-loop",
             },
         )
@@ -116,7 +114,6 @@ class LLMEngine:
             emit=ctx.emit,
             config={
                 **ctx.config,
-                "tier": self.tier,
                 "browser_enabled": browser_enabled,
                 "hunt_permission": True,
             },
@@ -138,14 +135,13 @@ class LLMEngine:
                     auto_allow=True,
                 )
         try:
-            goal = build_goal(target, self.tier)
-            registry = build_registry(self.tier, browser_enabled=browser_enabled)
+            goal = build_goal(target)
+            registry = build_registry(browser_enabled=browser_enabled)
             # Delegation needs the provider and the full registry in the tool
             # context: a child AgentLoop is built from these.  Both stay inside
             # the governed context — the model still cannot reach them directly.
             tool_ctx.config.setdefault("provider", self._provider)
             tool_ctx.config.setdefault("registry", registry)
-            tool_ctx.config.setdefault("tier", self.tier)
             tool_ctx.config.setdefault("delegate_depth", 0)
             # The http_request auto-fallback needs to know a browser is allowed
             # before it pays the cost of launching one.
@@ -153,7 +149,6 @@ class LLMEngine:
             loop = AgentLoop(
                 self._provider,
                 registry,
-                tier=self.tier,
                 budget=self._budget,
                 interrupt_check=ctx.config.get("interrupt_check"),
             )

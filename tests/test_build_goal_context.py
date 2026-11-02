@@ -47,7 +47,12 @@ def test_build_goal_none_returns_original_style(make_ledger):
     goal = build_goal(target, "basic")
     assert "Ledger context" not in goal
     assert "http://127.0.0.1:9" in goal
-    assert "basic" in goal
+    # capability tiers were deleted: the legacy positional ``tier`` is accepted
+    # for call-site compatibility but must change nothing in the goal text.
+    assert "basic" not in goal.lower()
+    assert "tier" not in goal.lower()
+    assert goal == build_goal(target)
+    assert goal == build_goal(target, "advanced")
 
 
 def test_build_goal_with_ledger_candidate(make_ledger):
@@ -61,3 +66,6 @@ def test_build_goal_with_ledger_candidate(make_ledger):
     # finding count present
     assert "Findings: 1 total" in goal
     assert "candidate=1" in goal or "candidate: 1" in goal or "candidate 1" in goal
+    assert goal == build_goal(
+        target, "advanced", ledger=led, run_id="r1"
+    ), "a legacy tier argument never changes the ledger context"

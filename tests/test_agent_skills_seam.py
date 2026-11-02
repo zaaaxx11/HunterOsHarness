@@ -107,7 +107,7 @@ def test_skill_selector_extension_point_mounts_custom_block(monkeypatch, tmp_pat
 
             # A real AgentLoop turn mounts the sentinel in the system prompt.
             provider = FakeProvider([_yield_turn()])
-            loop = AgentLoop(provider, build_registry("basic"), tier="basic")
+            loop = AgentLoop(provider, build_registry())
             loop.run(ctx, "audit the target")
             system = provider.calls[0]["messages"][0]
             assert system["role"] == "system"

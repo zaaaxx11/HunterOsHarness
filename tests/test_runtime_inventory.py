@@ -89,7 +89,7 @@ def test_runtime_inventory_tool_returns_model_json(env, monkeypatch):
         "hunter.agent.inventory.shutil.which",
         lambda name: f"C:/fake-bin/{name}.exe",
     )
-    outcome = build_registry("basic").dispatch("runtime_inventory", {}, ctx)
+    outcome = build_registry().dispatch("runtime_inventory", {}, ctx)
     assert outcome.ok is True, outcome.result_for_model
     payload = json.loads(outcome.result_for_model)
     assert set(payload) == {"available", "missing", "platform"}
@@ -114,7 +114,7 @@ def test_inventory_cached_and_which_seamed(env, monkeypatch):
         return None if name == "masscan" else f"C:/fake-bin/{name}.exe"
 
     monkeypatch.setattr("hunter.agent.inventory.shutil.which", counting_which)
-    registry = build_registry("basic")
+    registry = build_registry()
     first = registry.dispatch("runtime_inventory", {}, ctx)
     second = registry.dispatch("runtime_inventory", {}, ctx)
     assert first.ok is True and second.ok is True

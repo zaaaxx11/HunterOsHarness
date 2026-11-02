@@ -277,8 +277,8 @@ def render_config(data: Mapping[str, Any] | None) -> str:
     # M11 fix: EVERY agent key renders (browser_cloak used to be silently
     # dropped on rewrite — a latent data-loss bug), plus the M11 scope keys.
     lines.append("agent:")
-    lines.append(f"  tier: {_scalar(agent.get('tier', 'basic'))}"
-                 "                  # basic | advanced | orchestrator | hunter | verifier | utility")
+    lines.append(f"  tier: {_scalar(agent.get('tier', 'orchestrator'))}"
+                 "           # orchestrator | hunter | verifier | utility (model role)")
     lines.append(f"  api_max_retries: {_scalar(agent.get('api_max_retries', 3))}"
                  "           # attempts per provider before failing over")
     lines.append(f"  browser: {_scalar(agent.get('browser', False))}")

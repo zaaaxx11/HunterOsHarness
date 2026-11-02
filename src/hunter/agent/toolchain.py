@@ -96,17 +96,27 @@ _DEFAULT_TIMEOUT_S = 180
 _RESOLVE_CACHE: dict[str, str | None] | None = None
 
 
+#: Set by :func:`reset_resolve_cache` so the next ``_resolve`` is a miss
+#: even for a binary that previously resolved. ``shutil.which`` consults both
+#: ``$PATH`` and the current working directory, so the "PATH is read once per
+#: process" assumption below is only honest when the cache is scoped to the
+#: same working directory — a ``cd`` into a directory holding an executable
+#: makes a cached ``None`` stale.
+_RESOLVE_EPOCH = 0
+_RESOLVE_CACHE_EPOCH = -1
+
+
 def _resolve(binary: str) -> str | None:
-    """Absolute path to ``binary`` on PATH, or None. Resolved at call time.
+    """Absolute path to ``binary`` on PATH (or the CWD), or None.
 
     Cached per process: ``build_registry`` resolves the same binary once per
     tool that uses it (``forge`` twice, for build and test), and a PATH scan
-    is not free. The cache is keyed by binary name only — PATH is read once
-    per process, which is the same assumption ``shutil.which`` makes.
+    is not free. The cache is keyed by binary name only.
     """
-    global _RESOLVE_CACHE
-    if _RESOLVE_CACHE is None:
+    global _RESOLVE_CACHE, _RESOLVE_CACHE_EPOCH
+    if _RESOLVE_CACHE is None or _RESOLVE_CACHE_EPOCH != _RESOLVE_EPOCH:
         _RESOLVE_CACHE = {}
+        _RESOLVE_CACHE_EPOCH = _RESOLVE_EPOCH
     if binary not in _RESOLVE_CACHE:
         _RESOLVE_CACHE[binary] = shutil.which(binary)
     return _RESOLVE_CACHE[binary]
@@ -114,8 +124,10 @@ def _resolve(binary: str) -> str | None:
 
 def reset_resolve_cache() -> None:
     """Drop the resolution cache. Test seam — never called in production."""
-    global _RESOLVE_CACHE
+    global _RESOLVE_CACHE, _RESOLVE_EPOCH, _RESOLVE_CACHE_EPOCH
+    _RESOLVE_EPOCH += 1
     _RESOLVE_CACHE = None
+    _RESOLVE_CACHE_EPOCH = -1
 
 
 def _child_env(cwd: Path) -> dict[str, str]:
@@ -703,7 +715,6 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
             "required": [],
         },
         "handler": forge_build,
-        "min_tier": "basic",
         "danger": "none",
     },
     {
@@ -725,7 +736,6 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
             "required": [],
         },
         "handler": forge_test,
-        "min_tier": "basic",
         "danger": "none",
     },
     {
@@ -744,7 +754,6 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
             "required": [],
         },
         "handler": slither_run,
-        "min_tier": "advanced",
         "danger": "none",
     },
     {
@@ -766,7 +775,6 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["to", "rpc_url"],
         },
         "handler": cast_call,
-        "min_tier": "basic",
         "danger": "none",
     },
     {
@@ -788,7 +796,6 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["host"],
         },
         "handler": port_scan,
-        "min_tier": "advanced",
         "danger": "none",
     },
     {
@@ -809,7 +816,6 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["target"],
         },
         "handler": nuclei_scan,
-        "min_tier": "advanced",
         "danger": "none",
     },
     {
@@ -830,7 +836,6 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["target", "wordlist"],
         },
         "handler": gobuster_dir,
-        "min_tier": "advanced",
         "danger": "none",
     },
     {
@@ -851,7 +856,6 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
             "required": ["target"],
         },
         "handler": sqlmap_test,
-        "min_tier": "advanced",
         "danger": "none",
     },
 )
@@ -891,7 +895,6 @@ def register_toolchain_tools(registry: Any) -> Any:
                 description=spec["description"],
                 parameters=spec["parameters"],
                 handler=_wrap(spec["handler"]),
-                min_tier=spec["min_tier"],
                 danger=spec["danger"],
             )
         )

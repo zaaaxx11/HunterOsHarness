@@ -79,7 +79,7 @@ def test_defaults_without_file(tmp_path):
     assert cfg.budget.max_cost_usd == 5.0
     assert cfg.budget.max_iterations == 60
     assert cfg.budget.wall_seconds == 1800.0
-    assert cfg.agent.tier == "basic"
+    assert cfg.agent.tier == "orchestrator"  # one default role, no capability tier
     assert cfg.agent.api_max_retries == 3
 
 
@@ -308,5 +308,5 @@ def test_example_yaml_parses(tmp_path):
     assert set(cfg.model_tiers) == set(TIERS)
     assert cfg.model_tiers["orchestrator"].model == "claude-sonnet-4-5"
     assert cfg.providers["anthropic"].key_env == "ANTHROPIC_API_KEY"
-    assert cfg.agent.tier == "basic"
+    assert cfg.agent.tier == "orchestrator"  # one default role, no capability tier
     assert cfg.budget.max_cost_usd == 5.0

@@ -4,7 +4,7 @@ The long-form prompt template lives in ``hunter._data.prompts``
 (``audit_system_prompt.md``) and is loaded via ``importlib.resources`` with
 an inline fallback (no jinja dependency — plain ``str.format_map`` with
 exactly five placeholders: ``{target_url}``, ``{scope_block}``,
-``{tier_note}``, ``{skills_index}``, ``{soul_block}``).
+``{capability_note}``, ``{skills_index}``, ``{soul_block}``).
 
 Rendering uses :class:`_PromptDefaults` so a template is never a crash:
 placeholders the caller never supplied (old templates, renamed keys)
@@ -96,29 +96,21 @@ Closure discipline:
 - Read BLOCKED outcomes carefully: they name the rule you hit. Self-correct
   and continue; never try to bypass a gate.
 
-## 6. Tier
+## 6. Capability
 
-{tier_note}
+{capability_note}{tier_note}
 
 ## 7. Skills
 
 {skills_index}
 """
 
-_TIER_NOTES = {
-    "basic": (
-        "Tier: BASIC — passive-only testing. Only GET/HEAD/OPTIONS requests and passive "
-        "probes (missing-headers, dir-listing, open-redirect, sensitive-file, method-tamper, "
-        "idor-heuristic) are allowed. Active methods (POST/PUT/DELETE/...) are BLOCKED "
-        "(tier.passive_only) and active probes are BLOCKED (tier.capability_locked). "
-        "Do not attempt to bypass the gate."
-    ),
-    "advanced": (
-        "Tier: ADVANCED — active probing is authorized within the scope block above. "
-        "All HTTP methods and all probes are available; every exchange still becomes "
-        "ledger evidence and the scope gate stays fail-closed."
-    ),
-}
+_CAPABILITY_NOTE = (
+    "Active testing is authorized within the scope block above: all HTTP methods and "
+    "every probe are available. Every exchange still becomes ledger evidence and the "
+    "scope gate stays fail-closed. Approval-danger tools (shell_exec) run only through "
+    "the ledgered approval gate — never around it."
+)
 
 
 class _PromptDefaults(dict):
@@ -224,8 +216,8 @@ def build_system_prompt(
     *,
     target_url: str,
     scope_summary: str | dict[str, Any],
-    tier: str,
     skills_index: str,
+    tier: str | None = None,  # DEPRECATED, ignored: one capability level.
     config_note: str = "",
     soul_block: str = "",
 ) -> str:
@@ -234,7 +226,6 @@ def build_system_prompt(
     Args:
         target_url: Base URL of the authorized target.
         scope_summary: ``ScopeSet.summary()`` dict or a plain string.
-        tier: "basic" | "advanced" — selects the tier note.
         skills_index: Skills block to mount (``load_skills_index()`` gives the
             shipped one); rendered verbatim.
         config_note: Optional extra harness note appended at the end.
@@ -246,7 +237,8 @@ def build_system_prompt(
         _PromptDefaults(
             target_url=target_url,
             scope_block=_scope_block(scope_summary, target_url),
-            tier_note=_TIER_NOTES.get(tier, _TIER_NOTES["basic"]),
+            capability_note=_CAPABILITY_NOTE,
+            tier_note="",
             skills_index=skills_index or "(no skills mounted)",
             soul_block=soul_block or "",
         )
@@ -285,18 +277,40 @@ def build_chat_messages(
     return messages
 
 
-def build_goal(target: TargetSpec, tier: str, ledger=None, run_id=None) -> str:
+def build_goal(
+    target: TargetSpec,
+    *args: Any,
+    ledger=None,
+    run_id=None,
+) -> str:
     """Build the user-role goal for one audit run of ``target``.
+
+    Backward compatibility: the old signature was
+    ``build_goal(target, tier, ledger=None, run_id=None)``. ``tier`` no longer
+    exists, but old call sites still pass it positionally — so a single
+    positional argument after ``target`` is accepted and ignored. Passing
+    ``ledger``/``run_id`` positionally as well (``build_goal(t, tier, led)``)
+    is still honoured, because ``ledger`` follows ``tier`` in the legacy order.
 
     When ``ledger`` is provided, a computed ``## Ledger context`` block is
     appended so the goal reflects current coverage/followups/negative memory
     instead of being static.
     """
+    if len(args) > 2:
+        raise TypeError(
+            f"build_goal() takes at most target plus one legacy tier argument "
+            f"and a ledger ({len(args)} extra positional args given)"
+        )
+    # args[0] is the legacy ``tier`` — accepted and ignored (no capability tiers).
+    if len(args) == 2:
+        if ledger is not None:
+            raise TypeError("build_goal() got multiple values for argument 'ledger'")
+        ledger = args[1]
     url = target.url.rstrip("/")
     notes = ", ".join(f"{k}={v}" for k, v in sorted(target.notes.items())) if target.notes else ""
     notes_line = f"\nTarget notes: {notes}" if notes else ""
     base = (
-        f"Audit {url} (tier: {tier}). Map the surface, probe the priority "
+        f"Audit {url}. Map the surface, probe the priority "
         "vulnerability classes, record coverage as you go, and ship only "
         "evidence-backed findings through create_finding_request. Finish with "
         f"finish_scan when the audit is reconciled.{notes_line}"

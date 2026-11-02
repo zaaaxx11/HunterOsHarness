@@ -33,9 +33,9 @@ import yaml
 from hunter.errors import EXIT_AUTH, HunterError
 from hunter.llm.base import LEGACY_TIERS, TIERS, normalize_tier
 
-# agent.tier vocabulary: the four model tiers, plus "basic" — the shipped
+# agent.tier vocabulary: the four model roles. Legacy capability words
 # default meaning "no LLM pinned; deterministic/utility behavior".
-AGENT_TIERS: tuple[str, ...] = ("basic", "advanced", *TIERS)
+AGENT_TIERS: tuple[str, ...] = (*TIERS, "basic", "advanced")  # legacy words normalise to orchestrator
 
 VALID_TOP_KEYS: tuple[str, ...] = (
     "model_tiers", "providers", "fallback_providers", "budget", "agent", "ui",
@@ -157,7 +157,7 @@ class AgentConfig:
     ``approved_scopes`` is the recorded audit trail of auto-authorized
     minimal scopes (M11, capped at the last 50 entries)."""
 
-    tier: str = "basic"
+    tier: str = "orchestrator"
     api_max_retries: int = 3
     wire: str = "native"
     browser: bool = False
@@ -556,7 +556,7 @@ def validate_raw(raw: Mapping[str, Any], *, source_text: str | None = None) -> H
             f"valid keys under agent: {', '.join(_AGENT_KEYS)}",
         )
     _reject_unknown(agent_raw, _AGENT_KEYS, "agent", source_text=text or None)
-    tier = _as_str(agent_raw.get("tier", "basic"), "agent.tier") or "basic"
+    tier = _as_str(agent_raw.get("tier", "orchestrator"), "agent.tier") or "orchestrator"
     canonical_tier = normalize_tier(tier)
     if canonical_tier != tier:
         note = f"agent.tier '{tier}' renamed to '{canonical_tier}' {_LEGACY_NOTE_SUFFIX}"
@@ -567,7 +567,7 @@ def validate_raw(raw: Mapping[str, Any], *, source_text: str | None = None) -> H
         raise _config_error(
             "config.value",
             f"agent.tier must be one of: {', '.join(AGENT_TIERS)} — got '{tier}'",
-            f"set agent.tier to basic, advanced, or one of {', '.join(TIERS)} "
+            f"set agent.tier to one of {', '.join(TIERS)} "
             f"(legacy names {', '.join(LEGACY_TIERS)} are accepted)",
         )
     cfg.agent = AgentConfig(
@@ -914,7 +914,7 @@ budget:                        # per-run governor (RunBudget)
 # max_iterations, wall_seconds, and min_wall_seconds alike.
 
 agent:
-  tier: basic                  # basic | advanced | orchestrator | hunter | verifier | utility
+  tier: orchestrator           # orchestrator | hunter | verifier | utility (model role)
   api_max_retries: 3           # attempts per provider before failing over
 
 ui:                            # TUI surface (R2-C skins-as-data)

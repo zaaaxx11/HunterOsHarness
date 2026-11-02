@@ -259,7 +259,7 @@ async def test_status_bar_fields(monkeypatch) -> None:
         await pilot.pause()
         assert await _wait_until(lambda: "model (unset)" in _all_static_text(app))
         text = _all_static_text(app)
-        assert "tier basic" in text
+        assert "tier orchestrator" in text
         assert "engine stopped" in text
         from hunter import __version__
 

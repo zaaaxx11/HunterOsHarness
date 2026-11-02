@@ -79,14 +79,14 @@ def env(tmp_path):
         opened.close()
 
 
-def test_shell_exec_gated_advanced_and_approval_danger(tmp_path):
-    advanced = build_registry("advanced")
-    spec = advanced.get("shell_exec")
+def test_shell_exec_always_visible_and_approval_danger(tmp_path):
+    registry = build_registry()
+    spec = registry.get("shell_exec")
     assert spec is not None
-    assert spec.min_tier == "advanced"
     assert spec.danger == "approval"
-    basic_names = {entry["function"]["name"] for entry in build_registry("basic").schemas_for_tier("basic")}
-    assert "shell_exec" not in basic_names  # structurally absent below advanced
+    # No capability tier: the tool is advertised to every run.
+    all_names = {entry["function"]["name"] for entry in registry.schemas_for_tier()}
+    assert "shell_exec" in all_names
     parameters = spec.parameters
     assert parameters["additionalProperties"] is False
     assert parameters["required"] == ["command"]
@@ -98,30 +98,30 @@ def test_shell_exec_gated_advanced_and_approval_danger(tmp_path):
     }
     assert parameters["properties"]["cwd"] == {"type": "string"}
 
-    # direct dispatch below the tier is refused before any gate/handler work
+    # dispatch with no approval grant is refused by the approval gate, not a tier
     ledger = Ledger(tmp_path / "basic.db")
     scope = localhost_scope()
     http = ScopedHttpClient(scope, min_interval=0)
     try:
-        basic_ctx = ToolContext(
+        ctx = ToolContext(
             run_id="R-SHELL-BASIC",
             ledger=ledger,
             http=http,
             scope=scope,
             target_url="http://127.0.0.1/",
             emit=lambda kind, payload: None,
-            config={"tier": "basic", "state_dir": str(tmp_path)},
+            config={"state_dir": str(tmp_path)},
         )
-        outcome = build_registry("basic").dispatch("shell_exec", {"command": "echo hi"}, basic_ctx)
+        outcome = build_registry().dispatch("shell_exec", {"command": "echo hi"}, ctx)
         assert outcome.ok is False and outcome.blocked is True
-        assert outcome.code == "tier.capability_locked"
+        assert outcome.code in ("approval.required", "approval.unavailable")
     finally:
         http.close()
         ledger.close()
 
 
 def test_shell_exec_executes_and_caps_output_16k(env):
-    outcome = build_registry("advanced").dispatch(
+    outcome = build_registry().dispatch(
         "shell_exec", {"command": py_command("print('A' * 20000)")}, env.ctx
     )
     assert outcome.ok is True, outcome.result_for_model
@@ -131,7 +131,7 @@ def test_shell_exec_executes_and_caps_output_16k(env):
 
 
 def test_shell_exec_redacts_secrets_in_output(env):
-    outcome = build_registry("advanced").dispatch(
+    outcome = build_registry().dispatch(
         "shell_exec",
         {"command": py_command("print('authorization: Bearer supersecrettoken99')")},
         env.ctx,
@@ -142,7 +142,7 @@ def test_shell_exec_redacts_secrets_in_output(env):
 
 
 def test_shell_exec_timeout_enforced_default_120_max_600(env):
-    registry = build_registry("advanced")
+    registry = build_registry()
     outcome = registry.dispatch(
         "shell_exec",
         {"command": py_command("import time; time.sleep(5)"), "timeout_seconds": 1},
@@ -161,7 +161,7 @@ def test_shell_exec_timeout_enforced_default_120_max_600(env):
 
 
 def test_shell_exec_cwd_defaults_to_state_dir_and_refuses_escape(env):
-    registry = build_registry("advanced")
+    registry = build_registry()
     state_dir = str(env.ctx.config["state_dir"])
     outcome = registry.dispatch(
         "shell_exec", {"command": py_command("import os; print(os.getcwd())")}, env.ctx
@@ -185,7 +185,7 @@ def test_shell_exec_denylist_refused_even_in_hunter_mode(env, monkeypatch):
         raise AssertionError("a pending catastrophic command must not reach a subprocess")
 
     monkeypatch.setattr(subprocess_module, "run", _no_subprocess)
-    registry = build_registry("advanced")
+    registry = build_registry()
     for index, command in enumerate(("format C:", "rm -rf /"), start=1):
         outcome = registry.dispatch("shell_exec", {"command": command}, env.ctx)
         assert outcome.ok is False and outcome.blocked is True
@@ -195,7 +195,7 @@ def test_shell_exec_denylist_refused_even_in_hunter_mode(env, monkeypatch):
 
 
 def test_shell_exec_denylist_quoting_and_escapes_refused(env):
-    registry = build_registry("advanced")
+    registry = build_registry()
     variants = [
         '"for""mat" c:',  # quote-sandwiched token — normalization removes quotes
         'r"m" -rf /',  # split token reassembles after quote removal
@@ -211,7 +211,7 @@ def test_shell_exec_denylist_quoting_and_escapes_refused(env):
 
 def test_shell_exec_env_is_minimal_no_canary_leak(env, monkeypatch):
     monkeypatch.setenv("HUNTER_CANARY", "canary-value-xyz")
-    outcome = build_registry("advanced").dispatch(
+    outcome = build_registry().dispatch(
         "shell_exec", {"command": py_command("import os; print(os.environ)")}, env.ctx
     )
     assert outcome.ok is True, outcome.result_for_model
@@ -221,7 +221,7 @@ def test_shell_exec_env_is_minimal_no_canary_leak(env, monkeypatch):
 
 
 def test_shell_exec_ledger_event_per_run(env):
-    registry = build_registry("advanced")
+    registry = build_registry()
     allowed = registry.dispatch(
         "shell_exec", {"command": py_command("print('benign')")}, env.ctx
     )

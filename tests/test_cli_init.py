@@ -95,7 +95,7 @@ def test_init_provider_openrouter_yes_writes_loadable_config(monkeypatch, tmp_pa
     assert cfg.model_tiers["orchestrator"].model == table.default_model
     assert cfg.model_tiers["orchestrator"].provider == "openrouter"
     assert cfg.providers["openrouter"].key_env == "OPENROUTER_API_KEY"
-    assert cfg.agent.tier == "basic"
+    assert cfg.agent.tier == "orchestrator"
     assert "next: hunter doctor" in result.output
 
 
@@ -130,7 +130,7 @@ def test_yes_path_writes_loadable_config_without_prompts(tmp_path):
     cfg = load_config(tmp_path / "yes.yaml", env={}, home=tmp_path)
     assert cfg.providers["groq"].key_env == "GROQ_API_KEY"
     assert cfg.model_tiers["orchestrator"].provider == "groq"
-    assert cfg.agent.tier == "basic"
+    assert cfg.agent.tier == "orchestrator"
 
 
 def test_key_is_never_echoed_and_lands_in_keys_env_only(tmp_path):

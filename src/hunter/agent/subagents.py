@@ -231,7 +231,6 @@ def build_subagent_registry(
     preset = SUBAGENT_ROLES.get(role, SUBAGENT_ROLES["redteam"])
     allowed = set(extra_tools or preset["tools"])
     child = ToolRegistry()
-    child.built_for_tier = getattr(parent_registry, "built_for_tier", "basic")  # type: ignore[attr-defined]
     for name, spec in parent_registry._specs.items():
         if name in allowed and name in SUBAGENT_TOOL_ALLOWLIST:
             child.register(spec)
@@ -268,7 +267,6 @@ def run_subagent(
     *,
     provider: Any,
     parent_registry: Any,
-    tier: str = "basic",
     budget: Any = None,
 ) -> SubagentResult:
     """Spawn one child loop against the SAME context (same ledger, same scope)."""
@@ -302,7 +300,6 @@ def run_subagent(
         loop = AgentLoop(
             provider,
             registry,
-            tier=tier if tier in ("basic", "advanced") else "basic",
             budget=child_budget,
             # The child runs under its own soul card, so its character matches
             # its job instead of inheriting the orchestrator's.

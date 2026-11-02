@@ -199,7 +199,7 @@ def test_t2_http_follow_redirects_default_off():
     """Contract: follow_redirects defaults false — a 302 is returned raw (open-redirect probes)."""
     from hunter.agent.tools import build_registry
 
-    spec = next(s for s in build_registry("basic").specs_for_tier("basic") if s.name == "http_request")
+    spec = next(s for s in build_registry().specs_for_tier("basic") if s.name == "http_request")
     assert "follow_redirects" in spec.parameters["properties"], f"{TDD_HTTP}: schema lacks follow_redirects"
 
 
@@ -209,7 +209,7 @@ def test_t2_http_manual_hops_max3_per_hop_scope():
     """
     from hunter.agent.tools import build_registry
 
-    registry = build_registry("basic")
+    registry = build_registry()
     # Part 1: evil second hop aborts fail-closed (blocked + engine_event, evil host never fetched).
     http_hits: list = []
     routes = [
@@ -250,7 +250,7 @@ def test_t2_http_max_body_and_timeout_bounds():
     """Contract: max_body_chars<=40000 truncates with marker; timeout clamped 1..30."""
     from hunter.agent.tools import build_registry
 
-    registry = build_registry("basic")
+    registry = build_registry()
     # Timeout bounds: 0 and 31 are BLOCKED (fail-closed), 5 passes.
     for bad in (0, 31):
         ctx, _ = _ctx(transport=_mock([("example.com", 200, {}, "hi")]))

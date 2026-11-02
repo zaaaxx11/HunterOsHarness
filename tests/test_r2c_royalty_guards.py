@@ -137,10 +137,10 @@ def test_r2c_royal_quarantine_inert():
     from hunter.agent.skills import Skill, match_skills, render_block
 
     good = Skill(name="recon-basics", description="probe the target surface", version="1",
-                 min_tier="basic", tags=("recon",), source="bundled", body="steps",
+                 tags=("recon",), source="bundled", body="steps",
                  quarantined=False, path="")
     bad = Skill(name="evil-card", description="probe the target surface", version="1",
-                min_tier="basic", tags=("recon",), source="user", body="steps",
+                tags=("recon",), source="user", body="steps",
                 quarantined=True, path="")
     picked = match_skills("probe target", "probe target", [good, bad])
     assert good in picked and bad not in picked
@@ -158,8 +158,7 @@ def test_r2c_royal_view_never_truth_byte_identical_system_verbatim(tmp_path):
         encoding="utf-8")
     for forbidden in ("create_finding(", "add_evidence(", "set_finding_status("):
         assert forbidden not in src
-    prompt = build_system_prompt(target_url="http://127.0.0.1:9/", scope_summary="s",
-                                 tier="basic", skills_index="SK", soul_block="SOUL")
+    prompt = build_system_prompt(target_url="http://127.0.0.1:9/", scope_summary="s", skills_index="SK", soul_block="SOUL")
     assert "http://127.0.0.1:9/" in prompt and "SOUL" in prompt
     store = ChatStore(tmp_path / "chat.db")
     try:

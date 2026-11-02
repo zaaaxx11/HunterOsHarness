@@ -63,7 +63,6 @@ SLITHER_AUDIT_SPEC: dict[str, Any] = {
     "name": "slither_audit",
     "description": "Static-only Solidity audit hint (no exec, no network). Approval-gated, advanced tier.",
     "danger": "approval",
-    "min_tier": "advanced",
     "parameters": {
         "type": "object",
         "properties": {
@@ -77,9 +76,8 @@ SLITHER_AUDIT_SPEC: dict[str, Any] = {
 
 CAST_CALL_SPEC: dict[str, Any] = {
     "name": "cast_call",
-    "description": "Readonly cast call against a manifest RPC host (no sends). Basic tier.",
+    "description": "Readonly cast call against a manifest RPC host (no sends).",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -114,13 +112,6 @@ def _emit(ctx: Any, tool: str, extra: dict[str, Any] | None = None) -> None:
         pass
 
 
-def _tier(ctx: Any) -> str:
-    try:
-        return str((getattr(ctx, "config", {}) or {}).get("tier", "basic"))
-    except Exception:
-        return "basic"
-
-
 def _bound(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Bound evidence data at 8k; returns ``(data, truncated)``."""
     blob = json.dumps(data)
@@ -137,14 +128,6 @@ def slither_audit(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     """Static-only audit hint. Never executes chain data, never touches net."""
     path = redact_text(str(args.get("path", "") or ""))[:500]
     sha = str(args.get("source_sha256", "") or "").strip().lower()
-    if _tier(ctx) != "advanced":
-        _emit(ctx, "slither_audit", {"code": "tier.capability_locked"})
-        return {
-            "ok": False,
-            "blocked": True,
-            "code": "tier.capability_locked",
-            "result_for_model": "BLOCKED [tier.capability_locked] slither_audit needs advanced tier.",
-        }
     if not path or len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
         _emit(ctx, "slither_audit", {"code": "slither.input_required"})
         return {
@@ -282,7 +265,6 @@ def register_heavy_tools(
                     description=str(spec["description"]),
                     parameters=dict(spec["parameters"]),
                     handler=_wrap(name, fn),
-                    min_tier=str(spec["min_tier"]),
                     danger=str(spec["danger"]),
                 )
             )

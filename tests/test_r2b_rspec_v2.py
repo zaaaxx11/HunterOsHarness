@@ -56,7 +56,7 @@ def _rpc_transport(result="0x1234", events=None):
     return httpx.MockTransport(handler)
 
 
-def _ctx(events=None, tier="basic"):
+def _ctx(events=None):
     from hunter.agent.tools_base import ToolContext
     from hunter.kernel.ledger import Ledger
     from hunter.tools.http_client import ScopedHttpClient
@@ -67,7 +67,7 @@ def _ctx(events=None, tier="basic"):
     http = ScopedHttpClient(scope, transport=_rpc_transport(events=events))
     return ToolContext(run_id="R-R2B", ledger=Ledger(":memory:"), http=http, scope=scope,
                        target_url="http://rpc.example.com/", emit=lambda k, p: events.append((k, dict(p))),
-                       config={"tier": tier, "chain_scope": [{"chain_id": 1, "address": ADDR}],
+                       config={"chain_scope": [{"chain_id": 1, "address": ADDR}],
                                "r_spec_version": 2,
                                "rpc_manifest": {"hosts": ["rpc.example.com"]}}, state={}), events
 
@@ -139,16 +139,30 @@ def test_r2b_replay_second_host_mismatch_needs_follow_up():
 
 
 def test_r2b_rspec_version_default1_v2_requires_manifest():
-    """r_spec_version default 1; v2 requires chain_scope + rpc_manifest + advanced for storage/state-diff."""
+    """r_spec_version default 1; v2 requires chain_scope + rpc_manifest for storage/state-diff.
+
+    Storage/state-diff is no longer tier-gated (no tier system), so the guard
+    here is the manifest requirement — asserted to fail closed and then to pass
+    once the manifest is present.
+    """
     ver = _require_rspec_version()
     assert ver == 1 or ver == 2  # pin exists; default must be 1
     import hunter.agent.tools as tools
     fn = getattr(tools, "validate_rspec_gate", None)
     if fn is None:
         pytest.fail(f"{R2B} — hunter.agent.tools.validate_rspec_gate missing")
-    ctx, _ = _ctx(tier="basic")
+    ctx, _ = _ctx()
+    for attr in ("chain_scope", "rpc_manifest"):
+        ctx.config.pop(attr, None)
     blocked = fn({"r_spec_version": 2, "method": "eth_getStorageAt"}, ctx)
-    assert blocked.get("blocked") is True, "storage/state-diff at basic must lock"
+    assert blocked.get("blocked") is True, "v2 storage/state-diff without a manifest must lock"
+    assert blocked.get("code") == "rspec.manifest_required"
+    assert "tier" not in str(blocked.get("result_for_model", "")).lower()
+    ctx.config["chain_scope"] = [{"chain_id": 1, "address": "0xabc0000000000000000000000000000000000def"}]
+    ctx.config["rpc_manifest"] = {"hosts": ["rpc.example.com"]}
+    ctx.config["tier"] = "basic"  # a leftover tier value must change nothing
+    allowed = fn({"r_spec_version": 2, "method": "eth_getStorageAt"}, ctx)
+    assert allowed.get("blocked") is False and allowed.get("ok") is True
 
 
 def test_r2b_old_v0_runs_valid_under_v1():

@@ -42,7 +42,7 @@ from hunter.llm.base import RunBudget as RunBudgetContract
 from hunter.llm.budget import RunBudget
 
 from .prompts import build_system_prompt, resolve_skills_index
-from .tools_base import TIER_ORDER, ToolContext, ToolRegistry
+from .tools_base import ToolContext, ToolRegistry
 
 __all__ = ["AgentLoop", "AgentRunResult"]
 
@@ -91,16 +91,14 @@ class AgentLoop:
         provider: ChatProvider,
         registry: ToolRegistry,
         *,
-        tier: str = "basic",
         budget: RunBudgetContract | None = None,
         max_text_nudges: int = 3,
         max_time_nudges: int = 50,
         interrupt_check: Callable[[], bool] | None = None,
         hooks: Any | None = None,
         role: str = "",
+        tier: str | None = None,  # DEPRECATED, ignored: no capability tiers.
     ) -> None:
-        if tier not in TIER_ORDER:
-            raise ValueError(f"unknown tier {tier!r} (use basic|advanced)")
         # Role scopes the soul: a delegated worker runs under its own card,
         # while the orchestrating hunt leaves this empty and keeps the shared
         # soul. Validated lazily by soul.load_role_soul, which falls back
@@ -111,7 +109,6 @@ class AgentLoop:
         install_default_skill_selector()
         self.provider = provider
         self.registry = registry
-        self.tier = tier
         self.budget = budget if budget is not None else RunBudget()
         # Budget governance split (see _budget_governed): a CONCRETE budget
         # (hunter.llm.budget.RunBudget) governs spend itself — the provider
@@ -172,7 +169,6 @@ class AgentLoop:
         system = build_system_prompt(
             target_url=ctx.target_url,
             scope_summary=ctx.scope.summary(),
-            tier=self.tier,
             skills_index=str(skills_index),
             config_note=str(ctx.config.get("config_note", "")),
             soul_block=soul,
@@ -203,7 +199,7 @@ class AgentLoop:
                 turn = self.provider.complete(
                     "orchestrator",
                     _MessagesCapture(messages),
-                    tools=self.registry.schemas_for_tier(self.tier),
+                    tools=self.registry.schemas_for_tier(),
                     stream_cb=stream_cb,
                     budget=self.budget,
                 )
@@ -775,7 +771,7 @@ class AgentLoop:
             for call in list(getattr(turn, "tool_calls", []) or []):
                 if not isinstance(getattr(call, "arguments", {}), dict):
                     return None
-            names = {s["function"]["name"] for s in self.registry.schemas_for_tier(self.tier)}
+            names = {s["function"]["name"] for s in self.registry.schemas_for_tier()}
         except Exception:
             return None
         try:

@@ -50,7 +50,6 @@ SEARCH_FILES_SPEC: dict[str, Any] = {
         "Results are jail-relative, bounded, redacted."
     ),
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -68,7 +67,6 @@ READ_FILE_SPEC: dict[str, Any] = {
     "name": "read_file",
     "description": "Read one jailed file with offset/limit paging, 1MB cap, redacted.",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -84,12 +82,11 @@ READ_FILE_SPEC: dict[str, Any] = {
 SPECS = (SEARCH_FILES_SPEC, READ_FILE_SPEC)
 SPEC_NAMES = tuple(s["name"] for s in SPECS)
 
-# R2-B B5 Web2 expansion: glob search (basic) + archive read (advanced-only).
+# R2-B B5 Web2 expansion: glob search + archive read.
 SEARCH_GLOB_SPEC: dict[str, Any] = {
     "name": "search_glob",
     "description": "Jail-relative glob file search (fixed-string pattern). Escape attempts BLOCKED.",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -104,9 +101,8 @@ SEARCH_GLOB_SPEC: dict[str, Any] = {
 
 ARCHIVE_READ_SPEC: dict[str, Any] = {
     "name": "archive_read",
-    "description": "Read one archived file inside the jail (bounded, redacted). Advanced tier only.",
+    "description": "Read one archived file inside the jail (bounded, redacted).",
     "danger": "none",
-    "min_tier": "advanced",
     "parameters": {
         "type": "object",
         "properties": {
@@ -205,12 +201,7 @@ def search_glob(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
 
 
 def archive_read(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
-    """Advanced-only archived read: jail-contained, bounded at 8k, redacted."""
-    if _tier(ctx) != "advanced":
-        _emit(ctx, "archive_read", {"code": "tier.capability_locked"})
-        return {"ok": False, "blocked": True, "code": "tier.capability_locked",
-                "text": "",
-                "result_for_model": "BLOCKED [tier.capability_locked] archive_read needs advanced tier."}
+    """Archived read: jail-contained, bounded at 8k, redacted."""
     raw_path = str(args.get("path", "") or "")
     archive = str(args.get("archive", "") or "")
     jail, resolved, err = _resolve_jailed(ctx, raw_path)
@@ -579,7 +570,7 @@ def lint_skill_card(text: str, *, is_new: bool, known_tools: set[str] | None = N
 
 
 def register_local_tools(registry: Any) -> Any:
-    """Register search_files/read_file on a ToolRegistry (danger=none, basic tier)."""
+    """Register search_files/read_file on a ToolRegistry (danger=none)."""
     from hunter.agent.tools_base import ToolContext, ToolOutcome  # noqa: PLC0415
 
     def _wrap(fn):  # type: ignore[no-untyped-def]
@@ -622,7 +613,6 @@ def register_local_tools(registry: Any) -> Any:
                 description=str(spec_dict["description"]),
                 parameters=dict(spec_dict["parameters"]),
                 handler=_wrap(fn),
-                min_tier=str(spec_dict.get("min_tier", "basic")),
                 danger="none",
             )
         )

@@ -104,7 +104,7 @@ def test_r2a_parallel_true_loop_fans_out_pure_read_batch(tmp_path: Any, monkeypa
 
     ctx, ledger, http = _ledger_ctx(tmp_path)
     try:
-        loop = loop_mod.AgentLoop(TwoReads(), build_registry("basic"), tier="basic")  # type: ignore[arg-type]
+        loop = loop_mod.AgentLoop(TwoReads(), build_registry())  # type: ignore[arg-type]
         # R2-A requires the loop to consult the allowlist AND fan out.
         if "_maybe_parallel_dispatch" not in dir(loop) or "run_parallel" not in pathlib.Path(
             "src/hunter/agent/loop.py"

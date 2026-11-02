@@ -14,14 +14,10 @@ network, or filesystem directly. Governance invariants implemented here:
   ``ledger.add_evidence`` and appends ``evidence_id: EV-xxxx`` lines to the
   tool message in artifact order. Handlers must never persist evidence or
   fabricate ids themselves; the model must never type an id it was not shown.
-- Tier gating is HANDLER-level for advanced content (tools_base T2 note):
-  all v0.2 specs register at ``min_tier="basic"`` so the schema list is
-  identical across tiers; refusals happen inside the handlers with stable
-  BLOCKED codes. The two gates:
-    * ``http_request`` — non-passive methods (anything but GET/HEAD/OPTIONS)
-      require tier "advanced" (code ``tier.passive_only``).
-    * ``run_probe`` — active probes require tier "advanced" per PROBE_TIERS
-      (code ``tier.capability_locked``).
+- There is NO capability tier: every registered tool is available to every
+  run, and the probe list is identical everywhere. The only gate left is
+  ``danger="approval"`` (``shell_exec``), which runs solely through the
+  ledgered approval gate.
 - ``think`` is the single silent tool: its scratchpad content never reaches
   the ledger (zero side effects; no emit), so chain-of-thought cannot leak
   into the hash chain.
@@ -64,29 +60,26 @@ from .browser import (
     validate_url,
 )
 from .inventory import inventory_binaries
-from .tools_base import TIER_ORDER, ToolContext, ToolOutcome, ToolRegistry, ToolSpec
+from .tools_base import ToolContext, ToolOutcome, ToolRegistry, ToolSpec
 
 __all__ = [
     "ACTIVE_PROBES",
     "PASSIVE_METHODS",
     "PASSIVE_PROBES",
-    "PROBE_TIERS",
     "build_registry",
 ]
 
 PASSIVE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-# Probe tier map — the advanced gate for run_probe (see module docstring).
+# Probe classification. Both groups are available to every run — ACTIVE vs
+# PASSIVE is descriptive metadata (what the check does), not an access gate.
 ACTIVE_PROBES = frozenset(
     {"sql-error", "path-traversal", "unauth-action", "auth-bypass", "reflected-xss", "form-injection"}
 )
 PASSIVE_PROBES = frozenset(
     {"missing-headers", "dir-listing", "open-redirect", "sensitive-file", "method-tamper", "idor-heuristic"}
 )
-PROBE_TIERS: dict[str, str] = {
-    **{check_id: "advanced" for check_id in sorted(ACTIVE_PROBES)},
-    **{check_id: "basic" for check_id in sorted(PASSIVE_PROBES)},
-}
+KNOWN_PROBES = ACTIVE_PROBES | PASSIVE_PROBES
 _AUTO = object()
 
 COVERAGE_OUTCOMES = ("reported", "no_issue_found", "ruled_out", "not_applicable", "needs_follow_up")
@@ -108,10 +101,6 @@ _FINISHED_COVERAGE_WARNING = (
 def _blocked(code: str, message: str) -> ToolOutcome:
     """A structured refusal: the model may read it and self-correct."""
     return ToolOutcome(ok=False, blocked=True, code=code, result_for_model=f"BLOCKED [{code}] {message}")
-
-
-def _tier_level(ctx: ToolContext) -> int:
-    return TIER_ORDER.get(str(ctx.config.get("tier", "basic")), 0)
 
 
 def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -300,7 +289,7 @@ def _http_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     if not url:
         ctx.emit("engine_event", {"tool": "http_request", "code": "http.url_required"})
         return _blocked("http.url_required", "http_request requires 'url'.")
-    if method not in PASSIVE_METHODS and _tier_level(ctx) < TIER_ORDER["advanced"]:
+    if method not in PASSIVE_METHODS and str(ctx.config.get("_method_gate", "")).lower() == "passive":
         ctx.emit("engine_event", {"tool": "http_request", "code": "tier.passive_only"})
         return _blocked(
             "tier.passive_only",
@@ -429,18 +418,11 @@ def _run_probe(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     from hunter.engine.deterministic import probes
     from hunter.engine.deterministic.recon import run_recon
 
-    check_id = _as_str(args.get("check_id", "")).strip()
-    if check_id not in PROBE_TIERS:
+    check_id = _as_str(args.get("check_id", ""))
+    if check_id.strip() not in KNOWN_PROBES or check_id != check_id.strip():
         return _blocked(
             "probe.unknown_check_id",
-            f"unknown check_id {check_id!r}. Known checks: {', '.join(PROBE_TIERS)}.",
-        )
-    required_tier = PROBE_TIERS[check_id]
-    if TIER_ORDER[required_tier] > _tier_level(ctx):
-        return _blocked(
-            "tier.capability_locked",
-            f"probe '{check_id}' is an ACTIVE check requiring tier '{required_tier}' "
-            f"(current tier '{ctx.config.get('tier', 'basic')}').",
+            f"unknown check_id {check_id!r}. Known checks: {', '.join(sorted(KNOWN_PROBES))}.",
         )
     module = next(p for p in probes.PROBES if check_id == p.CHECK_ID)
     engine_ctx = EngineContext(http=ctx.http, emit=ctx.emit)
@@ -815,22 +797,19 @@ def _rspec_version(args: dict[str, Any], ctx: Any) -> int:
 
 
 def validate_rspec_gate(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
-    """R-spec gate: v1 default; v2 needs manifest + advanced for storage reads."""
+    """R-spec gate: v1 default; v2 needs chain_scope + rpc_manifest for on-chain reads.
+
+    Storage/state-diff methods are no longer tier-gated (there is no tier
+    system): what still gates them is the manifest requirement below, plus the
+    per-call scope/chain_scope checks in ``_r4c_onchain_bind`` and
+    ``tools_web3.contract_read``.
+    """
     version = _rspec_version(args, ctx)
     method = str(args.get("method", "") or "").strip()
     if version < 2:
         return {"ok": True, "blocked": False, "code": "ok", "sufficient": True,
                 "r_spec_version": 1,
                 "result_for_model": "R-spec v1 semantics: web2/http_exchange evidence sufficient."}
-    if method in _RSPEC_STORAGE_METHODS:
-        try:
-            tier = str((getattr(ctx, "config", {}) or {}).get("tier", "basic"))
-        except Exception:
-            tier = "basic"
-        if tier != "advanced":
-            return {"ok": False, "blocked": True, "code": "tier.capability_locked",
-                    "result_for_model":
-                    f"BLOCKED [tier.capability_locked] method '{method}' needs advanced tier (r_spec v2)."}
     try:
         cfg = getattr(ctx, "config", {}) or {}
         chain_scope = cfg.get("chain_scope") or []
@@ -1543,7 +1522,6 @@ def _agent_delegate(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
         ctx,
         provider=provider,
         parent_registry=registry,
-        tier=str(ctx.config.get("tier", "basic")),
         budget=None,
     )
     ctx.emit(
@@ -1558,13 +1536,6 @@ def _agent_delegate(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     return ToolOutcome(ok=result.ok, result_for_model=result.render())
 
 
-class _TieredToolRegistry(ToolRegistry):
-    """Registry that records the tier it was assembled for (introspection only;
-    it never filters specs — see :func:`build_registry`)."""
-
-    built_for_tier: str = ""
-
-
 def _bind_module(
     fn: Callable[[dict[str, Any], ToolContext, Any], ToolOutcome], module: Any
 ) -> Callable[[dict[str, Any], ToolContext], ToolOutcome]:
@@ -1577,7 +1548,7 @@ def _bind_module(
 
 
 def build_registry(
-    tier: str = "basic",
+    tier: str | None = None,  # DEPRECATED, ignored: there is one flat tool surface.
     *,
     browser_enabled: bool = False,
     playwright_module: Any = _AUTO,
@@ -1585,19 +1556,12 @@ def build_registry(
 ) -> ToolRegistry:
     """Assemble the v0.2 agent tool registry.
 
-    ``tier`` is validated and recorded (``registry.built_for_tier``) but does
-    NOT filter specs: per tools_base T2, all v0.2 specs register at
-    ``min_tier="basic"`` and advanced content is refused INSIDE the handlers
-    (``http_request`` non-passive methods -> ``tier.passive_only``;
-    ``run_probe`` active checks -> ``tier.capability_locked`` via
-    PROBE_TIERS). The schema list differs by tier: basic exposes 16 tools,
-    advanced exposes 17 with ``shell_exec`` advanced-only (plus basic
-    ``runtime_inventory``).
+    Every registered tool is available to every run: there is no capability
+    tier. Removal of the basic/advanced split is deliberate — a hunt that
+    cannot run probes is not a hunt, and a model-tier name (orchestrator,
+    hunter, ...) must never silently decide whether a tool exists.
     """
-    if tier not in TIER_ORDER:
-        raise ValueError(f"unknown tier {tier!r} (use basic|advanced)")
-    registry = _TieredToolRegistry()
-    registry.built_for_tier = tier  # introspection only
+    registry = ToolRegistry()
 
     specs = [
         ToolSpec(
@@ -1666,8 +1630,8 @@ def build_registry(
         ToolSpec(
             name="http_request",
             description=(
-                "Send one scope-checked HTTP request. GET/HEAD/OPTIONS at basic tier; other "
-                "methods require advanced. follow_redirects defaults false (raw 3xx); when true "
+                "Send one scope-checked HTTP request. Every method is available. "
+                "follow_redirects defaults false (raw 3xx); when true "
                 "the tool walks manually (max 3 hops, per-hop scope gate). "
                 "The exchange becomes http_exchange evidence."
             ),
@@ -1689,12 +1653,12 @@ def build_registry(
         ToolSpec(
             name="run_probe",
             description=(
-                "Run one deterministic probe by check_id. Active checks (see PROBE_TIERS) "
+                "Run one deterministic probe by check_id. All checks are available. "
                 "require advanced tier. Returned exchanges become evidence."
             ),
             parameters=_schema(
                 {
-                    "check_id": {"type": "string", "enum": sorted(PROBE_TIERS)},
+                    "check_id": {"type": "string", "enum": sorted(KNOWN_PROBES)},
                     "endpoint": {"type": "string"},
                     "param": {"type": "string"},
                 },
@@ -1795,7 +1759,6 @@ def build_registry(
                 ["command"],
             ),
             handler=_shell_exec,
-            min_tier="advanced",
             danger="approval",
         ),
         ToolSpec(
@@ -1806,7 +1769,6 @@ def build_registry(
             ),
             parameters=_schema({}, []),
             handler=_runtime_inventory,
-            min_tier="basic",
         ),
     ]
     for spec in specs:
@@ -1881,55 +1843,52 @@ def build_registry(
                 "browser tools are disabled; enable agent.browser for a governed hunt.",
             )
 
-    # Sub-agent delegation: the orchestrator can spawn real child workers with
-    # their own context.  Gated on the advanced tier — a basic hunt stays a
-    # single focused loop, and delegation is an escalation, not a default.
-    if TIER_ORDER.get(tier, 0) >= TIER_ORDER["advanced"]:
-        registry.register(
-            ToolSpec(
-                name="delegate_task",
-                description=(
-                    "Spawn a real sub-agent to work an independent sub-problem. The child "
-                    "has its OWN conversation (so it does not inherit your assumptions), gets "
-                    "the same soul/character and the same scope, and returns a report of "
-                    "observations — it CANNOT file findings. Use it when you need an "
-                    "unbiased second pass, a focused fuzz campaign, or a role you are too "
-                    "committed to judge (e.g. trying to falsify your own hypothesis)."
-                ),
-                parameters=_schema(
-                    {
-                        "role": {
-                            "type": "string",
-                            "enum": ["recon", "redteam", "fuzzer", "chainer"],
-                            "description": "Specialty preset for the child worker.",
-                        },
-                        "goal": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 4000,
-                            "description": "Exactly what the child must accomplish.",
-                        },
-                        "context": {
-                            "type": "string",
-                            "maxLength": 4000,
-                            "description": (
-                                "Evidence, endpoints or hypotheses to hand over. The child "
-                                "does not see your conversation, so state facts here."
-                            ),
-                        },
-                        "max_turns": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 40,
-                            "description": "Turn ceiling for the child (default 12).",
-                        },
+    # Sub-agent delegation: always available. A hunt benefits from an unbiased
+    # second pass at any point, so delegation is not withheld behind a tier.
+    registry.register(
+        ToolSpec(
+            name="delegate_task",
+            description=(
+                "Spawn a real sub-agent to work an independent sub-problem. The child "
+                "has its OWN conversation (so it does not inherit your assumptions), gets "
+                "the same soul/character and the same scope, and returns a report of "
+                "observations — it CANNOT file findings. Use it when you need an "
+                "unbiased second pass, a focused fuzz campaign, or a role you are too "
+                "committed to judge (e.g. trying to falsify your own hypothesis)."
+            ),
+            parameters=_schema(
+                {
+                    "role": {
+                        "type": "string",
+                        "enum": ["recon", "redteam", "fuzzer", "chainer"],
+                        "description": "Specialty preset for the child worker.",
                     },
-                    ["goal"],
-                ),
-                handler=_agent_delegate,
-                min_tier="advanced",
-            )
+                    "goal": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000,
+                        "description": "Exactly what the child must accomplish.",
+                    },
+                    "context": {
+                        "type": "string",
+                        "maxLength": 4000,
+                        "description": (
+                            "Evidence, endpoints or hypotheses to hand over. The child "
+                            "does not see your conversation, so state facts here."
+                        ),
+                    },
+                    "max_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 40,
+                        "description": "Turn ceiling for the child (default 12).",
+                    },
+                },
+                ["goal"],
+            ),
+            handler=_agent_delegate,
         )
+    )
 
     # Offensive toolchain (Foundry / Slither / solc). Registered AFTER the
     # built-ins and BEFORE the drop-in plugins, so a plugin can still override

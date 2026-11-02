@@ -56,7 +56,6 @@ _DNS_SPEC: dict[str, Any] = {
     "name": "dns_resolve",
     "description": "Resolve A/AAAA via stdlib behind the scope gate (DoH fallback scope-checked).",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -72,7 +71,6 @@ _CRT_SPEC: dict[str, Any] = {
     "name": "crt_sh",
     "description": "Certificate-transparency lookup via crt.sh (scope + allowlist gated).",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -87,7 +85,6 @@ _HEADERS_SPEC: dict[str, Any] = {
     "name": "headers_audit",
     "description": "Passive GET-only security-header audit (scope-checked).",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {"url": {"type": "string"}},
@@ -99,7 +96,6 @@ _RECON_SPEC: dict[str, Any] = {
     "name": "recon_subdomains",
     "description": "CT-only subdomain recon (no DNS bruteforce).",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -114,7 +110,6 @@ _PORT_SPEC: dict[str, Any] = {
     "name": "port_hint",
     "description": "Socket-free port inventory hint + proposed (not executed) scan command.",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {"host": {"type": "string"}},
@@ -129,9 +124,8 @@ SPEC_NAMES = tuple(s["name"] for s in SPECS)
 # R2-B B5 Web2 expansion specs (passive inventory stays basic/none).
 TLS_AUDIT_SPEC: dict[str, Any] = {
     "name": "tls_audit",
-    "description": "Passive TLS inventory (HSTS + header posture) via one scope-checked GET. Basic tier.",
+    "description": "Passive TLS inventory (HSTS + header posture) via one scope-checked GET.",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {"host": {"type": "string"}},
@@ -143,7 +137,6 @@ _DNSSEC_SPEC: dict[str, Any] = {
     "name": "dnssec_validate",
     "description": "Scope-checked DNSSEC posture hint via stdlib only (no new deps).",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {"host": {"type": "string"}, "ds": {"type": "string"}},
@@ -155,7 +148,6 @@ _PAGINATE_SPEC: dict[str, Any] = {
     "name": "paginate_results",
     "description": "Bounded cursor pagination helper (<=100 rows per page).",
     "danger": "none",
-    "min_tier": "basic",
     "parameters": {
         "type": "object",
         "properties": {
@@ -504,7 +496,7 @@ def port_hint(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
 # dnssec_validate: stdlib-only posture hint, scope-checked, fail-closed
 # (bogus -> needs_follow_up, never ruled_out). paginate_results: pure
 # bounded cursor helper (<=100 rows/page). tls_audit: passive inventory via
-# one scope-checked GET (basic tier, no handshake parsing, no new deps).
+# one scope-checked GET (no handshake parsing, no new deps).
 
 
 def dnssec_validate(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
@@ -670,7 +662,6 @@ def register_network_tools(registry: Any) -> Any:
                 description=str(spec["description"]),
                 parameters=dict(spec["parameters"]),
                 handler=_wrap(name),
-                min_tier="basic",
                 danger="none",
             )
         )
