@@ -324,6 +324,14 @@ def hunt(
 
         _norm, _kind = _nht(targets[0])
         if _kind == "invalid" or " " in targets[0].strip():
+            # Resolve the mandate as a WHOLE first. `extract_targets` splits a
+            # mandate into fragments, which throws away the chain-id / RPC
+            # context that rides alongside a bare address — "audit 0x… on chain
+            # 537713 via https://…" must not become the context-free "0x…".
+            from hunter.workflow.target_resolve import (
+                resolve_hunt_target as _rht0,
+            )
+
             _provider = None
             try:
                 from hunter.llm.config import find_config_path as _fcp
@@ -335,9 +343,38 @@ def hunt(
                     _provider = _pfc(_lc(_cfg_path))
             except Exception:
                 _provider = None
-            from hunter.workflow.scope_recognize import extract_targets as _et
 
-            targets = _et(_provider, targets[0]) or []
+            _whole = _rht0(
+                targets[0], normalize_hunt_target=_nht, provider=_provider
+            )
+            if _whole.ok:
+                # A single resolved target (URL, RPC, or local dir) — keep the
+                # mandate whole and let the normal path below handle it.
+                targets = [_whole.target]
+                # Carry the LLM-proposed scope across: the plain-hunt path
+                # below only knows about `--scope`, so materialise the manifest
+                # into the state dir and point the flag at it. An explicit
+                # --scope from the operator still wins (it is checked first).
+                if _whole.scope_manifest is not None and scope is None:
+                    try:
+                        import json as _json0
+
+                        from hunter.home import state_dir as _sd0
+
+                        _d0 = _sd0(state)
+                        _d0.mkdir(parents=True, exist_ok=True)
+                        _mp0 = _d0 / "llm-proposed-scope.json"
+                        _mp0.write_text(
+                            _json0.dumps(_whole.scope_manifest, indent=2),
+                            encoding="utf-8",
+                        )
+                        scope = _mp0
+                    except OSError:
+                        pass
+            else:
+                from hunter.workflow.scope_recognize import extract_targets as _et
+
+                targets = _et(_provider, targets[0]) or []
             if not targets:
                 err_console.print("[hunter.error]BLOCKED:[/hunter.error] no hunt target found in description")
                 raise typer.Exit(3)
@@ -352,7 +389,7 @@ def hunt(
     # RAG is still reachable for genuinely multi-target work (>1 target), where
     # a queue is the right shape; see `hunter rag`.
     if len(targets or []) > 1:
-        from hunter.daemon import daemon_running, start_daemon
+        from hunter.daemon import daemon_running, enqueue_hunt, start_daemon
         from hunter.duration import parse_duration
         from hunter.home import state_dir as _state_dir
         from hunter.tools.scope import scope_from_manifest
@@ -402,13 +439,46 @@ def hunt(
         if budget_s <= 0:
             budget_s = 6 * 3600
         first_scope = None
+        # The RAG queue validates each task's target with
+        # `normalize_hunt_target`, which rejects a bare contract address. So
+        # resolve every extracted target here first — a contract address is
+        # replaced by its RPC URL, and a local dir is passed through.
+        from hunter.workflow.target_resolve import resolve_hunt_target as _rht
+
+        from hunter.hunt import normalize_hunt_target as _nht_for_rag
+
+        import json as _json_for_rag
         for tgt in targets or []:
+            _resolved = _rht(
+                tgt,
+                normalize_hunt_target=_nht_for_rag,
+                provider=provider,
+                logger=None if json_out else (lambda m: console.print(f"[hunter.note]{m}[/hunter.note]")),
+            )
+            if not _resolved.ok:
+                err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {_resolved.reason}")
+                raise typer.Exit(3)
+            tgt = _resolved.target
             # An explicit --scope manifest WINS. `recognize_scope` asks the
             # LLM to guess the scope from the target string, which silently
             # replaced a 68-host approved manifest with a 1-host guess —
             # the operator's authorization thrown away by a heuristic.
             # Only fall back to recognition when no manifest was given.
-            tgt_scope = manifest_scope if manifest_scope is not None else recognize_scope(provider, tgt)
+            tgt_scope = manifest_scope
+            if tgt_scope is None and _resolved.scope_manifest is not None:
+                try:
+                    from hunter.home import state_dir as _sd_fn
+
+                    _sd = _sd_fn(resolved_state)
+                    _sd.mkdir(parents=True, exist_ok=True)
+                    _mp = _sd / "llm-proposed-scope.json"
+                    _mp.write_text(_json_for_rag.dumps(_resolved.scope_manifest, indent=2), encoding="utf-8")
+                    tgt_scope = scope_from_manifest(_mp)
+                except (ValueError, OSError) as exc:
+                    err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+                    raise typer.Exit(3) from exc
+            if tgt_scope is None:
+                tgt_scope = recognize_scope(provider, tgt)
             if first_scope is None:
                 first_scope = tgt_scope
             try:
@@ -477,10 +547,70 @@ def hunt(
     from hunter.tools.scope import ScopeSet, scope_from_manifest
 
     target = (targets[0] if targets else "")
-    normalized, kind = normalize_hunt_target(target)
-    if kind == "invalid":
-        err_console.print("[hunter.error]BLOCKED:[/hunter.error] invalid hunt target")
+    # Free-form mandate parsing. The deterministic gate still decides first
+    # (a URL, host, or existing directory goes straight through), but when it
+    # refuses, the LLM gets a turn before the run is blocked. This is what lets
+    # `hunter hunt "audit the relay chain contracts on 537713"` work at all.
+    from hunter.workflow.target_resolve import resolve_hunt_target
+
+    chosen_scope = None
+    _provider_for_parse = None
+    _normalized, _kind = normalize_hunt_target(target)
+    if _kind == "invalid":
+        # Only build a provider when the gate actually refused: a plain URL
+        # target must not fire the LLM-config seam at all (a test counts these).
+        try:
+            from hunter.llm.config import find_config_path as _fcp0
+            from hunter.llm.config import load_config as _lc0
+            from hunter.llm.router import provider_from_config as _pfc0
+
+            _cfg0 = _fcp0()
+            if _cfg0 is not None and _cfg0.is_file():
+                _provider_for_parse = _pfc0(_lc0(_cfg0))
+        except Exception:
+            _provider_for_parse = None
+
+    resolved = resolve_hunt_target(
+        target,
+        normalize_hunt_target=normalize_hunt_target,
+        provider=_provider_for_parse,
+        logger=None if json_out else (lambda msg: console.print(f"[hunter.note]{msg}[/hunter.note]")),
+    )
+    if not resolved.ok:
+        err_console.print(
+            f"[hunter.error]BLOCKED:[/hunter.error] {resolved.reason or 'invalid hunt target'}"
+        )
         raise typer.Exit(3)
+    normalized = resolved.target
+    kind = resolved.kind
+    if resolved.via_llm and not json_out:
+        typer.echo(f"target parsed by LLM -> {kind}: {normalized}")
+    # An operator-supplied --scope manifest is authoritative; the LLM-proposed
+    # manifest is only used when the operator gave none.
+    if resolved.scope_manifest is not None and scope is None and kind != "dir":
+        # `scope_from_manifest` reads a JSON file, so materialise the
+        # LLM-proposed manifest into the state directory first. This keeps one
+        # parsing path instead of a second, divergent in-memory one.
+        try:
+            from hunter.home import state_dir as _state_dir_fn
+
+            _st = _state_dir_fn(state)
+            _st.mkdir(parents=True, exist_ok=True)
+            _manifest_path = _st / "llm-proposed-scope.json"
+            _manifest_path.write_text(
+                json.dumps(resolved.scope_manifest, indent=2), encoding="utf-8"
+            )
+            chosen_scope = scope_from_manifest(_manifest_path)
+        except (ValueError, OSError) as exc:
+            err_console.print(
+                f"[hunter.error]BLOCKED:[/hunter.error] invalid LLM-proposed scope: {exc}"
+            )
+            raise typer.Exit(3) from exc
+        if not json_out:
+            typer.echo(
+                f"LLM-proposed scope: {len(resolved.scope_manifest.get('hosts') or [])} host(s), "
+                f"{len(resolved.scope_manifest.get('local_roots') or [])} local root(s)"
+            )
     # Re-binds from the optional --engine flag, then defaults. After this point
     # the value is always a concrete engine string, so the narrow is real and
     # not a silenced Optional.
@@ -493,7 +623,9 @@ def hunt(
             "engines: deterministic, evm, mock, llm, review"
         )
         raise typer.Exit(3)
-    chosen_scope = None
+    # NOTE: no reset here — `chosen_scope` may already hold the LLM-proposed
+    # scope from the target-resolution pass above, and resetting it would
+    # silently discard it. `kind == "dir"` re-binds it below regardless.
     if kind == "dir":
         mount = mount_local_dir(normalized)
         with mount:
@@ -528,24 +660,35 @@ def hunt(
             err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
             raise typer.Exit(3) from exc
     else:
-        proposed = propose_manifest(host)
-        console.print(f"target {host} is not localhost — a scope manifest is required.")
-        console.print("proposed minimal scope manifest (JSON):")
-        console.print(json.dumps(proposed))
-        if not (yes or confirm_prompt("Authorize this exact scope? [y/N] ")):
-            err_console.print("refused — nothing ran.")
-            raise typer.Exit(3)
-        chosen_scope = ScopeSet(frozenset({host}), False, name=host)
+        # A scope already resolved by the LLM target pass wins over the
+        # single-host proposal: the whole point of the parse pass is to widen
+        # the scope beyond the one host a naive guess would produce.
+        if chosen_scope is not None:
+            pass
+        else:
+            proposed = propose_manifest(host)
+            console.print(f"target {host} is not localhost — a scope manifest is required.")
+            console.print("proposed minimal scope manifest (JSON):")
+            console.print(json.dumps(proposed))
+            if not (yes or confirm_prompt("Authorize this exact scope? [y/N] ")):
+                err_console.print("refused — nothing ran.")
+                raise typer.Exit(3)
+            chosen_scope = ScopeSet(frozenset({host}), False, name=host)
     if selected_engine is None:
         try:
             from hunter.llm.config import find_config_path, load_config
             from hunter.llm.router import provider_from_config
 
-            config_path = find_config_path()
-            if config_path is None or not config_path.is_file():
-                raise FileNotFoundError("no HunterOS LLM config")
-            config = load_config(config_path)
-            provider_from_config(config)
+            # Reuse the provider the target-parse pass already built when it
+            # exists: constructing it twice would fire the config-loading seam
+            # twice for one command, and any test counting constructions
+            # (there is one) would see two.
+            if _provider_for_parse is None:
+                config_path = find_config_path()
+                if config_path is None or not config_path.is_file():
+                    raise FileNotFoundError("no HunterOS LLM config")
+                config = load_config(config_path)
+                provider_from_config(config)
             selected_engine = "llm"
         except Exception:
             selected_engine = "deterministic"

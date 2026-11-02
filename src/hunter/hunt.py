@@ -53,7 +53,16 @@ def normalize_hunt_target(raw: str) -> tuple[str, str]:
             return token, "url"
         return "", "invalid"
     # A bare host is accepted, but arbitrary prose is not. URL-like host:port
-    # strings are parsed only after adding the explicit scheme.
+    # strings are parsed only after adding the explicit scheme. A `0x…` hex
+    # string is a contract address, not a host — it must not become
+    # `http://0x…` (the leading digit satisfies `isdigit()` below).
+    if token.lower().startswith("0x"):
+        return "", "invalid"
+    # Whitespace means this is prose, not a host. urlparse would happily wrap
+    # `audit 0x… via https://x` into `http://audit 0x… via https://x`, which
+    # then "works" as a target and hunts a nonsense host.
+    if any(ch.isspace() for ch in token):
+        return "", "invalid"
     host = token if ("." in token or token.lower().startswith("localhost") or token[0].isdigit()) else ""
     if not host:
         return "", "invalid"
