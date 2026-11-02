@@ -54,6 +54,16 @@ from .base import CandidateFinding, EngineContext, EngineResult, Evidence, ScanP
 _SOL_SUFFIXES = frozenset({".sol"})
 _MAX_FILE_BYTES = 1_000_000
 
+# Directories that hold no deployed code. A foundry tree puts its tests in
+# test/, its dependencies in lib/ (forge-std, openzeppelin), and its deploy
+# scripts in script/. None of that ships to a chain, so a law hit there is
+# not a finding about the protocol — it is a finding about the test suite.
+#
+# Scanning them anyway produced 20,736 candidates of which 15,171 (73%) came
+# from these three directories, and 0 verified. The signal was buried in
+# noise the walk should never have collected.
+_NON_PRODUCTION_DIRS = frozenset({"test", "tests", "lib", "script", "scripts", "mock", "mocks"})
+
 # Severity ranking used to pick the primary law when a span implicates
 # several. Order matters: it is the tie-break, not a claim about the bug.
 _SEVERITY_RANK = {
@@ -744,12 +754,16 @@ class EvmEngine:
         law_hits: dict[str, int] = {}
         multi_law_spans = 0
 
-        for dirpath, _dirs, files in os.walk(root):
+        for dirpath, dirs, files in os.walk(root):
             # Containment guard: a link-named dirpath must not escape the root.
             try:
                 Path(dirpath).resolve().relative_to(root)
             except ValueError:
                 continue
+            # Prune non-production directories IN PLACE so os.walk never
+            # descends into them. Filtering after the fact still reads and
+            # classifies every line, which is where the cost was.
+            dirs[:] = [d for d in dirs if d.lower() not in _NON_PRODUCTION_DIRS]
             for fname in files:
                 path = Path(dirpath) / fname
                 # File symlinks are NOT followed.
@@ -765,7 +779,15 @@ class EvmEngine:
                     continue
                 files_scanned += 1
                 for idx, line in enumerate(text.splitlines(), start=1):
-                    hits = self._laws_for_line(line.lower())
+                    stripped = line.strip()
+                    # Imports, pragmas and comments are not code. A law needle
+                    # matching the word "message" inside `import {IMessage}`
+                    # or a doc comment produced a critical candidate per
+                    # import line — 4,521 of the 20,736 in one run. The
+                    # classifier has to see statements, not prose.
+                    if not stripped or stripped.startswith(("//", "/*", "*", "import", "pragma", "using")):
+                        continue
+                    hits = self._laws_for_line(stripped.lower())
                     if not hits:
                         continue
                     # Highest severity wins the candidate slot; ties break on

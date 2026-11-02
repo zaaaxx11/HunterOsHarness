@@ -412,3 +412,100 @@ def test_engine_emits_a_done_event(tmp_path):
     assert done, "the engine must report what it classified"
     assert done[0]["candidates"] == len(result.candidates)
     assert done[0]["laws_fired"]
+
+
+_LAW_HITTING_SOURCE = """pragma solidity ^0.8.0;
+
+contract Real {
+    function relay(bytes calldata message) external {
+        // a statement-level line that the law table classifies
+        require(msg.sender != address(0), "signature");
+    }
+}
+"""
+
+
+# ------------------------------------------------- non-production directories
+
+
+def test_test_lib_and_script_directories_are_pruned(tmp_path):
+    """Deployed code only.
+
+    A foundry tree keeps tests in test/, dependencies in lib/ and deploy
+    scripts in script/. None of it ships to a chain, so a law hit there is a
+    finding about the test suite, not the protocol. Scanning them anyway
+    produced 20,736 candidates on the relay contracts — 15,171 (73%) from
+    these three directories, and 0 verified.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    for sub in ("test", "lib", "script", "tests", "scripts", "mock", "mocks"):
+        d = root / sub
+        d.mkdir()
+        _write(d, f"Noise.sol", _LAW_HITTING_SOURCE)
+    _write(root, "Real.sol", _LAW_HITTING_SOURCE)
+
+    scope = _scope_with_roots(tmp_path, root)
+    result = EvmEngine().run(_target(root, scope), _ctx(tmp_path, local_root=root))
+
+    paths = {c.key.split("|")[1] for c in result.candidates}
+    assert paths, "the production file must still produce a candidate"
+    for path in paths:
+        assert "/test/" not in path and "/lib/" not in path and "/script/" not in path, path
+        assert "/tests/" not in path and "/scripts/" not in path and "/mock/" not in path, path
+        assert "/mocks/" not in path, path
+    assert len(paths) == 1, f"only Real.sol should survive: {paths}"
+
+
+def test_pruning_is_case_insensitive(tmp_path):
+    """Lib/ and LIB/ are the same directory to a human, so to the walk."""
+    root = tmp_path / "src"
+    root.mkdir()
+    for sub in ("Lib", "TEST"):
+        d = root / sub
+        d.mkdir()
+        _write(d, "Noise.sol", _LAW_HITTING_SOURCE)
+
+    scope = _scope_with_roots(tmp_path, root)
+    result = EvmEngine().run(_target(root, scope), _ctx(tmp_path, local_root=root))
+
+    assert result.candidates == []
+    assert result.stats["files_scanned"] == 0
+
+
+def test_import_and_comment_lines_are_not_code(tmp_path):
+    """A needle inside prose is not a finding.
+
+    `import {IMessageRouter}` and a doc comment mentioning replay both
+    matched the law table and became critical candidates — 4,521 of them in
+    one run, one per import line. The classifier has to see statements.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    _write(root, "Imports.sol", """pragma solidity ^0.8.0;
+
+import {IMessageReceiver} from "./IMessageReceiver.sol";
+import {ReplayProtection} from "./ReplayProtection.sol";
+
+// A message is accepted without full uniqueness binding.
+/// @notice replay is the default, uniqueness is the exception
+/* Cross-domain message trusted without source validation */
+contract Imports {}
+""")
+
+    scope = _scope_with_roots(tmp_path, root)
+    result = EvmEngine().run(_target(root, scope), _ctx(tmp_path, local_root=root))
+
+    assert result.candidates == [], "imports and comments must not classify"
+
+
+def test_a_real_statement_still_classifies(tmp_path):
+    """The filter must not swallow the signal it was meant to protect."""
+    root = tmp_path / "src"
+    root.mkdir()
+    _write(root, "Real.sol", _LAW_HITTING_SOURCE)
+
+    scope = _scope_with_roots(tmp_path, root)
+    result = EvmEngine().run(_target(root, scope), _ctx(tmp_path, local_root=root))
+
+    assert result.candidates, "a statement-level hit must still be reported"
