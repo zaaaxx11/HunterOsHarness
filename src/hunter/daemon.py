@@ -955,6 +955,26 @@ def daemon_status(state_dir: str | Path) -> dict[str, Any]:
     from hunter.llm.config import find_config_path
 
     config_path = find_config_path()
+    # Health surface: memory pressure + zombie count. Both are read-only and
+    # best-effort — status must render even on a host where /proc is absent.
+    from hunter.daemon_health import find_zombie_daemons, memory_snapshot
+
+    try:
+        _mem = memory_snapshot()
+        health_memory: dict[str, Any] = {
+            "available_mb": (
+                None if _mem.available_mb == float("inf") else round(_mem.available_mb, 1)
+            ),
+            "total_mb": round(_mem.total_mb, 1),
+            "pressure": _mem.pressure,
+            "source": _mem.source,
+        }
+    except Exception:  # noqa: BLE001 — status never crashes over health
+        health_memory = {"pressure": "unknown", "source": "unavailable"}
+    try:
+        health_zombies = len(find_zombie_daemons())
+    except Exception:  # noqa: BLE001
+        health_zombies = 0
     # R2-A additive liveness fields: drain flag, loop progress age. Frozen is
     # advisory only — stale heartbeats are never reported as running (see
     # daemon_running); transports suppress stale deliveries via restart.json.
@@ -983,6 +1003,8 @@ def daemon_status(state_dir: str | Path) -> dict[str, Any]:
         "draining": drain_flag_path(state).exists(),
         "queue_pending": pending,
         "queue_claimed": claimed,
+        "memory": health_memory,
+        "zombie_daemons": health_zombies,
         "transports": transports,
         "last_run": _last_run_summary(state),
         "config_path": str(config_path) if config_path is not None else "",
@@ -999,12 +1021,38 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
     here on purpose: its authority lives inside :class:`RunBudget` (a
     user-issued kill outranks every automatic limit), so every claimed task
     still lands an honest, immediately-wound-down run instead of hanging
-    unclaimed in the queue."""
+    unclaimed in the queue.
+
+    The claim gate is health-aware: before taking new work the worker reaps
+    zombie daemons (test leftovers whose state dir is gone) and refuses to
+    claim while available memory is under the floor. Holding a claim is the
+    cheap failure — the queue keeps the task and the next poll retries —
+    whereas claiming under pressure gets the run OOM-killed mid-flight and
+    leaves a half-written ledger.
+    """
+    from hunter.daemon_health import claim_gate
+
     state = Path(state_dir)
     while True:
         if not _should_claim(state):
             # Draining or paused: claim NOTHING new (in-flight claimed tasks
             # always finish — the stop.flag/RunBudget path is untouched).
+            return
+        gate = await asyncio.to_thread(claim_gate)
+        if gate.zombies_reaped:
+            try:
+                heartbeat["zombies_reaped"] = int(heartbeat.get("zombies_reaped", 0) or 0) + gate.zombies_reaped
+                heartbeat["last_reap_ts"] = time.time()
+            except Exception:
+                pass
+        if not gate.allowed:
+            # Memory pressure: leave the queue alone and let the daemon main
+            # loop re-arm us on the next poll.
+            try:
+                heartbeat["claim_held_reason"] = gate.reason
+                heartbeat["claim_held_ts"] = time.time()
+            except Exception:
+                pass
             return
         task = await asyncio.to_thread(claim_task, state)
         if task is None:

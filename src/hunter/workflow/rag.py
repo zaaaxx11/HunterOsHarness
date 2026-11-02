@@ -322,32 +322,39 @@ class RagLoop:
 
         pending = len(list(queue_dir(self.state_dir).glob("task-*.json")))
 
-        # Finding-driven work: 4 hunters per finding.
-        for finding in findings:
+        # Smart scheduling. The old rule was a flat "4 hunters per finding",
+        # which turns a few hundred candidates into a few thousand queued
+        # hunts on a 2 GB box — the queue becomes its own denial of service.
+        # The budget is sized from available memory and the existing backlog,
+        # and each finding's allowance comes from its severity.
+        from hunter.workflow.scheduler import plan_children, task_budget
+
+        budget = task_budget(high_water=self.config.high_water, pending=pending)
+        plan = plan_children(
+            findings,
+            followed=followed,
+            existing=existing,
+            budget=budget,
+            high_water=self.config.high_water,
+            pending=pending,
+        )
+
+        # Finding-driven work: allowance per finding, not a fixed four.
+        for finding, allowance in plan:
             fid = str(getattr(finding, "id", "") or "")
-            if not fid or fid in followed:
-                continue
-            # Process candidate/theoretical/verified findings.
-            status = getattr(getattr(finding, "status", None), "value", str(getattr(finding, "status", "")))
-            if status not in {"candidate", "theoretical", "verified"}:
-                continue
-            # High-water guard FIRST: a full queue must not burn an LLM call
-            # (and the finding stays un-followed so the next cycle retries it).
-            if pending >= self.config.high_water:
-                break
             origin = self._origin()
             targets = list(wonder_followups(self.config.provider, finding, self.config.scope, origin))
-            # Pad to 4 with deterministic derivations when possible.
-            if len(targets) < 4:
+            # Pad to the allowance with deterministic derivations when possible.
+            if len(targets) < allowance:
                 for t in derive_child_targets(finding, self.config.scope, origin):
                     if t not in targets:
                         targets.append(t)
-                    if len(targets) >= 4:
+                    if len(targets) >= allowance:
                         break
             # If still short, pad with the finding endpoint itself (already included) — stop.
             enqueued_for_finding = 0
             for target in targets:
-                if pending >= self.config.high_water:
+                if pending >= budget.max_total_pending:
                     break
                 if target in existing:
                     continue
@@ -378,7 +385,7 @@ class RagLoop:
             for t in existing
         }
         for host in sorted(self.config.scope.allowed_hosts):
-            if pending >= self.config.high_water:
+            if pending >= budget.max_total_pending:
                 break
             if cycle >= self.config.max_seed_variants:
                 break
