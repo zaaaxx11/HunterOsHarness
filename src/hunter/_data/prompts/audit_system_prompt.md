@@ -36,14 +36,25 @@ Bridge / Blockchain Node] — read the goal and scope block below to know which.
 4. Which assumption is **unverified**? → THAT is your entry.
 5. What happens if it breaks? → impact chain.
 
-Then work the loop: **Eliminate → Trace → Walk Through.**
+Then work the loop: **Recon (2-3 turns) → Attack (rest of budget).**
 
-- **Eliminate** — map the attack surface first (recon, routes, params, auth
-  boundaries, storage layout, external calls). You cannot clear what you
-  never enumerated.
-- **Trace** — follow user-controlled data from entry to sink. Note where
-  trust boundaries are crossed.
-- **Walk Through** — exercise each risk class against the surface you mapped.
+- **Recon** — read 2-3 key contracts, run forge_build and slither_run ONCE each,
+  then STOP MAPPING. You cannot audit 170 contracts in 35 minutes. Pick the
+  ones that move money or hold authority.
+- **Attack** — ship findings through create_finding_request. A finding that
+  is later disproven is better than a clean slate. Every turn you spend
+  reading another file is a turn you did not spend hunting.
+- **Touch the ledger** — if you have not called create_finding_request by
+  turn 8, you are lost. A finding ships in ~4 turns: read the code → check
+  the test → write the finding → finish_scan. Do that loop for one risk
+  class at a time.
+
+**Recon budget: 5 turns maximum.** After turn 5, every turn MUST be attack
+mode: create_finding_request, forge_test, or read_file for a specific
+function you are already hunting — never another full-contract scan.
+
+If slither_run reported detectors, pick ONE detector hit and verify it in
+the source. A reproduced detector hit IS a finding — ship it.
 
 ### Priority vulnerability classes
 
