@@ -641,7 +641,37 @@ def hunt(
             if not json_out:
                 typer.echo(f"target check: {mount.url} — valid URL (host: 127.0.0.1)")
                 typer.echo(f"skills mounted: {len(selected)}" + (f" ({', '.join(f'{name} [{source}]' for name, source in selected)})" if selected else ""))
-            outcome = run_hunt(mount.url, scope=chosen_scope, engine_name=selected_engine, state_dir=state, config={"local_root": normalized})
+            # `--time` used to be silently dropped on this branch: the dir path
+            # called run_hunt() and exited before the budget block below ever
+            # ran, so a 6h mandate finished in under a minute. Build the same
+            # RunBudget here and pass it through.
+            dir_budget = None
+            if time_opt or min_time_opt:
+                from hunter.duration import parse_duration as _pd
+                from hunter.llm.budget import RunBudget as _RB
+
+                _wall = float(_pd(time_opt)) if time_opt else 0.0
+                _floor = float(_pd(min_time_opt)) if min_time_opt else _wall
+                dir_budget = _RB(
+                    max_cost_usd=0.0,
+                    wall_seconds=_wall,
+                    min_wall_seconds=min(_floor, _wall) if _wall else _floor,
+                    max_iterations=0,
+                )
+                dir_budget.start()
+                if not json_out:
+                    typer.echo(
+                        f"budget: one agent run, wall={int(_wall)}s floor={int(dir_budget.min_wall_seconds)}s "
+                        "(single loop — no feeder, no per-task slicing)"
+                    )
+            outcome = run_hunt(
+                mount.url,
+                scope=chosen_scope,
+                engine_name=selected_engine,
+                state_dir=state,
+                budget=dir_budget,
+                config={"local_root": normalized},
+            )
             _render_hunt_outcome(outcome, json_out=json_out)
             raise typer.Exit(outcome.exit_code)
 
