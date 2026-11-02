@@ -383,3 +383,58 @@ def test_read_file_offset_resumes_where_the_page_ended(tmp_path: Path):
     assert outcome.get("ok") is True, outcome
     assert "line 101" in outcome.get("text", "")
     assert "line 100" not in outcome.get("text", "")
+
+
+# -- the search -> read round-trip ---------------------------------------------
+
+
+def test_read_file_accepts_the_relative_path_search_reported(tmp_path: Path):
+    """search reports root-relative paths; read_file must accept them.
+
+    search_glob returns "contracts/Config.sol" (relative to local_root), but
+    read_file resolved relative paths against the state dir — so the agent
+    could find a file and then never open it. One 25-minute contract audit
+    recorded 7 read_file failures out of 8 attempts and found nothing.
+    """
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    (project / "contracts").mkdir(parents=True)
+    target = project / "contracts" / "Config.sol"
+    target.write_text("contract Config { uint256 x; }\n", encoding="utf-8")
+    state = tmp_path / "state"
+    state.mkdir()
+    ctx = _multi_ctx(tmp_path, jail=project, local_root=project)
+
+    found = tools_local.search_glob({"glob": "contracts/*.sol", "pattern": "contract"}, ctx)
+    assert found.get("ok") is True and found.get("hits"), found
+    reported = found["hits"][0]["path"]
+    assert reported == "contracts/Config.sol", reported
+
+    # The path search reported is relative to the root it searched. Read it
+    # back exactly as reported, with the state dir (not the project) as the
+    # jail — which is the real shape of a local hunt.
+    ctx2 = _multi_ctx(tmp_path, jail=state, local_root=project)
+    outcome = tools_local.read_file({"path": reported}, ctx2)
+
+    assert outcome.get("ok") is True, outcome
+    assert "contract Config" in outcome.get("text", "")
+
+
+def test_relative_fallback_cannot_escape_the_root(tmp_path: Path):
+    """The fallback must not become a traversal hole.
+
+    Joining a root with "../x" escapes it, so the containment check has to
+    run on the JOINED path, not just on the raw argument.
+    """
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside" / "secret.txt"
+    outside.parent.mkdir()
+    outside.write_text("outside secret", encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=project, local_root=project)
+
+    for evil in ("../outside/secret.txt", "../../outside/secret.txt"):
+        outcome = tools_local.read_file({"path": evil}, ctx)
+        assert outcome.get("blocked") is True, evil
+        assert "outside secret" not in outcome.get("text", ""), evil

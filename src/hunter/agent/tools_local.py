@@ -148,6 +148,21 @@ class _MultiRoot:
         return str(self.roots[0])
 
 
+def _jail_roots(ctx: Any) -> tuple[Path, ...]:
+    """Every root the local tools may read, in resolution order.
+
+    ``_jail_dir`` returns a ``_MultiRoot`` when more than one is configured;
+    this unwraps it so callers can iterate. A single root (or none) still
+    yields a usable tuple.
+    """
+    jail = _jail_dir(ctx)
+    if jail is None:
+        return ()
+    if isinstance(jail, _MultiRoot):
+        return jail.roots
+    return (jail,)
+
+
 def _relative_display(path: Path, jail: Any) -> str:
     """Path relative to whichever root contains it, for display in hits."""
     if isinstance(jail, _MultiRoot):
@@ -543,6 +558,28 @@ def read_file(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     # path, which blocked the target project on a local hunt — the agent was
     # told to audit /home/.../contracts and then could not read it.
     _jail_root, resolved, err = _resolve_jailed(ctx, raw_path)
+    if not raw_path.startswith(("/", "\\")):
+        # A relative path resolves against the FIRST jail root, which is the
+        # state dir on a local hunt — but search_glob and search_files report
+        # paths relative to the root they FOUND them in, which is local_root.
+        # Handing that path straight back resolved to
+        # state/contracts/Config.sol, which does not exist, and read_file
+        # returned read.not_found: the agent could find a file and then never
+        # open it. If the resolved path is not a real file, try every root
+        # before giving up.
+        #
+        # Containment is re-checked on the joined path: joining a root with
+        # "../x" escapes that root, and that must stay blocked.
+        if resolved is None or not resolved.is_file():
+            for root in _jail_roots(ctx):
+                try:
+                    candidate = (root / raw_path).resolve()
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if (candidate == root or root in candidate.parents) and candidate.is_file():
+                    resolved = candidate
+                    err = None
+                    break
     if err is not None or resolved is None:
         return _blocked("scope.outside_jail", f"BLOCKED [scope.outside_jail] path escapes jail: {raw_path!r}")
     try:
