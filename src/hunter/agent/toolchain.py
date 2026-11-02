@@ -467,11 +467,22 @@ def slither_run(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     _emit(ctx, "slither_run", {"root": str(root)})
     result = _run(argv, cwd=root, timeout_s=int(args.get("timeout_s", 300)))
     if result.get("ok"):
-        # Parse the JSON so the caller gets findings, not a wall of text.
-        # A parse failure is reported, not hidden: an unparseable Slither run
-        # is a real state the operator needs to see.
+        # Slither JSON output is routinely 30-80 KB — well past the 16 KB
+        # _truncate cap. A truncated JSON fails to parse, so the agent never
+        # sees a single detector. _run already captured the full stdout via
+        # subprocess; _truncate cuts it afterwards. Re-collect without it.
+        raw_stdout = ""
         try:
-            parsed = json.loads(result.get("stdout", "") or "{}")
+            raw = subprocess.run(  # noqa: S603
+                argv, cwd=root, env=_child_env(root),
+                capture_output=True, text=True,
+                timeout=300, check=False,
+            )
+            raw_stdout = raw.stdout or ""
+        except (subprocess.TimeoutExpired, OSError):
+            raw_stdout = result.get("stdout", "")
+        try:
+            parsed = json.loads(raw_stdout or "{}")
         except json.JSONDecodeError as exc:
             result["slither_json_ok"] = False
             result["slither_parse_error"] = f"{type(exc).__name__}: {exc}"
@@ -488,6 +499,17 @@ def slither_run(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
                 }
                 for d in detectors[:50]
             ]
+            # result_for_model was raw stdout — thousands of lines of JSON.
+            # The agent saw the raw text, not the parsed detector list, so it
+            # never knew slither flagged reentrancy, access control gaps, etc.
+            # Four hunts ran slither and produced zero findings because the
+            # summary was invisible.
+            summary_lines = [f"Slither found {len(detectors)} detector(s)."]
+            for d in result["detectors"][:20]:
+                summary_lines.append(
+                    f"  [{d['impact']}|{d['confidence']}] {d['check']}: {d['description']}"
+                )
+            result["result_for_model"] = "\n".join(summary_lines)[:4000]
     return result
 
 
