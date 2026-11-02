@@ -150,6 +150,7 @@ class ChatEngine:
         ledger_factory: Any = None,
         options: dict[str, Any] | None = None,
         confirm_fn: Any = None,
+        ask_fn: Any = None,
     ) -> None:
         self._owns_store = store is None
         self.store = store if store is not None else ChatStore()
@@ -187,6 +188,12 @@ class ChatEngine:
         self.options.setdefault("state_dir", state_dir)
         self.options.setdefault("hunt_mode", False)
         self.options["session_id"] = self.session_id
+        # Interactive commands (/model, /hunt with no target) prompt through
+        # this seam. It is only installed when a real console is available —
+        # a scripted or piped surface leaves it unset and those commands
+        # degrade to their non-interactive form instead of blocking on stdin.
+        if "ask_fn" not in self.options and ask_fn is not None:
+            self.options["ask_fn"] = ask_fn
         self.confirm_fn = confirm_fn
         self._intent = IntentRouter()
         self._ledger_factory = ledger_factory
@@ -926,6 +933,16 @@ def run_repl(
                 return False
             return answer in ("y", "yes")
         engine.confirm_fn = _console_confirm
+    # Interactive slash commands (/model, /hunt with no target) prompt through
+    # this seam. EOF is treated as "no answer" so a closed stdin cancels the
+    # prompt instead of raising into the REPL loop.
+    if "ask_fn" not in engine.options:
+        def _console_ask(prompt: str, default: str = "") -> str:
+            try:
+                return console.input(prompt).strip()
+            except (EOFError, KeyboardInterrupt):
+                return ""
+        engine.options["ask_fn"] = _console_ask
     console.print(banner(engine))
     armed = 0  # Ctrl-C stage within the current prompt cycle
     while True:

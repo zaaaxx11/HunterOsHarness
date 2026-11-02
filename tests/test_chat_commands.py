@@ -392,3 +392,136 @@ def test_model_list_survives_a_dead_endpoint(ctx, monkeypatch):
 
     assert "could not list models" in reply.text
     assert reply.data.get("error")
+
+
+# ------------------------------------- /model interactive provider -> model picker
+
+
+def _ctx_with_ask(ctx, answers):
+    """A ctx whose ask_fn replays ``answers`` in order (scripted operator)."""
+    remaining = list(answers)
+
+    def ask(prompt, default=""):
+        return remaining.pop(0) if remaining else default
+
+    ctx.options["ask_fn"] = ask
+    return ctx
+
+
+def test_bare_model_picks_provider_then_model(ctx, monkeypatch):
+    """`/model` with no args must run the provider -> model flow.
+
+    Before this, the REPL could APPLY a model but could not show which
+    providers or models existed — switching meant leaving the session.
+    """
+    import hunter.chat.commands as cmd_mod
+    from hunter.chat.commands import _model_pick
+
+    # _model_pick imports list_models inside the function body, so the patch
+    # has to land on the calling module — patching hunter.llm.probe does
+    # nothing and the probe silently returns the real (empty) list.
+    monkeypatch.setattr(cmd_mod, "_probe_models", lambda *a, **k: ["model-a", "model-b"])
+    # Pick by NAME, not row number: the first known row (openai) has no
+    # base_url, so the picker cannot probe it and falls back to manual entry.
+    # A provider with a URL is the one that exercises the model menu.
+    _ctx_with_ask(ctx, ["openrouter", "2"])
+
+    reply = _model_pick(ctx)
+
+    assert reply.data["model"] == "model-b"
+    assert reply.data["provider"] == "openrouter"
+    # the rendered menu must reach the reply, not vanish into a buffer
+    assert "model-a" in reply.text
+
+
+def test_bare_model_accepts_a_provider_name_not_just_a_number(ctx, monkeypatch):
+    import hunter.chat.commands as cmd_mod
+    from hunter.chat.commands import _model_pick
+
+    monkeypatch.setattr(cmd_mod, "_probe_models", lambda *a, **k: ["only-model"])
+    _ctx_with_ask(ctx, ["openrouter", "1"])
+
+    reply = _model_pick(ctx)
+
+    assert reply.data["provider"] == "openrouter"
+    # One model detected: the picker offers it as the default, so a blank or
+    # "1" both keep it.
+    assert reply.data["model"] == "only-model"
+
+
+def test_bare_model_rejects_an_unknown_provider(ctx):
+    from hunter.chat.commands import _model_pick
+
+    _ctx_with_ask(ctx, ["not-a-provider"])
+    reply = _model_pick(ctx)
+
+    assert "unknown provider" in reply.text
+    assert reply.data.get("unknown_provider") == "not-a-provider"
+
+
+def test_bare_model_blank_answer_cancels(ctx):
+    from hunter.chat.commands import _model_pick
+
+    _ctx_with_ask(ctx, [""])
+    reply = _model_pick(ctx)
+
+    assert reply.data.get("cancelled") is True
+
+
+def test_bare_model_without_an_input_channel_shows_the_map(ctx):
+    """A piped or scripted surface must not hang on stdin.
+
+    The picker degrades to the tier map instead of blocking — a `/model`
+    delivered over a pipe has nobody to answer the prompt.
+    """
+    from hunter.chat.commands import _model_pick
+
+    ctx.options.pop("ask_fn", None)
+    reply = _model_pick(ctx)
+
+    assert "model tiers:" in reply.text
+    assert "models" in reply.data
+
+
+def test_bare_model_survives_a_dead_endpoint(ctx, monkeypatch):
+    """A dead provider must not kill the REPL — manual entry instead."""
+    import hunter.chat.commands as cmd_mod
+    from hunter.chat.commands import _model_pick
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(cmd_mod, "_probe_models", boom)
+    _ctx_with_ask(ctx, ["openrouter", "my-manual-model"])
+
+    reply = _model_pick(ctx)
+
+    assert reply.data["model"] == "my-manual-model"
+
+
+def test_bare_model_global_persists_provider_and_model(ctx, monkeypatch, tmp_path):
+    """--global must write BOTH provider and model.
+
+    A model id only means something against the provider that serves it;
+    persisting one without the other leaves a config that resolves to a
+    different brain than the operator picked.
+    """
+    import hunter.chat.commands as cmd_mod
+    from hunter.chat.commands import _model_pick
+
+    monkeypatch.setattr(cmd_mod, "_probe_models", lambda *a, **k: ["pinned-model"])
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("model_tiers:\n  orchestrator:\n    model: old\n")
+    ctx.config.source_path = str(cfg_file)
+    ctx.options["model_global"] = True
+    _ctx_with_ask(ctx, ["openrouter", "1"])
+
+    reply = _model_pick(ctx)
+
+    assert "persisted" in reply.text
+    import yaml
+
+    parsed = yaml.safe_load(cfg_file.read_text())
+    tier_block = parsed["model_tiers"]["orchestrator"]
+    assert tier_block["model"] == "pinned-model"
+    assert tier_block["provider"] == "openrouter"

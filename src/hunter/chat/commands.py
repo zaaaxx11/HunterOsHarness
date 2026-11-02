@@ -126,7 +126,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("curate", "Draft skills from a run's retro (preview + confirm; never auto-saves)", "Audit",
                args_hint="[run_id]", busy_policy="reject"),
     # Configuration
-    CommandDef("model", "Show or switch the model for a tier (session-scoped; --global persists)",
+    CommandDef("model", "Pick provider then model (interactive), or set one directly",
                "Config", args_hint="[tier] [model] [--global] | --list | --providers"),
     CommandDef("scope", "Show the active scope summary", "Config"),
     CommandDef("verbose", "Cycle chat verbosity (normal -> verbose -> quiet)", "Config"),
@@ -612,6 +612,207 @@ def _exec_report(ctx: CommandContext) -> CommandReply:
 # -- configuration commands (/model, /scope, /verbose) -----------------------
 
 
+def _probe_models(base_url: str, key_value: str) -> list[str]:
+    """The model-list probe, as a module-level seam.
+
+    Both ``/model`` paths dial the endpoint through this one function so a
+    test (or a future offline mode) can replace the probe in one place. A
+    local import keeps the module import light; the indirection is what makes
+    it patchable — patching ``hunter.llm.probe.list_models`` directly has no
+    effect on a function that imported it locally.
+    """
+    from hunter.llm.probe import list_models
+
+    return list_models(base_url, key_value)
+
+
+def _model_map(cfg) -> CommandReply:
+    """The tier → model map, plus the active chain for the agent tier.
+
+    Kept as its own function so the no-input-channel fallback and any future
+    `/model map` share one implementation instead of two copies that drift.
+    """
+    from hunter.llm.base import TIERS
+    from hunter.llm.config import resolve_model
+
+    lines = ["model tiers:"]
+    resolved: dict[str, str] = {}
+    for tier in TIERS:
+        try:
+            model = resolve_model(tier, cfg)
+        except HunterError:
+            model = "(unset)"
+        resolved[tier] = model
+        lines.append(f"  {tier}: {model}")
+    lines.append(f"agent.tier: {cfg.agent.tier}")
+    try:
+        from hunter.llm.router import ProviderRouter, describe_chain  # noqa: PLC0415 — lazy
+
+        class _NoNet:
+            def completion(self, **kwargs):
+                raise RuntimeError("chain view only (no dial)")
+
+            def completion_cost(self, response):
+                return 0.0
+
+        _router = ProviderRouter(cfg, litellm_module=_NoNet())
+        lines.append(describe_chain(_router, "orchestrator"))
+    except Exception:
+        lines.append("last: no attempts recorded yet")
+    return CommandReply("\n".join(lines), data={"models": resolved})
+
+
+def _model_pick(ctx) -> CommandReply:
+    """``/model`` with no arguments — provider menu, then model menu.
+
+    This is the interactive twin of `hunter model`, and it exists because
+    switching a model from inside a session used to mean leaving the session:
+    the REPL could apply a model but could not show you which providers and
+    models existed. Same flow, same probe, same picker — one surface.
+
+    The flow is: numbered provider menu (configured first) → advisory
+    endpoint probe → numbered model menu → apply to the tier. Every prompt
+    rides the ``ask_fn`` seam the REPL installs; without one (a piped or
+    scripted surface) the command says so instead of hanging on stdin.
+    """
+    from hunter.llm.base import TIERS, normalize_tier
+    from hunter.llm.providers import CUSTOM_NAME, KnownProvider, known_provider, known_provider_names
+
+    cfg = ctx.config
+    if cfg is None:
+        return CommandReply(
+            "no model configuration loaded — " + NO_MODEL_HINT, data={"configured": False}
+        )
+    ask = ctx.options.get("ask_fn")
+    if ask is None:
+        # No input channel: show the map rather than hanging on a stdin that
+        # is not there. A piped `/model` must not block the surface.
+        return _model_map(cfg)
+
+    tier = normalize_tier(str(ctx.options.get("tier") or cfg.agent.tier or "orchestrator"))
+    if tier not in TIERS:
+        tier = "orchestrator"
+
+    # ---- provider menu: configured first, then known rows, then custom -------
+    rows: list[tuple[str, str, KnownProvider | None]] = []
+    seen: set[str] = set()
+    for name, block in cfg.providers.items():
+        known = known_provider(name)
+        rows.append((name, block.base_url or (known.base_url if known else ""), known))
+        seen.add(name)
+    for entry in known_provider_names():
+        if entry not in seen:
+            known = known_provider(entry)
+            rows.append((entry, known.base_url if known else "", known))
+            seen.add(entry)
+    if CUSTOM_NAME not in seen:
+        rows.append((CUSTOM_NAME, "", None))
+
+    lines = ["providers:"]
+    for index, (name, url, known) in enumerate(rows, start=1):
+        note = known.note if known is not None else "any OpenAI-compatible base URL"
+        suffix = f" ({url})" if url else ""
+        lines.append(f"  {index}. {name} — {note}{suffix}")
+    reply = ask("provider [1]", "1").strip()
+    if not reply:
+        return CommandReply("cancelled — nothing was changed", data={"cancelled": True})
+
+    if reply.isdigit() and 1 <= int(reply) <= len(rows):
+        name, base_url, known = rows[int(reply) - 1]
+    elif reply in {r[0] for r in rows}:
+        name, base_url, known = next(r for r in rows if r[0] == reply)
+    else:
+        return CommandReply(
+            f"unknown provider {reply!r} — pick one of: {', '.join(r[0] for r in rows)}",
+            data={"unknown_provider": reply},
+        )
+
+    if name == CUSTOM_NAME and not base_url:
+        base_url = ask("base URL (OpenAI-compatible, e.g. https://llm.corp.example.com/v1)", "").strip()
+        if not base_url:
+            return CommandReply("cancelled — no base URL given", data={"cancelled": True})
+    if name == CUSTOM_NAME:
+        known = None
+
+    # ---- advisory probe + model menu -----------------------------------------
+    key_env = known.key_env if known is not None else ""
+    key_value = ""
+    if key_env:
+        import os
+
+        key_value = os.environ.get(key_env, "")
+    models: list[str] = []
+    probe_note = ""
+    if base_url:
+        try:
+            models = _probe_models(base_url, key_value)
+        except Exception as exc:  # noqa: BLE001 — a dead endpoint must not kill the REPL
+            probe_note = f"probe failed ({exc}) — enter a model id manually"
+    if not models and not probe_note and base_url:
+        probe_note = "endpoint returned no models — enter a model id manually"
+
+    from hunter.cli.wizard_steps import pick_model
+
+    notes: list[str] = [probe_note] if probe_note else []
+    picker_console, picker_buffer = _reply_console()
+    model = pick_model(
+        models=models,
+        known=known,
+        ask=ask,
+        console=picker_console,
+        notes=notes,
+        current_model=cfg.model_tiers.get(tier).model if cfg.model_tiers.get(tier) else "",
+    )
+    # The menu pick_model rendered is the part the operator needs to see
+    # alongside the prompt — without it the numbered list never reaches the
+    # reply and the choice looks like it came from nowhere.
+    menu = picker_buffer.getvalue().strip()
+    if not model:
+        cancelled = "no model given — nothing was changed"
+        return CommandReply(
+            f"{menu}\n{cancelled}" if menu else cancelled, data={"cancelled": True}
+        )
+
+    cfg.model_tiers[tier].provider = name
+    cfg.model_tiers[tier].model = model
+    reply_lines = [f"{tier} -> {name}/{model} (session-scoped)"]
+    if ctx.options.get("model_global"):
+        persisted = _persist_model(cfg, tier, model, provider=name)
+        if persisted is None:
+            reply_lines.append(
+                "not persisted: no config file — " + NO_MODEL_HINT
+                + " (the session-scoped change stays active)"
+            )
+        else:
+            reply_lines.append(f"persisted to {persisted}")
+    reply_lines.append("switch back with /model, or pin it with --global")
+    body = "\n".join(reply_lines)
+    return CommandReply(
+        f"{menu}\n{body}" if menu else body,
+        data={"tier": tier, "model": model, "provider": name},
+    )
+
+
+def _reply_console():
+    """A console that captures what ``pick_model`` prints.
+
+    ``pick_model`` renders its numbered menu through a Rich console. In the
+    REPL the reply text is the only thing the operator sees, so the menu has
+    to land there — printed straight to the terminal it scrolls away under
+    the prompt and the operator picks blind.
+
+    Returns ``(console, buffer)``: read ``buffer.getvalue()`` after the call
+    and prepend it to the reply.
+    """
+    import io
+
+    from rich.console import Console
+
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, no_color=True, markup=False, highlight=False)
+    return console, buffer
+
+
 def _model_list(cfg) -> CommandReply:
     """``/model --list`` — the models the active provider actually offers.
 
@@ -718,31 +919,10 @@ def _exec_model(ctx: CommandContext) -> CommandReply:
             return _model_providers(cfg)
         if opts.get("list"):
             return _model_list(cfg)
-        lines = ["model tiers:"]
-        resolved: dict[str, str] = {}
-        for tier in TIERS:
-            try:
-                model = resolve_model(tier, cfg)
-            except HunterError:
-                model = "(unset)"
-            resolved[tier] = model
-            lines.append(f"  {tier}: {model}")
-        lines.append(f"agent.tier: {cfg.agent.tier}")
-        try:
-            from hunter.llm.router import ProviderRouter, describe_chain  # noqa: PLC0415 — lazy
-
-            class _NoNet:
-                def completion(self, **kwargs):
-                    raise RuntimeError("chain view only (no dial)")
-
-                def completion_cost(self, response):
-                    return 0.0
-
-            _router = ProviderRouter(cfg, litellm_module=_NoNet())
-            lines.append(describe_chain(_router, "orchestrator"))
-        except Exception:
-            lines.append("last: no attempts recorded yet")
-        return CommandReply("\n".join(lines), data={"models": resolved})
+        # Bare /model: the interactive provider → model picker. On a surface
+        # with no input channel (piped, scripted) it degrades to the tier map
+        # instead of hanging on stdin.
+        return _model_pick(ctx)
 
     # v0.4 rename: legacy aliases normalize BEFORE the membership check and
     # before any mutation/persist — the config file never regains an old key.
@@ -776,16 +956,25 @@ def _exec_model(ctx: CommandContext) -> CommandReply:
     return CommandReply("\n".join(reply_lines), data=data)
 
 
-def _persist_model(cfg: HunterConfig, tier: str, model: str) -> str | None:
+def _persist_model(cfg: HunterConfig, tier: str, model: str, provider: str = "") -> str | None:
     """Write the tier model back into the loaded YAML file (if any) through
     hunter.llm.writing — the canonical commented template survives (the old
-    raw safe_dump destroyed every comment in the file)."""
+    raw safe_dump destroyed every comment in the file).
+
+    ``provider`` is written alongside the model when given: a model id is
+    only meaningful against the provider that serves it, so persisting one
+    without the other leaves a config that resolves to a different brain
+    than the one the operator picked.
+    """
     from hunter.llm.writing import write_config
 
     source = cfg.source_path
     if not source:
         return None
-    write_config({"model_tiers": {tier: {"model": model}}}, source)
+    tier_update: dict[str, Any] = {"model": model}
+    if provider:
+        tier_update["provider"] = provider
+    write_config({"model_tiers": {tier: tier_update}}, source)
     return source
 
 

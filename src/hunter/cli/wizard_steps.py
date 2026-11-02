@@ -263,7 +263,14 @@ def pick_model(
     Known providers without a base URL fall back to their table default."""
     if len(models) == 1:
         console.print(f"Detected model: {models[0]}", markup=False, highlight=False)
-        return ask("model", models[0]).strip() or models[0]
+        reply = ask("model", models[0]).strip()
+        # A lone detected model still gets a numbered-menu reflex: operators
+        # answer "1" out of habit. Returning that verbatim sets the model to
+        # the string "1", which then fails at call time with a confusing
+        # model-not-found. Treat 1 (and a blank) as "keep the detected one".
+        if not reply or reply == "1":
+            return models[0]
+        return reply
     if models:
         console.print("available models:", markup=False, highlight=False)
         for index, entry in enumerate(models, start=1):

@@ -690,3 +690,67 @@ def test_provider_add_wizard_keys_env_written_first(tmp_path):
     assert f'CORP_KEY="{SENTINEL}"' in keys_text  # keys.env already exists
     assert target.read_bytes() == before  # the corrupted config is untouched
     assert SENTINEL not in _wizard_text(out, err_console)
+
+
+# --------------------------------------------------------------- pick_model
+
+
+def test_pick_model_single_detected_keeps_it_when_the_operator_says_1():
+    """One detected model, operator answers "1" out of menu habit.
+
+    Returning the reply verbatim sets the model to the literal string "1",
+    which fails later at call time with a model-not-found that points at the
+    wrong thing. "1" and a blank both mean "keep the detected model".
+    """
+    import io
+
+    from rich.console import Console
+
+    from hunter.cli.wizard_steps import pick_model
+
+    console = Console(file=io.StringIO(), width=100, no_color=True)
+    model = pick_model(
+        models=["only-one-model"],
+        known=None,
+        ask=lambda prompt, default="": "1",
+        console=console,
+        notes=[],
+    )
+    assert model == "only-one-model"
+
+
+def test_pick_model_single_detected_keeps_it_on_a_blank_answer():
+    import io
+
+    from rich.console import Console
+
+    from hunter.cli.wizard_steps import pick_model
+
+    console = Console(file=io.StringIO(), width=100, no_color=True)
+    model = pick_model(
+        models=["only-one-model"],
+        known=None,
+        ask=lambda prompt, default="": "",
+        console=console,
+        notes=[],
+    )
+    assert model == "only-one-model"
+
+
+def test_pick_model_single_detected_still_accepts_a_typed_id():
+    """A deliberate override must still win — only the bare "1" is a reflex."""
+    import io
+
+    from rich.console import Console
+
+    from hunter.cli.wizard_steps import pick_model
+
+    console = Console(file=io.StringIO(), width=100, no_color=True)
+    model = pick_model(
+        models=["only-one-model"],
+        known=None,
+        ask=lambda prompt, default="": "some-other-model",
+        console=console,
+        notes=[],
+    )
+    assert model == "some-other-model"
