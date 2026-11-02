@@ -265,6 +265,12 @@ def hunt(
     close_outcome: str | None = typer.Option(
         None, "--outcome", help="close verb: proven | partial | blocked | abandoned (ignored for plain hunts)."
     ),
+    session_id: str | None = typer.Option(
+        None, "--session", help="Session id for this hunt (one daemon per session)."
+    ),
+    resume: str | None = typer.Option(
+        None, "--resume", help="Resume a closed session by id instead of starting a new one."
+    ),
 ) -> None:
     """One-command hunt with Strix exit codes: 0 clean, 1 error, 2 findings, 3 refused.
 
@@ -752,6 +758,47 @@ def hunt(
                 "(single loop — no feeder, no per-task slicing)"
             )
 
+    # Session lifecycle. One daemon per session: `--session <id>` claims it,
+    # a second hunt with the same id attaches instead of spawning a twin, and
+    # `--resume <id>` picks a closed session back up with its findings, PoCs,
+    # and skills intact. When the hunt finishes the session is closed, which
+    # stops the daemon and frees RAM and disk while keeping the value.
+    from hunter.session import (
+        SessionExists,
+        SessionNotFound,
+        close_session,
+        create_session,
+        open_session,
+        resume_session,
+    )
+
+    active_session = None
+    if resume:
+        try:
+            active_session = resume_session(resume, state_dir=state)
+            if not json_out:
+                typer.echo(f"session {resume} resumed — target {active_session.target}")
+        except SessionNotFound as exc:
+            err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+            raise typer.Exit(3) from exc
+    elif session_id:
+        try:
+            active_session = create_session(
+                target=normalized,
+                engine=selected_engine or "llm",
+                state_dir=state,
+                session_id=session_id,
+            )
+        except SessionExists as exc:
+            # Not fatal: attach to the running session rather than refusing.
+            try:
+                active_session = open_session(session_id, state_dir=state)
+                if not json_out:
+                    typer.echo(f"session {session_id} already active — attaching")
+            except SessionNotFound:
+                err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+                raise typer.Exit(3) from exc
+
     outcome = run_hunt(
         normalized,
         scope=chosen_scope,
@@ -760,6 +807,20 @@ def hunt(
         budget=run_budget,
     )
     _render_hunt_outcome(outcome, json_out=json_out)
+
+    if active_session is not None:
+        # The hunt is over: free the daemon, the queue, and the WAL sidecars.
+        # Findings, PoCs, reports, and skills stay.
+        try:
+            close_session(active_session.id, state_dir=state)
+            if not json_out:
+                typer.echo(
+                    f"session {active_session.id} closed — findings, PoCs, and skills kept; "
+                    "daemon and queue freed"
+                )
+        except SessionNotFound:  # pragma: no cover - closed concurrently
+            pass
+
     raise typer.Exit(outcome.exit_code)
 
 
@@ -2037,6 +2098,84 @@ register_daemon_commands(app)
 
 cron_app = typer.Typer(help="Scheduled hunts (persisted cron jobs).")
 app.add_typer(cron_app, name="cron")
+
+session_app = typer.Typer(help="Hunt sessions (one daemon per session, resumable).")
+app.add_typer(session_app, name="session")
+
+
+@session_app.command("list")
+def session_list_cmd(
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    all_sessions: bool = typer.Option(False, "--all", help="Include closed sessions."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
+) -> None:
+    """List hunt sessions (active by default)."""
+    import json as _json
+
+    from hunter.session import list_sessions
+
+    records = list_sessions(state_dir=state, include_closed=all_sessions)
+    if json_out:
+        typer.echo(_json.dumps([r.as_dict() for r in records], indent=2))
+        return
+    if not records:
+        typer.echo("no sessions — `hunter hunt <target>` starts one")
+        return
+    for r in records:
+        age = "closed" if r.status == "closed" else "active"
+        typer.echo(f"{r.id:24s} {age:8s} {r.engine:14s} {r.target}")
+
+
+@session_app.command("close")
+def session_close_cmd(
+    session_id: str = typer.Argument(..., help="Session id to close."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
+) -> None:
+    """Close a session: stop its daemon, free RAM and disk, keep the value.
+
+    Findings, PoCs, reports, and curated skills survive. The queue, daemon
+    runtime state, and ledger WAL sidecars are discarded.
+    """
+    import json as _json
+
+    from hunter.session import SessionNotFound, close_session
+
+    try:
+        result = close_session(session_id, state_dir=state)
+    except SessionNotFound as exc:
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+        raise typer.Exit(3) from exc
+    if json_out:
+        typer.echo(_json.dumps(result, indent=2))
+        return
+    typer.echo(f"session {session_id} closed")
+    typer.echo(f"  daemon stopped: {result['daemon_stopped']}")
+    typer.echo(f"  kept:     {', '.join(result['kept']) or '(nothing)'}")
+    typer.echo(f"  discarded: {', '.join(result['discarded']) or '(nothing)'}")
+
+
+@session_app.command("resume")
+def session_resume_cmd(
+    session_id: str = typer.Argument(..., help="Session id to resume."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
+) -> None:
+    """Resume a closed session — findings, PoCs, and skills are still there."""
+    import json as _json
+
+    from hunter.session import SessionNotFound, resume_session
+
+    try:
+        record = resume_session(session_id, state_dir=state)
+    except SessionNotFound as exc:
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
+        raise typer.Exit(3) from exc
+    if json_out:
+        typer.echo(_json.dumps(record.as_dict(), indent=2))
+        return
+    typer.echo(f"session {session_id} resumed — target {record.target} ({record.engine})")
+    typer.echo(f"  state: {record.state_dir}")
 
 promote_app = typer.Typer(
     help="Promote proven-live critical/high findings into reusable skills and tools.",
