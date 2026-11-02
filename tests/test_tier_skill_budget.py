@@ -29,7 +29,7 @@ def test_no_tier_every_tool_registered_once():
     registry = build_registry(plugins_enabled=False)
     names = [t["function"]["name"] for t in registry.schemas_for_tier()]
     assert len(names) == len(set(names)), "no duplicate tool names"
-    assert len(names) == 23, f"pin count: {len(names)}"
+    assert len(names) == 26, f"pin count: {len(names)}"
     for expected in ("shell_exec", "delegate_task", "nuclei_scan", "sqlmap_test"):
         assert expected in names, expected
     # tier requests are inert: the same surface comes back either way
