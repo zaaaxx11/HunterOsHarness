@@ -316,7 +316,17 @@ def _execute_scan(
     machine.start("score")
     machine.close_current()
     machine.start("recon")
-    target = TargetSpec(url=target_url, scope=scope, notes={})
+    # The brain needs to know what it is auditing. A local-directory hunt is
+    # mounted on a loopback URL, so the URL alone says nothing about the
+    # surface — with empty notes the goal reads "Audit http://127.0.0.1:PORT/"
+    # and the model probes it with http_request, finding directory listings
+    # and missing the contracts. Carry the local root through so build_goal
+    # can name the surface and the right tools.
+    target_notes: dict[str, Any] = {}
+    local_root = config.get("local_root") if isinstance(config, dict) else None
+    if local_root:
+        target_notes["local_root"] = str(local_root)
+    target = TargetSpec(url=target_url, scope=scope, notes=target_notes)
 
     # -- plan -------------------------------------------------------------------
     emit(EventKind.PHASE_STARTED, {"phase": "plan"})

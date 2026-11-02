@@ -125,22 +125,68 @@ def _tier(ctx: Any) -> str:
         return "basic"
 
 
+class _MultiRoot:
+    """Several allowed roots, behaving like one for containment checks.
+
+    ``resolved != jail and jail not in resolved.parents`` is the containment
+    test every local tool runs. A list of roots cannot answer it, so this
+    wrapper does — and ``str()`` still yields a usable path for messages.
+    """
+
+    __slots__ = ("roots",)
+
+    def __init__(self, roots: list[Path]) -> None:
+        self.roots = tuple(roots)
+
+    def contains(self, candidate: Path) -> bool:
+        return any(candidate == r or r in candidate.parents for r in self.roots)
+
+    def __str__(self) -> str:
+        return str(self.roots[0])
+
+    def __fspath__(self) -> str:
+        return str(self.roots[0])
+
+
+def _relative_display(path: Path, jail: Any) -> str:
+    """Path relative to whichever root contains it, for display in hits."""
+    if isinstance(jail, _MultiRoot):
+        for root in jail.roots:
+            try:
+                return path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+        raise ValueError("path is outside every root")
+    return path.relative_to(jail).as_posix()
+
+
 def _resolve_jailed(ctx: Any, raw_path: str) -> tuple[Path | None, Path | None, str | None]:
     """Resolve ``raw_path`` strictly inside the jail. Returns (jail, resolved, error_code)."""
     jail = _jail_dir(ctx)
     if jail is None:
         return None, None, "search.jail_violation"
-    if raw_path.startswith("/") or raw_path.startswith("\\"):
-        return jail, None, "blocked"
+    # An ABSOLUTE path is not automatically an escape. The old rule refused
+    # every leading "/" outright, which blocked the target project itself on
+    # a local hunt — the agent was told to audit /home/.../contracts and then
+    # refused when it tried to read exactly that. Absolute paths are now
+    # resolved and checked for containment like any other.
+    is_absolute = raw_path.startswith(("/", "\\"))
     norm = _norm_seps(raw_path).lstrip("/")
     if not norm or re.match(r"^[a-zA-Z]:/", norm) or ".." in norm.split("/"):
         return jail, None, "blocked"
-    candidate = Path(str(jail) + "/" + norm)
+    # Keep the leading slash on an absolute path: stripping it turns
+    # /home/.../contracts into the RELATIVE path home/.../contracts, which
+    # then resolves against the cwd and fails containment for the wrong
+    # reason.
+    candidate = Path(("/" + norm) if is_absolute else f"{jail}/{norm}")
     try:
         resolved = candidate.resolve()
     except OSError:
         return jail, None, "blocked"
-    if resolved != jail and jail not in resolved.parents:
+    if isinstance(jail, _MultiRoot):
+        if not jail.contains(resolved):
+            return jail, None, "blocked"
+    elif resolved != jail and jail not in resolved.parents:
         return jail, None, "blocked"
     return jail, resolved, None
 
@@ -171,7 +217,15 @@ def search_glob(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
                         f"BLOCKED [search.jail_violation] glob escapes jail: {raw_glob!r}")
     hits: list[dict[str, Any]] = []
     try:
-        paths = sorted(p for p in jail.glob(norm) if p.is_file())
+        # A multi-root jail has no single directory to glob from, so walk each
+        # root and keep the hits. Globbing only the first root would silently
+        # hide the target project when the state dir happens to be listed
+        # first.
+        roots = jail.roots if isinstance(jail, _MultiRoot) else (jail,)
+        paths: list[Path] = []
+        for root in roots:
+            paths.extend(p for p in root.glob(norm) if p.is_file())
+        paths.sort()
     except (OSError, ValueError):
         _emit(ctx, "search_glob", {"code": "search.io_error"})
         return {"ok": False, "blocked": False, "code": "search.io_error",
@@ -183,7 +237,7 @@ def search_glob(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
             if path.stat().st_size > _MAX_FILE_BYTES:
                 continue
             try:
-                rel = path.relative_to(jail).as_posix()
+                rel = _relative_display(path, jail)
             except ValueError:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -257,18 +311,42 @@ def archive_read(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
 
 
 def _jail_dir(ctx: Any) -> Path | None:
-    raw = None
+    """The directory tree the local tools may read.
+
+    ``jail`` wins when set; otherwise the state dir. But a hunt against a
+    local project has its source somewhere else entirely — the state dir only
+    holds the ledger. With the state dir as the only jail, every absolute
+    path into the target is refused as "escapes jail", which is exactly
+    backwards: the target is the one place the agent MUST be able to read.
+
+    So ``local_root`` is honoured as a jail too, and a path is accepted when
+    it resolves inside ANY of them. The containment rule is unchanged — a
+    path outside every root is still refused.
+    """
+    raw_roots: list[str] = []
     try:
         cfg = getattr(ctx, "config", {}) or {}
-        raw = cfg.get("jail", cfg.get("state_dir"))
+        for key in ("jail", "local_root", "state_dir"):
+            value = cfg.get(key)
+            if value:
+                raw_roots.append(str(value))
     except Exception:
-        raw = None
-    if not raw:
+        raw_roots = []
+    if not raw_roots:
         return None
-    try:
-        return Path(str(raw)).resolve()
-    except OSError:
+    resolved: list[Path] = []
+    for raw in raw_roots:
+        try:
+            resolved.append(Path(raw).resolve())
+        except OSError:
+            continue
+    if not resolved:
         return None
+    # A single root keeps the old contract (a Path, not a list) for callers
+    # that compare against it directly.
+    if len(resolved) == 1:
+        return resolved[0]
+    return _MultiRoot(resolved)
 
 
 def _emit(ctx: Any, tool: str, extra: dict[str, Any] | None = None) -> None:
@@ -454,16 +532,12 @@ def read_file(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
         return _blocked("scope.outside_jail", "BLOCKED [scope.outside_jail] no jail configured")
     if not raw_path:
         return _blocked("scope.outside_jail", "BLOCKED [scope.outside_jail] path required")
-    norm = _norm_seps(raw_path).lstrip("/")
-    # Absolute Windows paths (C:/..., C:...) or absolute POSIX are escapes.
-    if re.match(r"^[a-zA-Z]:/", norm) or raw_path.startswith("/") or raw_path.startswith("\\"):
-        return _blocked("scope.outside_jail", f"BLOCKED [scope.outside_jail] path escapes jail: {raw_path!r}")
-    candidate = Path(str(jail) + "/" + norm)
-    try:
-        resolved = candidate.resolve()
-    except OSError:
-        return _blocked("scope.outside_jail", f"BLOCKED [scope.outside_jail] path escapes jail: {raw_path!r}")
-    if resolved != jail and jail not in resolved.parents:
+    # Reuse the shared resolver so read_file, archive_read and search_glob
+    # agree on what "inside the jail" means. This copy refused every absolute
+    # path, which blocked the target project on a local hunt — the agent was
+    # told to audit /home/.../contracts and then could not read it.
+    _jail_root, resolved, err = _resolve_jailed(ctx, raw_path)
+    if err is not None or resolved is None:
         return _blocked("scope.outside_jail", f"BLOCKED [scope.outside_jail] path escapes jail: {raw_path!r}")
     try:
         size = resolved.stat().st_size

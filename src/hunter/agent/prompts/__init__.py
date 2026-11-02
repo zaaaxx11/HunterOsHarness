@@ -16,6 +16,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from importlib import resources
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -277,6 +278,58 @@ def build_chat_messages(
     return messages
 
 
+def _surface_hint(url: str, local_root: str | None) -> str:
+    """Tell the brain what kind of target this is, and which tools fit.
+
+    Without this the goal reads "Audit http://127.0.0.1:PORT/" and the model
+    reaches for http_request — correct for a web app, useless for a Solidity
+    tree, where it finds directory listings and misses the contracts
+    entirely. The hint names the surface and the tools that apply, so the
+    brain picks the right instrument instead of the only one it recognises.
+
+    Detection is by evidence, not by URL shape: a local root that actually
+    contains .sol files is contract source, whatever the URL looks like.
+    """
+    if not local_root:
+        return ""
+    try:
+        root = Path(local_root)
+        if not root.is_dir():
+            return ""
+        sol_files = sorted(root.rglob("*.sol"))
+        if not sol_files:
+            return ""
+    except OSError:
+        return ""
+
+    # Skip the non-production directories the engine prunes AND the forge test
+    # files (*.t.sol), so the hint describes the code that actually ships.
+    # Naming a .t.sol as a production contract tells the brain to audit the
+    # test suite.
+    from hunter.engine.evm import _NON_PRODUCTION_DIRS
+
+    production = [
+        p for p in sol_files
+        if not any(part.lower() in _NON_PRODUCTION_DIRS for part in p.relative_to(root).parts)
+        and not p.name.endswith(".t.sol")
+    ]
+    if not production:
+        return ""
+
+    names = ", ".join(p.name for p in production[:12])
+    more = f" (+{len(production) - 12} more)" if len(production) > 12 else ""
+    return (
+        f"\nThis is a Solidity smart-contract project at {local_root} "
+        f"({len(production)} production contract(s): {names}{more}). "
+        "The loopback URL only serves the files over HTTP — it is NOT the "
+        "audit surface. Audit the SOURCE: use forge_build and forge_test to "
+        "compile and run the project's own tests, slither_run for static "
+        "analysis, and read the contracts directly. Reserve http_request for "
+        "an actual deployed RPC or web endpoint. A finding about a directory "
+        "listing on this mount is not a finding about the protocol."
+    )
+
+
 def build_goal(
     target: TargetSpec,
     *args: Any,
@@ -309,8 +362,17 @@ def build_goal(
     url = target.url.rstrip("/")
     notes = ", ".join(f"{k}={v}" for k, v in sorted(target.notes.items())) if target.notes else ""
     notes_line = f"\nTarget notes: {notes}" if notes else ""
+    # The brain has to know WHAT it is looking at before it can pick a tool.
+    # A Solidity tree mounted on a loopback URL is not a web app: probing it
+    # with http_request finds directory listings and nothing else, which is
+    # exactly what happened — the LLM never called forge_build or
+    # slither_run because nothing told it the target was contract source.
+    local_root = target.notes.get("local_root") if isinstance(target.notes, dict) else None
+    if not local_root:
+        local_root = target.notes.get("path") if isinstance(target.notes, dict) else None
+    surface = _surface_hint(url, local_root)
     base = (
-        f"Audit {url}. Map the surface, probe the priority "
+        f"Audit {url}.{surface} Map the surface, probe the priority "
         "vulnerability classes, record coverage as you go, and ship only "
         "evidence-backed findings through create_finding_request. Finish with "
         f"finish_scan when the audit is reconciled.{notes_line}"

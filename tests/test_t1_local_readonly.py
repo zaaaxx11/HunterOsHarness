@@ -230,3 +230,91 @@ def test_t1_no_real_network_transport_guard(tmp_path: Path):
     assert client.request("GET", "http://example.com/").status == 200
     assert seen == ["http://example.com/"]
     client.close()
+
+
+# -- multi-root jail (local_root + state_dir) ----------------------------------
+
+
+def _multi_ctx(tmp_path: Path, *, jail: Path, local_root: Path) -> Any:
+    """A ctx shaped like a real local-directory hunt.
+
+    ``state_dir`` is where the ledger lives; ``local_root`` is the project
+    being audited. They are different trees, and the agent must be able to
+    read the second one.
+    """
+    tools_local = _require_tools_local()
+
+    class _Ctx:
+        config = {"state_dir": str(tmp_path / "state"), "local_root": str(local_root), "jail": str(jail)}
+        run_id = "R-test"
+
+        def emit(self, *args, **kwargs):  # noqa: D102 - test seam
+            return None
+
+    return _Ctx()
+
+
+def test_local_root_is_a_jail_too(tmp_path: Path):
+    """The target project must be readable on a local hunt.
+
+    With the state dir as the only jail, every absolute path into the target
+    was refused as "escapes jail" — backwards, since the target is the one
+    place the agent MUST read. This is the bug that made a contract audit
+    spend 8 of its 16 turns on archive_read failures.
+    """
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    (project / "contracts").mkdir(parents=True)
+    target = project / "contracts" / "Vault.sol"
+    target.write_text("contract Vault { function sweep() external {} }\n", encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=tmp_path / "jail", local_root=project)
+
+    outcome = tools_local.read_file({"path": str(target)}, ctx)
+
+    assert outcome.get("ok") is True, outcome
+    assert "Vault" in outcome.get("text", "")
+
+
+def test_paths_outside_every_root_are_still_blocked(tmp_path: Path):
+    """Multi-root must not become no-root."""
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside" / "secret.txt"
+    outside.parent.mkdir()
+    outside.write_text("outside secret", encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=tmp_path / "jail", local_root=project)
+
+    for evil in (str(outside), "/etc/passwd", "../outside/secret.txt"):
+        outcome = tools_local.read_file({"path": evil}, ctx)
+        assert outcome.get("blocked") is True, evil
+        assert "jail" in outcome.get("code", ""), evil
+
+
+def test_state_dir_still_readable_alongside_local_root(tmp_path: Path):
+    """Both roots work in the same run — the ledger and the project."""
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    project.mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "ledger.db").write_text("not really a db", encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=state, local_root=project)
+
+    outcome = tools_local.read_file({"path": str(state / "ledger.db")}, ctx)
+
+    assert outcome.get("ok") is True, outcome
+
+
+def test_search_glob_finds_hits_under_local_root(tmp_path: Path):
+    """search_glob walked only the first root before; the project was invisible."""
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    (project / "contracts").mkdir(parents=True)
+    (project / "contracts" / "A.sol").write_text("// replay risk here\ncontract A {}\n", encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=tmp_path / "state", local_root=project)
+
+    outcome = tools_local.search_glob({"glob": "contracts/*.sol", "pattern": "replay"}, ctx)
+
+    assert outcome.get("ok") is True, outcome
+    assert any("A.sol" in h.get("path", "") for h in outcome.get("hits", [])), outcome
