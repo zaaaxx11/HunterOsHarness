@@ -153,6 +153,32 @@ def _latest_run_id(ledger: Ledger) -> str:
     return str(runs[-1]["run_id"])
 
 
+def _local_root_for_target(target: str, config: dict[str, Any] | None = None) -> Path | None:
+    """The local directory a hunt target is mounted from, if any.
+
+    ``mount_local_dir`` serves a directory over loopback, so by the time the
+    scope is built the original path is only visible in the run config.
+    Recover it from there, and return ``None`` for a plain localhost URL
+    (a demo target with no project behind it).
+    """
+    candidates: list[str] = []
+    if isinstance(config, dict):
+        raw = config.get("local_root")
+        if raw:
+            candidates.append(str(raw))
+    env_root = os.environ.get("HUNTER_LOCAL_ROOT")
+    if env_root:
+        candidates.append(env_root)
+    for candidate in candidates:
+        try:
+            resolved = Path(candidate).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if resolved.is_dir():
+            return resolved
+    return None
+
+
 def _scope_for_target(target: str, scope_file: Path | None) -> ScopeSet:
     """localhost targets are always allowed; anything else needs a manifest."""
     try:
@@ -164,6 +190,18 @@ def _scope_for_target(target: str, scope_file: Path | None) -> ScopeSet:
         # stderr on purpose: with --json this line must never touch stdout.
         if scope_file is not None:
             err_console.print("[dim]note: target is localhost; scope manifest ignored[/dim]")
+        # A local-directory hunt is mounted on loopback, so the URL says
+        # nothing about where the code lives. Carry the directory through as
+        # a local root: without it the scope has no local_roots, and every
+        # contract tool (forge_build, slither_run, cast_call) refuses the
+        # project it was pointed at as "out of scope".
+        local_root = _local_root_for_target(target)
+        if local_root is not None:
+            return ScopeSet(
+                frozenset(),
+                name=f"local:{local_root.name}",
+                local_roots=(str(local_root),),
+            )
         return localhost_scope()
     if scope_file is None:
         err_console.print(
@@ -694,7 +732,17 @@ def hunt(
                     f"mounting local directory {normalized} on {mount.url} "
                     "(temporary, localhost-only) — everything inside is reachable by the audit."
                 )
-            chosen_scope = localhost_scope()
+            # The scope must carry the mounted directory as a local root.
+            # `localhost_scope()` has no local_roots, and every contract tool
+            # (forge_build, slither_run, cast_call) then refuses the project
+            # it was pointed at as "out of scope" — the hunt runs, the tools
+            # all refuse, and nothing is found. Same gate, same fail-closed
+            # behaviour, just with the one root the operator named.
+            chosen_scope = ScopeSet(
+                frozenset(),
+                name=f"local:{Path(normalized).name}",
+                local_roots=(str(normalized),),
+            )
             selected_engine = selected_engine or "deterministic"
             from hunter.agent.skills import selected_skill_names
             selected = selected_skill_names(mount.url, mount.url)
