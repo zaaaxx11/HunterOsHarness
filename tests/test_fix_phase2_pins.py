@@ -281,8 +281,8 @@ def test_min_time_nudge_contains_slash50(tmp_path):
         assert result.finished is True
         held = provider.calls[1]["messages"][-1]
         assert "[BUDGET min-time]" in held["content"]
-        assert "(min-time nudge 1/50)" in held["content"]
-        assert "/50" in held["content"]
+        assert "(min-time nudge 1/2000)" in held["content"]
+        assert "/2000" in held["content"]
     finally:
         budget_mod.time = orig_time
         http.close()

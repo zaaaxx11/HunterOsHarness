@@ -93,7 +93,11 @@ class AgentLoop:
         *,
         budget: RunBudgetContract | None = None,
         max_text_nudges: int = 3,
-        max_time_nudges: int = 50,
+        # Runaway guard only. The min-time floor itself is TIME-based (seconds
+        # remain -> keep hunting); this cap catches a model that yields in a
+        # tight loop with the clock frozen. 50 was low enough to cut a 6h
+        # mandate short after ~4 minutes, so default it out of reach.
+        max_time_nudges: int = 2000,
         interrupt_check: Callable[[], bool] | None = None,
         hooks: Any | None = None,
         role: str = "",
@@ -665,7 +669,14 @@ class AgentLoop:
 
     def _hold_for_min_time(self, time_nudges: int) -> bool:
         """True when a lifecycle outcome must be HELD because the min-time
-        floor has not elapsed yet and the nudge cap has not fired."""
+        floor has not elapsed yet.
+
+        The floor is TIME-based, not nudge-based: while seconds remain, the
+        agent keeps hunting. ``max_time_nudges`` stays only as a runaway guard
+        for the pathological case (a model that yields in a tight loop with the
+        clock frozen), so set it high enough that a real multi-hour floor is
+        never cut short — 50 nudges ended a 6h mandate after four minutes.
+        """
         return (
             self._min_time_remaining() > 0.0 and time_nudges < self.max_time_nudges
         )

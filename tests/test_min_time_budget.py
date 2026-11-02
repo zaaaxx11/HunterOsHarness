@@ -158,7 +158,7 @@ def test_loop_holds_finish_scan_until_min_time(env):
     held = provider.calls[1]["messages"][-1]
     assert held["role"] == "tool"
     assert "[BUDGET min-time]" in held["content"]
-    assert "(min-time nudge 1/50)" in held["content"]
+    assert "(min-time nudge 1/2000)" in held["content"]
 
 
 def test_loop_holds_respond_to_user_until_min_time(env):
