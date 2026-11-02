@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 import subprocess  # noqa: S404 — the whole point of this module
 from pathlib import Path
 from typing import Any
@@ -114,11 +115,30 @@ def _child_env(cwd: Path) -> dict[str, str]:
         if value is not None:
             env[key] = value
     # The child's HOME is the jail, never the operator's home. Foundry writes
-    # ~/.foundry; pointing HOME at the run root keeps that inside the state dir.
+    # ~/.foundry; nuclei v3 writes ~/.cache/nuclei-templates and ~/.config.
+    # Pointing HOME at the run root keeps all of that inside the state dir —
+    # which is also why the jail must never fall back to the repo root (see
+    # _jail_cwd).
     env["HOME"] = str(cwd)
     env["HUNTER_SANDBOX"] = "1"
     env["NO_COLOR"] = "1"
     return env
+
+
+def _jail_cwd(ctx: ToolContext, args: dict[str, Any]) -> Path:
+    """A working directory for a child that has no project root of its own.
+
+    The naive fallback is ``Path.cwd()``, and that is a trap: a nuclei run
+    from the repo root would download its template set into the repo (HOME
+    defaults to the cwd, and nuclei v3 keeps templates under $HOME). Use the
+    system temp dir instead — outside the repo, outside the operator's home.
+    """
+    import tempfile  # noqa: PLC0415 — local import keeps the module import light
+
+    root, _err = _local_root(ctx, args)
+    if root is not None:
+        return root
+    return Path(tempfile.gettempdir()) / "hunter-toolchain"
 
 
 def _truncate(text: str) -> str:
@@ -418,8 +438,7 @@ def cast_call(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
     argv = [binary, "call", to, signature or "0x", "--rpc-url", rpc_url]
     _emit(ctx, "cast_call", {"to": to, "rpc_url": rpc_url})
-    root, _err = _local_root(ctx, args)
-    cwd = root if root is not None else Path.cwd()
+    cwd = _jail_cwd(ctx, args)
     return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 60)))
 
 
@@ -435,6 +454,16 @@ def port_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     pass the scope gate, the port list is an allowlisted string, and the rate
     is capped so a scan cannot saturate the operator's link.
 
+    Two masscan constraints are enforced here rather than discovered at
+    runtime, because both produce a confusing error otherwise:
+
+    * masscan takes IP addresses and CIDR ranges ONLY — never a hostname.
+      The host is resolved first, and a resolution failure is reported as
+      such instead of being handed to masscan as a bare name.
+    * masscan needs raw-socket privileges. On an unprivileged account it
+      fails with "permission denied", which is reported honestly rather than
+      dressed up as a scan result.
+
     ``port_hint`` stays as-is — it is a zero-socket inventory hint and is
     still the right answer when the question is "what might be open".
     """
@@ -445,6 +474,15 @@ def port_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     denied = _scope_gate_host(ctx, host)
     if denied is not None:
         return denied
+
+    # masscan does not resolve names. Resolve here so the failure is ours to
+    # explain, and so the scope gate above checked the name the operator
+    # actually asked for.
+    try:
+        resolved_ip = socket.gethostbyname(host)
+    except OSError as exc:
+        return {"ok": False, "blocked": False, "code": "port.resolve_failed",
+                "result_for_model": f"cannot resolve {host}: {exc}"}
 
     # Ports: digits, commas, and dashes only. No spaces, no shell metachars.
     ports = str(args.get("ports", "") or "").strip() or "0-65535"
@@ -462,11 +500,24 @@ def port_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if binary is None:
         return _unavailable("port_scan", "masscan")
 
-    argv = [binary, host, "-p", ports, "--rate", str(rate), "--wait", "3"]
-    _emit(ctx, "port_scan", {"host": host, "ports": ports, "rate": rate})
-    root, _err = _local_root(ctx, args)
-    cwd = root if root is not None else Path.cwd()
-    return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)))
+    # The IP goes first, as masscan's own usage line specifies:
+    #   masscan [Options] -p{Target-Ports} {Target-IP-Ranges}
+    argv = [binary, resolved_ip, "-p", ports, "--rate", str(rate), "--wait", "3"]
+    _emit(ctx, "port_scan", {"host": host, "ip": resolved_ip, "ports": ports, "rate": rate})
+    cwd = _jail_cwd(ctx, args)
+    result = _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)))
+    # masscan exits non-zero with "permission denied" when it cannot open a
+    # raw socket. That is a privilege problem, not a scan result, and saying
+    # so is more useful than a bare exit code.
+    combined = result.get("stderr", "") + result.get("stdout", "")
+    if result.get("ok") and "permission denied" in combined:
+        result["code"] = "tool.privilege_required"
+        result["result_for_model"] = (
+            result.get("result_for_model", "") +
+            "\n[note] masscan needs raw-socket privileges — run under sudo, "
+            "or use port_hint for a zero-privilege inventory check."
+        )
+    return result
 
 
 def nuclei_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -488,13 +539,13 @@ def nuclei_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if binary is None:
         return _unavailable("nuclei_scan", "nuclei")
 
+    # nuclei v3 keeps its templates under $HOME (.cache/nuclei-templates and
+    # .config/nuclei). _child_env already points HOME at the run root, so the
+    # template download lands in the jail and never in the repo. There is no
+    # -templates-home flag in v3 — the first version of this tool passed one
+    # and nuclei rejected the whole invocation with "flag provided but not
+    # defined", which is why the scope gate test below is load-bearing.
     argv = [binary, "-u", target, "-jsonl", "-silent", "-nc"]
-    # nuclei downloads its template set on first run and writes it to the
-    # CWD by default — 87MB of YAML landing in whatever directory the tool
-    # happened to be invoked from. Point it at the jail's cache instead.
-    root, _err = _local_root(ctx, args)
-    cwd = root if root is not None else Path.cwd()
-    argv += ["-templates-home", str(cwd / ".nuclei-templates")]
     severity = str(args.get("severity", "") or "").strip()
     if severity:
         # Severity is a comma list of known words; anything else is rejected
@@ -507,6 +558,7 @@ def nuclei_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         argv += ["-severity", ",".join(sorted(parts))]
 
     _emit(ctx, "nuclei_scan", {"target": target})
+    cwd = _jail_cwd(ctx, args)
     return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)))
 
 
@@ -552,8 +604,7 @@ def gobuster_dir(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
 
     argv = [binary, "dir", "-u", target, "-w", str(resolved), "-q", "--no-color"]
     _emit(ctx, "gobuster_dir", {"target": target, "wordlist": str(resolved)})
-    root, _err = _local_root(ctx, args)
-    cwd = root if root is not None else Path.cwd()
+    cwd = _jail_cwd(ctx, args)
     return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)))
 
 
@@ -586,8 +637,7 @@ def sqlmap_test(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         level, risk = 1, 1
     argv += ["--level", str(level), "--risk", str(risk)]
     _emit(ctx, "sqlmap_test", {"target": target, "level": level, "risk": risk})
-    root, _err = _local_root(ctx, args)
-    cwd = root if root is not None else Path.cwd()
+    cwd = _jail_cwd(ctx, args)
     return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 600)))
 
 

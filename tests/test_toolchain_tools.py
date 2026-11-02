@@ -655,11 +655,10 @@ def test_port_scan_rejects_shell_metacharacters_in_ports(tmp_path):
 
 
 def test_port_scan_accepts_a_plain_port_list(tmp_path, monkeypatch):
+    """The allowlist must not reject legitimate lists."""
     monkeypatch.setattr(toolchain, "_run",
                         lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
                                             "stdout": "", "stderr": ""})
-
-    """The allowlist must not reject legitimate lists."""
     for good in ("80", "80,443", "0-65535", "22,80,443,8000-8100"):
         ctx = _ctx(tmp_path)
         out = port_scan({"host": "example.com", "ports": good}, ctx)
@@ -667,12 +666,56 @@ def test_port_scan_accepts_a_plain_port_list(tmp_path, monkeypatch):
         assert out.get("code") != "toolchain.bad_ports", f"{good!r} refused"
 
 
-def test_port_scan_caps_the_rate(tmp_path, monkeypatch):
+def test_port_scan_passes_an_ip_not_a_hostname(tmp_path, monkeypatch):
+    """masscan takes IP/CIDR only — a hostname is resolved here first.
+
+    The first version handed the bare hostname to masscan, which rejected it
+    with `unknown command-line parameter "api.relay.link"`. The tool now
+    resolves the name itself so the failure is ours to explain.
+    """
     monkeypatch.setattr(toolchain, "_run",
                         lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
                                             "stdout": "", "stderr": ""})
+    monkeypatch.setattr(toolchain.socket, "gethostbyname", lambda h: "203.0.113.9")
+    ctx = _ctx(tmp_path)
+    out = port_scan({"host": "example.com", "ports": "443"}, ctx)
+    assert out["argv"][1] == "203.0.113.9", f"argv must carry the IP: {out['argv']}"
+    assert "example.com" not in out["argv"]
 
+
+def test_port_scan_reports_a_resolution_failure(tmp_path, monkeypatch):
+    """An unresolvable host is a resolution failure, not a masscan error."""
+    import socket as _socket
+
+    def _boom(host):
+        raise _socket.gaierror("Name or service not known")
+
+    monkeypatch.setattr(toolchain.socket, "gethostbyname", _boom)
+    ctx = _ctx(tmp_path)
+    # example.com is the host _FakeScope authorises, so the scope gate passes
+    # and the failure we see is the resolution, not the policy.
+    out = port_scan({"host": "example.com", "ports": "443"}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "port.resolve_failed"
+
+
+def test_port_scan_reports_a_missing_privilege(tmp_path, monkeypatch):
+    """masscan needs raw sockets; saying so beats a bare exit code."""
+    monkeypatch.setattr(toolchain.socket, "gethostbyname", lambda h: "203.0.113.9")
+    monkeypatch.setattr(toolchain, "_run",
+                        lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 1,
+                                            "stdout": "", "stderr": "[-] FAIL: permission denied"})
+    ctx = _ctx(tmp_path)
+    out = port_scan({"host": "example.com", "ports": "443"}, ctx)
+    assert out["code"] == "tool.privilege_required"
+    assert "sudo" in out["result_for_model"]
+
+
+def test_port_scan_caps_the_rate(tmp_path, monkeypatch):
     """A rate above the ceiling is clamped, not passed through."""
+    monkeypatch.setattr(toolchain, "_run",
+                        lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
+                                            "stdout": "", "stderr": ""})
     ctx = _ctx(tmp_path)
     out = port_scan({"host": "example.com", "rate": 10_000_000}, ctx)
     # The tool either ran (rate clamped) or reported the binary missing.
@@ -765,11 +808,10 @@ def test_sqlmap_test_requires_a_target(tmp_path):
 
 
 def test_sqlmap_test_never_builds_a_shell_escalation_argv(tmp_path, monkeypatch):
+    """Read-only by construction: no --os-shell, no --sql-shell, ever."""
     monkeypatch.setattr(toolchain, "_run",
                         lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
                                             "stdout": "", "stderr": ""})
-
-    """Read-only by construction: no --os-shell, no --sql-shell, ever."""
     ctx = _ctx(tmp_path)
     out = sqlmap_test({"target": "https://example.com/?id=1"}, ctx)
     argv = out.get("argv", [])
@@ -831,3 +873,34 @@ def test_register_toolchain_tools_advertises_every_binary(tmp_path, monkeypatch)
         code, message = registry._unavailable[name]
         assert code == "tool.unavailable"
         assert "install with:" in message
+
+
+def test_jail_cwd_never_falls_back_to_the_repo_root(tmp_path):
+    """A child with no project root must not run in the repo.
+
+    nuclei v3 keeps its templates under $HOME, and HOME is set to the cwd.
+    The naive fallback (Path.cwd()) therefore drops an 87MB template set
+    into whatever directory the tool was invoked from — which is how
+    nuclei-templates/ ended up in this repo twice.
+    """
+    import tempfile
+
+    ctx = _ctx(tmp_path)
+    cwd = toolchain._jail_cwd(ctx, {})
+    assert cwd != Path.cwd(), "the jail must not be the process cwd"
+    assert "hunter-toolchain" in str(cwd)
+    assert str(cwd).startswith(tempfile.gettempdir())
+
+
+def test_jail_cwd_prefers_the_scope_root(tmp_path):
+    """When a local root exists, that is the jail — not the temp dir."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctx = _ctx(root, scope=_FakeScope(tmp_path))
+    assert toolchain._jail_cwd(ctx, {"path": str(root)}) == root.resolve()
+
+
+def test_child_env_points_home_at_the_jail(tmp_path):
+    """HOME is the jail, so a child cannot write into the operator's home."""
+    env = toolchain._child_env(tmp_path)
+    assert env["HOME"] == str(tmp_path)
