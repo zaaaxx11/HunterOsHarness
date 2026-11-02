@@ -126,6 +126,14 @@ class AgentLoop:
         # re-feeds the tool result with a [BUDGET min-time] nudge, bounded at
         # max_time_nudges so min-time can never become an infinite loop.
         self.max_time_nudges = max(1, int(max_time_nudges))
+        # M8 F3 re-arm: the floor rides on ``budget.started_monotonic``, which
+        # the daemon sets in ``hunt_worker`` (RunBudget.start() BEFORE the
+        # pipeline spawns this loop). ``run()`` must not re-arm it: the floor
+        # and the wall clock have to be measured from the moment the run
+        # started, not from when the agent happened to begin turning. A
+        # budget the daemon armed keeps its anchor; only a never-armed one is
+        # anchored by ``_arm_budget``.
+        self._anchor_at_run = self.budget.started_monotonic <= 0.0
         self.interrupt_check = interrupt_check
         # P0 hook seams: pre_turn / post_tool / post_turn / on_blocked /
         # on_budget / on_interrupt default to no-ops (behavior identical).
@@ -683,7 +691,19 @@ class AgentLoop:
 
     def _arm_budget(self) -> None:
         """Anchor the wall clock once per run, using the concrete budget's
-        start() when available (thread-safe) or the bare field."""
+        start() when available (thread-safe) or the bare field.
+
+        Only a budget that was never armed gets anchored here. Re-calling
+        ``start()`` on an already-armed budget RESETS ``started_monotonic``,
+        which silently disarms ``min_wall_seconds`` for every caller that
+        armed the budget earlier than the loop started (the daemon does
+        exactly that: ``budget.start()`` then ``run_hunt()`` -> ... ->
+        ``AgentLoop.run()``). That re-arming is why field runs ended after
+        minutes with no ``[BUDGET min-time]`` nudge: the floor kept being
+        pushed forward to "now".
+        """
+        if not self._anchor_at_run:
+            return
         if self._budget_governed:
             start = getattr(self.budget, "start", None)
             if callable(start):
