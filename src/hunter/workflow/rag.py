@@ -232,6 +232,11 @@ class RagConfig:
     scope: ScopeSet
     engine: str = "llm"
     time_budget_s: float = 6 * 3600
+    # Wall-clock slice for ONE child hunt. Every enqueued task gets this as both
+    # its max_wall and its min_time floor, so a child works the whole slice
+    # instead of yielding after a few minutes. Keep it well under
+    # time_budget_s so one wedged child cannot monopolise the queue.
+    child_time_s: float = 20 * 60
     interval_s: float = 45.0
     high_water: int = 8
     max_seed_variants: int = 8
@@ -270,8 +275,20 @@ class RagLoop:
             "engine": str(self.config.engine),
             "max_wall_seconds": float(self.config.time_budget_s),
             "max_cost_usd": 0.0,
-            "min_wall_seconds": 0.0,
+            # A RAG child must not carry the FULL remaining budget as its own
+            # max_wall: one stuck child would then monopolise the queue for the
+            # whole mandate. Give it a slice, and give it the same slice as a
+            # min-time floor so it actually uses it instead of calling
+            # finish_scan after three minutes (floor 0.0 used to mean "no
+            # floor", so children stopped as soon as the model felt done).
+            "max_iterations": 0,
         }
+        slice_s = min(
+            float(self.config.time_budget_s),
+            float(self.config.child_time_s) if self.config.child_time_s else float(self.config.time_budget_s),
+        )
+        task["max_wall_seconds"] = slice_s
+        task["min_wall_seconds"] = slice_s
         if parent_finding_id:
             task["parent_finding_id"] = str(parent_finding_id)
         try:
@@ -403,7 +420,12 @@ class RagLoop:
                         engine=self.config.engine,
                         max_wall_seconds=float(self.config.time_budget_s),
                         max_cost_usd=0.0,
-                        min_wall_seconds=0.0,
+                        # The daemon-level floor governs how long the SUPERVISOR
+                        # keeps refilling the queue; it is not a per-task floor
+                        # (each task carries its own, see _enqueue). Passing 0
+                        # here made the whole RAG mandate yield to the first
+                        # quiet cycle.
+                        min_wall_seconds=float(self.config.time_budget_s),
                         force=False,
                     )
                     running, detail = daemon_running(self.state_dir)

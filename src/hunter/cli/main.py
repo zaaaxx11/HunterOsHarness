@@ -342,9 +342,17 @@ def hunt(
                 err_console.print("[hunter.error]BLOCKED:[/hunter.error] no hunt target found in description")
                 raise typer.Exit(3)
 
-    # RAG mode: multiple targets or --time -> recognize scopes, enqueue tasks, run loop.
-    if len(targets or []) > 1 or time_opt:
-        from hunter.daemon import daemon_running, enqueue_hunt, start_daemon
+    # Agent mode: a single long-lived agent run with its whole
+    # time budget in one loop. The old RAG feeder ("Recursive Autonomous Grind")
+    # chopped the mandate into many short queued hunts, which meant every child
+    # stopped on its own schedule and the wall-clock floor was never consumed by
+    # anything. One agent, one budget, one loop — the model decides when it is
+    # done, and only the clock can say otherwise.
+    #
+    # RAG is still reachable for genuinely multi-target work (>1 target), where
+    # a queue is the right shape; see `hunter rag`.
+    if len(targets or []) > 1:
+        from hunter.daemon import daemon_running, start_daemon
         from hunter.duration import parse_duration
         from hunter.home import state_dir as _state_dir
         from hunter.tools.scope import scope_from_manifest
@@ -547,7 +555,37 @@ def hunt(
     if not json_out:
         typer.echo(f"target check: {normalized} — valid URL (host: {host})")
         typer.echo(f"skills mounted: {len(selected)}" + (f" ({', '.join(f'{name} [{source}]' for name, source in selected)})" if selected else ""))
-    outcome = run_hunt(normalized, scope=chosen_scope, engine_name=selected_engine, state_dir=state)
+
+    # `--time` on a single-target hunt is a REAL budget for ONE agent run, not a
+    # hint to a feeder. Without this the flag was silently discarded and the run
+    # ended whenever the model felt finished.
+    run_budget = None
+    if time_opt or min_time_opt:
+        from hunter.duration import parse_duration
+        from hunter.llm.budget import RunBudget
+
+        wall_s = float(parse_duration(time_opt)) if time_opt else 0.0
+        floor_s = float(parse_duration(min_time_opt)) if min_time_opt else wall_s
+        run_budget = RunBudget(
+            max_cost_usd=0.0,
+            wall_seconds=wall_s,
+            min_wall_seconds=min(floor_s, wall_s) if wall_s else floor_s,
+            max_iterations=0,  # 0 = unlimited; the clock is the only stop reason
+        )
+        run_budget.start()
+        if not json_out:
+            typer.echo(
+                f"budget: one agent run, wall={int(wall_s)}s floor={int(run_budget.min_wall_seconds)}s "
+                "(single loop — no feeder, no per-task slicing)"
+            )
+
+    outcome = run_hunt(
+        normalized,
+        scope=chosen_scope,
+        engine_name=selected_engine,
+        state_dir=state,
+        budget=run_budget,
+    )
     _render_hunt_outcome(outcome, json_out=json_out)
     raise typer.Exit(outcome.exit_code)
 

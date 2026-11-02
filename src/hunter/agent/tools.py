@@ -1900,6 +1900,7 @@ def build_registry(
     for _module_name, _register_name in (
         (".tools_network", "register_network_tools"),
         (".tools_local", "register_local_tools"),
+        (".tools_expand", "register_expand_tools"),
     ):
         try:
             _mod = importlib.import_module(_module_name, __package__)

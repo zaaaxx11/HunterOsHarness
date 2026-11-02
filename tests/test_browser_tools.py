@@ -310,14 +310,14 @@ def test_registry_adds_exact_browser_tools_only_when_available():
     module = FakePlaywrightModule()
     default_registry = build_registry()
     # Flat tool surface (no capability tier): 23 built-in tools without a browser.
-    assert len(default_registry.schemas_for_tier("basic")) == 35
+    assert len(default_registry.schemas_for_tier("basic")) == 36
     assert not (BROWSER_NAMES & {s["function"]["name"] for s in default_registry.schemas_for_tier("basic")})
     assert module.drivers == []
 
     registry = build_registry(browser_enabled=True, playwright_module=module)
     schemas = registry.schemas_for_tier("basic")
     names = [schema["function"]["name"] for schema in schemas]
-    assert len(names) == 39
+    assert len(names) == 40
     assert set(names) >= BROWSER_NAMES
     assert names == sorted(names)
 
