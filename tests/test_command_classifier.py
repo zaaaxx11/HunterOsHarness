@@ -97,3 +97,35 @@ def test_classifier_exports_pinned_policy_constants_in_order():
         "rev-parse",
         "ls-files",
     )
+
+
+def test_find_delete_is_not_readonly():
+    """`find` is a read-only executable that deletes.
+
+    -delete, -exec and the -f* family are actions, not flags, so the write
+    flag list never saw them: `find . -delete` was classified readonly and
+    auto-approved — a recursive delete wearing a read-only costume.
+    """
+    from hunter.agent.approval import classify_shell_command
+
+    for command in (
+        "find . -delete",
+        "find . -exec rm -rf {} ;",
+        "find . -execdir rm {} ;",
+        "find . -ok rm {} ;",
+        "find . -fprint /tmp/out",
+        "find . -fls /tmp/out",
+    ):
+        assert classify_shell_command(command) != "readonly", command
+
+
+def test_find_search_stays_readonly():
+    """The fix must not break the read-only searches find exists for."""
+    from hunter.agent.approval import classify_shell_command
+
+    for command in (
+        "find . -name *.sol",
+        "find . -name *.sol -type f",
+        "find . -path ./contracts -prune",
+    ):
+        assert classify_shell_command(command) == "readonly", command

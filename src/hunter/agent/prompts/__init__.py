@@ -326,7 +326,9 @@ def _surface_hint(url: str, local_root: str | None) -> str:
         "compile and run the project's own tests, slither_run for static "
         "analysis, and read the contracts directly. Reserve http_request for "
         "an actual deployed RPC or web endpoint. A finding about a directory "
-        "listing on this mount is not a finding about the protocol."
+        "listing on this mount is not a finding about the protocol. "
+        "If a probe you need does not exist, forge it with tool_forge — it "
+        "must cite evidence from this run, and it lands quarantined."
     )
 
 

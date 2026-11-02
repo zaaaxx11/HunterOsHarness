@@ -29,13 +29,13 @@ def test_no_tier_every_tool_registered_once():
     registry = build_registry(plugins_enabled=False)
     names = [t["function"]["name"] for t in registry.schemas_for_tier()]
     assert len(names) == len(set(names)), "no duplicate tool names"
-    assert len(names) == 39, f"pin count: {len(names)}"
+    assert len(names) == 40, f"pin count: {len(names)}"
     for expected in ("shell_exec", "delegate_task", "nuclei_scan", "sqlmap_test"):
         assert expected in names, expected
     # A short surface must fail on the MISSING NAME, not on a count nobody can
     # reproduce on another host. Every register_* module contributes at least
     # one tool; if one fails to import, this says which family went missing.
-    for family in ("forge_build", "slither_run", "read_file", "search_files", "expand_finding"):
+    for family in ("forge_build", "slither_run", "read_file", "search_files", "expand_finding", "tool_forge"):
         assert family in names, f"tool family missing from the surface: {family}"
     # tier requests are inert: the same surface comes back either way
     assert registry.schemas_for_tier("basic") == registry.schemas_for_tier("advanced")

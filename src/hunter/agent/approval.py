@@ -74,6 +74,14 @@ _WRITE_FLAGS = {
     "-o", "--output", "--write", "--upload", "--delete", "--remove", "--append",
     "--in-place", "/a", "/s", "/q", "/f",
 }
+# `find` is a read-only executable, but it deletes with -delete and executes
+# with -exec/-execdir/-ok/-okdir. Those are actions, not flags, so the flag
+# list above never sees them: `find . -delete` was classified readonly and
+# auto-approved, which is a recursive delete wearing a read-only costume.
+_FIND_ACTION_FLAGS = {
+    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf",
+    "-print0", "-fls", "-ls",
+}
 
 # (regex, reason) — matched against the RAW command and a normalized form
 # (lowercased, "^"/"\" replaced by space, quotes removed, whitespace
@@ -131,6 +139,23 @@ def _has_write_flag(argv: list[str]) -> bool:
     return False
 
 
+def _has_find_action(argv: list[str]) -> bool:
+    """True when a ``find`` invocation acts on the filesystem.
+
+    ``-delete`` removes, ``-exec``/``-execdir``/``-ok``/``-okdir`` run an
+    arbitrary command, and the ``-f*`` family writes to a file. None of them
+    look like a write flag, so without this check a read-only executable
+    silently performs the most destructive action on the box.
+    """
+    for token in argv[1:]:
+        if token in _FIND_ACTION_FLAGS:
+            return True
+        # -exec is often glued to its command: find . -execrm -rf {} ;
+        if token.startswith("-exec") or token.startswith("-ok"):
+            return True
+    return False
+
+
 def classify_shell_command(command: str) -> CommandClass:
     """Classify a local command conservatively without granting execution.
 
@@ -154,6 +179,8 @@ def classify_shell_command(command: str) -> CommandClass:
     if executable not in READONLY_EXECUTABLES and executable not in _READONLY_RECON_EXECUTABLES:
         return "mutating"
     if _has_write_flag(argv):
+        return "mutating"
+    if executable == "find" and _has_find_action(argv):
         return "mutating"
     if executable == "git":
         subcommand = next((token.lower() for token in argv[1:] if not token.startswith("-")), "")

@@ -489,6 +489,90 @@ def test_redaction_does_not_eat_harmless_prose():
     assert redact_text(text) == text
 
 
+def test_redaction_covers_every_credential_family_that_leaked():
+    """Every family below was observed SURVIVING the earlier pattern list.
+
+    The old list covered six prefixes. A redaction that only knows the
+    providers we happened to think of fails exactly when a new one shows
+    up — and evidence lands in a ledger an open-source project publishes.
+    Each entry here is a real token shape that reached storage intact.
+    """
+    from hunter.kernel.redaction import redact_text
+
+    families = {
+        "github_pat": "github_pat_" + "A" * 22 + "_" + "B" * 59,
+        "npm": "npm_" + "A" * 36,
+        "pypi": "pypi-" + "A" * 40,
+        "sendgrid": "SG." + "A" * 22 + "." + "B" * 43,
+        "twilio": "SK" + "A" * 32,
+        "google_api": "AIza" + "A" * 35,
+        "eth_private_key": "0x" + "a" * 64,
+        "bare_64_hex": "a" * 64,
+        "telegram_bot": "123456789:AAH" + "A" * 33,
+        "discord_bot": "MTk4NjIyNDgzNDcxOTI1MjQ4.Cl2FMQ." + "A" * 23,
+        "gitlab_pat": "glpat-" + "A" * 20,
+        "stripe_live": "sk_live_" + "A" * 24,
+    }
+    leaked = [name for name, token in families.items() if "[REDACTED]" not in redact_text(token)]
+    assert not leaked, f"these credential families still reach storage intact: {leaked}"
+
+
+def test_redaction_keeps_ordinary_evidence_readable():
+    """Broad patterns must not blind the audit.
+
+    Over-redaction is its own failure: a ledger where every hash, address
+    and path is [REDACTED] cannot support a finding. These are the shapes
+    that appear in every real run and must survive verbatim.
+    """
+    from hunter.kernel.redaction import redact_text
+
+    keep = [
+        "contract Vault { function sweep() external {} }",
+        "13c0af26ad58e39ba66e1720a510f2b903ff42d97b11b12473c9d1f85746",
+        "https://api.relay.link/v1/quote",
+        "2026-11-02T22:26:31Z INFO forge build ok in 0.71s",
+        '{"chainId": 33133, "gas": 21000}',
+        "/home/simon/relay-settlement/smart-contracts/contracts/Config.sol",
+        "0x6275C7EB1D08bC020c22620CF6207b651F07808",
+    ]
+    changed = [text for text in keep if redact_text(text) != text]
+    assert not changed, f"ordinary evidence was mangled: {changed}"
+
+
+def test_redaction_preserves_digest_fields():
+    """A 64-hex string under a digest key is a checksum, not a leaked key.
+
+    The broad hex pattern redacted code_location's sha256 — which
+    validate_code_location checks against the file on disk — so valid
+    evidence became unverifiable and every code_location finding failed its
+    own gate. Digest-named fields pass through; the same hex under any other
+    name is still redacted.
+    """
+    from hunter.kernel.redaction import redact_payload
+
+    digest = "a" * 64
+    preserve: dict[str, object] = {
+        "sha256": digest,
+        "hashes": [digest, digest],
+        "tx_hashes": [digest],
+        "prev_hash": digest,
+        "digests": [digest],
+        "checksums": [digest],
+        "commit": digest,
+    }
+    out: dict[str, object] = redact_payload(preserve)
+    for key, value in preserve.items():
+        assert out[key] == value, f"digest field {key!r} was redacted"
+
+    # The same hex under a non-digest name is still a potential key.
+    for key in ("text", "note", "body", "response_body", "data", "value"):
+        assert redact_payload({key: digest})[key] == "[REDACTED]", key
+
+    # "signature" is NOT exempt: it is as likely to hold a signed token.
+    assert redact_payload({"signature": "ghp_" + "A" * 36})["signature"] == "[REDACTED]"
+    assert redact_payload({"sig": "sk-" + "A" * 48})["sig"] == "[REDACTED]"
+
+
 # ===========================================================================
 # 5. Ledger durability — WAL, cross-connection, multi-run
 # ===========================================================================
