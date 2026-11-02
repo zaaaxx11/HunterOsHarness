@@ -904,3 +904,68 @@ def test_child_env_points_home_at_the_jail(tmp_path):
     """HOME is the jail, so a child cannot write into the operator's home."""
     env = toolchain._child_env(tmp_path)
     assert env["HOME"] == str(tmp_path)
+
+
+def test_run_privileged_uses_askpass_not_noninteractive(tmp_path, monkeypatch):
+    """`sudo -n` refuses the askpass helper and fails on a correct rule.
+
+    The privileged path was written with -n first, and it failed with
+    "a password is required" even though `sudo -A` on the same command
+    worked. -n means "never prompt", which also means "never use
+    SUDO_ASKPASS" — so a passwordless rule plus -n is still a failure.
+    """
+    seen: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        return _Completed()
+
+    monkeypatch.setattr(toolchain.subprocess, "run", fake_run)
+    toolchain._run(["masscan", "10.0.0.1"], cwd=tmp_path, privileged=True)
+
+    assert seen, "subprocess.run was never called"
+    assert seen[0][:2] == ["sudo", "-A"], f"expected sudo -A, got {seen[0][:3]}"
+    assert "-n" not in seen[0], "-n must not appear: it disables the askpass helper"
+
+
+def test_run_unprivileged_does_not_prefix_sudo(tmp_path, monkeypatch):
+    """No silent escalation: sudo appears only when privileged=True."""
+    seen: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(toolchain.subprocess, "run",
+                        lambda argv, **kw: (seen.append(list(argv)), _Completed())[1])
+    toolchain._run(["forge", "build"], cwd=tmp_path)
+    assert seen[0][0] == "forge", f"unprivileged run must not gain sudo: {seen[0]}"
+
+
+def test_child_env_keeps_sudo_askpass(tmp_path, monkeypatch):
+    """SUDO_ASKPASS must survive the env jail, or privileged runs cannot auth."""
+    monkeypatch.setenv("SUDO_ASKPASS", "/tmp/askpass.sh")
+    monkeypatch.setenv("SOME_SECRET", "leaked")
+    env = toolchain._child_env(tmp_path)
+    assert env["SUDO_ASKPASS"] == "/tmp/askpass.sh"
+    assert "SOME_SECRET" not in env
+
+
+def test_jail_cwd_creates_the_directory(tmp_path, monkeypatch):
+    """subprocess.run(cwd=...) raises if the dir does not exist.
+
+    The first version returned a path nobody had created, so every
+    privileged scan died with FileNotFoundError before masscan even started.
+    """
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    ctx = _ctx(tmp_path)
+    jail = toolchain._jail_cwd(ctx, {})
+    assert jail.is_dir(), f"jail must exist on disk: {jail}"

@@ -75,7 +75,19 @@ _BINARIES: dict[str, tuple[str, str]] = {
 #: Environment passed to every child. Deliberately tiny: a toolchain run has
 #: no business reading the operator's API keys.
 _CHILD_ENV_ALLOWLIST = ("PATH", "SYSTEMROOT", "TEMP", "TMP", "COMSPEC", "PATHEXT",
-                        "SYSTEMDRIVE", "WINDIR", "LANG", "LC_ALL", "TERM")
+                        "SYSTEMDRIVE", "WINDIR", "LANG", "LC_ALL", "TERM",
+                        # SUDO_ASKPASS is how a privileged child authenticates
+                        # without a TTY. Without it `sudo -n` fails even when
+                        # the sudoers rule is correct, because there is no
+                        # terminal to prompt on.
+                        "SUDO_ASKPASS")
+
+#: Tools that need raw-socket privileges to work at all. masscan opens a raw
+#: socket and fails with "permission denied" on an unprivileged account.
+#: When the operator has granted sudo (ctx.config["allow_sudo"]), these are
+#: re-run under `sudo -n` (non-interactive: it either works or it does not,
+#: and it never prompts mid-scan).
+_PRIVILEGED_TOOLS = frozenset({"port_scan"})
 
 _MAX_OUTPUT_CHARS = 16_384
 _DEFAULT_TIMEOUT_S = 180
@@ -132,13 +144,23 @@ def _jail_cwd(ctx: ToolContext, args: dict[str, Any]) -> Path:
     from the repo root would download its template set into the repo (HOME
     defaults to the cwd, and nuclei v3 keeps templates under $HOME). Use the
     system temp dir instead — outside the repo, outside the operator's home.
+
+    The directory is created on demand: ``subprocess.run(cwd=...)`` raises
+    FileNotFoundError if it does not exist, and the first version of this
+    helper returned a path nobody had made yet.
     """
     import tempfile  # noqa: PLC0415 — local import keeps the module import light
 
     root, _err = _local_root(ctx, args)
     if root is not None:
         return root
-    return Path(tempfile.gettempdir()) / "hunter-toolchain"
+    jail = Path(tempfile.gettempdir()) / "hunter-toolchain"
+    try:
+        jail.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # A read-only temp dir is not a reason to fall back to the repo.
+        return Path(tempfile.gettempdir())
+    return jail
 
 
 def _truncate(text: str) -> str:
@@ -152,16 +174,29 @@ def _run(
     *,
     cwd: Path,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
+    privileged: bool = False,
 ) -> dict[str, Any]:
     """Run ``argv`` and return a bounded, JSON-safe result dict.
 
     Never raises for a non-zero exit: a failing ``forge test`` is the single
     most valuable output in this module (it is the PoC firing). The exit code
     travels with the payload.
+
+    ``privileged`` prefixes the command with ``sudo -n``. Non-interactive on
+    purpose: a scan that stops to ask for a password is a scan that hangs.
+    If passwordless sudo is not configured the call fails immediately, which
+    the caller reports honestly rather than retrying.
     """
+    command = list(argv)
+    if privileged:
+        # -A (askpass), not -n (non-interactive): -n refuses to use the
+        # askpass helper and fails outright even when the sudoers rule is
+        # correct, which is exactly the failure this module spent an hour
+        # chasing. SUDO_ASKPASS is in the child env allowlist for this.
+        command = ["sudo", "-A", *argv]
     try:
         completed = subprocess.run(  # noqa: S603 — argv is built here, not from the model
-            argv,
+            command,
             cwd=str(cwd),
             env=_child_env(cwd),
             capture_output=True,
@@ -173,14 +208,14 @@ def _run(
         return {
             "ok": False,
             "code": "tool.timeout",
-            "argv": argv,
-            "result_for_model": f"timed out after {timeout_s}s: {' '.join(argv)}",
+            "argv": command,
+            "result_for_model": f"timed out after {timeout_s}s: {' '.join(command)}",
         }
     except OSError as exc:
         return {
             "ok": False,
             "code": "tool.exec_failed",
-            "argv": argv,
+            "argv": command,
             "result_for_model": f"{type(exc).__name__}: {exc}",
         }
 
@@ -189,12 +224,12 @@ def _run(
     return {
         "ok": True,
         "code": "ok",
-        "argv": argv,
+        "argv": command,
         "exit_code": completed.returncode,
         "stdout": stdout,
         "stderr": stderr,
         "result_for_model": (
-            f"$ {' '.join(argv)}\nexit={completed.returncode}\n"
+            f"$ {' '.join(command)}\nexit={completed.returncode}\n"
             f"{stdout}{stderr and chr(10) + stderr}"
         ).strip(),
     }
@@ -505,7 +540,11 @@ def port_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     argv = [binary, resolved_ip, "-p", ports, "--rate", str(rate), "--wait", "3"]
     _emit(ctx, "port_scan", {"host": host, "ip": resolved_ip, "ports": ports, "rate": rate})
     cwd = _jail_cwd(ctx, args)
-    result = _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)))
+    # masscan opens a raw socket and cannot work unprivileged. Retry under
+    # sudo only when the operator explicitly allowed it in the run config —
+    # never silently escalate.
+    result = _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)),
+                  privileged=bool(ctx.config.get("allow_sudo")))
     # masscan exits non-zero with "permission denied" when it cannot open a
     # raw socket. That is a privilege problem, not a scan result, and saying
     # so is more useful than a bare exit code.
@@ -514,8 +553,8 @@ def port_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         result["code"] = "tool.privilege_required"
         result["result_for_model"] = (
             result.get("result_for_model", "") +
-            "\n[note] masscan needs raw-socket privileges — run under sudo, "
-            "or use port_hint for a zero-privilege inventory check."
+            "\n[note] masscan needs raw-socket privileges — set allow_sudo in "
+            "the run config, or use port_hint for a zero-privilege check."
         )
     return result
 
