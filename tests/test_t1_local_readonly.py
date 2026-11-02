@@ -318,3 +318,68 @@ def test_search_glob_finds_hits_under_local_root(tmp_path: Path):
 
     assert outcome.get("ok") is True, outcome
     assert any("A.sol" in h.get("path", "") for h in outcome.get("hits", [])), outcome
+
+
+# -- read_file must return the whole file --------------------------------------
+
+
+def test_read_file_returns_the_whole_contract(tmp_path: Path):
+    """A 200-line default silently hid most of every real contract.
+
+    The agent read the first 200 lines, found nothing, and then re-fetched
+    the SAME file over http_request (which has no line cap) a dozen times to
+    see the rest — one audit burned 17 turns re-downloading one file. The
+    default must cover a real Solidity file in one call.
+    """
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "Big.sol"
+    target.write_text("\n".join(f"// line {i}" for i in range(1, 726)), encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=project, local_root=project)
+
+    outcome = tools_local.read_file({"path": str(target)}, ctx)
+
+    assert outcome.get("ok") is True, outcome
+    # The whole 725 lines must arrive, not the first 200.
+    assert "line 725" in outcome.get("text", ""), "tail of the file was cut off"
+    assert "line 1" in outcome.get("text", "")
+
+
+def test_read_file_names_the_remainder_and_the_next_offset(tmp_path: Path):
+    """When a file IS longer than the page, say so and say where to resume.
+
+    A silent cut looks like a complete file, so the agent concludes "nothing
+    here" — or routes around the tool. Naming the remainder turns the gap
+    into one more read_file call.
+    """
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "Long.sol"
+    target.write_text("\n".join(f"// line {i}" for i in range(1, 901)), encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=project, local_root=project)
+
+    outcome = tools_local.read_file({"path": str(target), "limit": 100}, ctx)
+
+    assert outcome.get("ok") is True, outcome
+    assert outcome.get("truncated") is True
+    assert "line 101" not in outcome.get("text", ""), "page limit was ignored"
+    assert "offset=101" in outcome.get("text", ""), "the next offset must be named"
+    assert "900" in outcome.get("result_for_model", ""), "the total must be named"
+
+
+def test_read_file_offset_resumes_where_the_page_ended(tmp_path: Path):
+    """offset=101 must return line 101, not line 1 again."""
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "Long.sol"
+    target.write_text("\n".join(f"// line {i}" for i in range(1, 901)), encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=project, local_root=project)
+
+    outcome = tools_local.read_file({"path": str(target), "limit": 100, "offset": 101}, ctx)
+
+    assert outcome.get("ok") is True, outcome
+    assert "line 101" in outcome.get("text", "")
+    assert "line 100" not in outcome.get("text", "")

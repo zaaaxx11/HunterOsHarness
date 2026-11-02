@@ -517,10 +517,16 @@ def read_file(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
         offset = max(1, int(args.get("offset", 1)))
     except (TypeError, ValueError):
         offset = 1
+    # 200 lines was the default, and a real Solidity file is routinely 500-800.
+    # The agent would read the first 200 lines, find no vulnerability, and
+    # then re-fetch the SAME file over http_request (which has no line cap)
+    # a dozen times to see the rest — one contract audit burned 17 turns
+    # re-downloading one file. Default to the whole file; the byte cap below
+    # still bounds what actually reaches the model.
     try:
-        limit = max(1, min(500, int(args.get("limit", 200))))
+        limit = max(1, min(2000, int(args.get("limit", 2000))))
     except (TypeError, ValueError):
-        limit = 200
+        limit = 2000
     code = "ok"
 
     def _blocked(c: str, msg: str) -> dict[str, Any]:
@@ -573,15 +579,32 @@ def read_file(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     if len(safe) > _MAX_FILE_BYTES + 256:
         safe = safe[: _MAX_FILE_BYTES + 256]
         truncated = True
+    # Tell the model what it did NOT get. A silent 200-line cut looks like a
+    # complete file, so the agent concludes "nothing here" and moves on — or
+    # worse, goes around the tool. Naming the remainder and the exact next
+    # offset turns the gap into one more read_file call instead of a dozen
+    # http_request round-trips.
+    shown_end = min(offset - 1 + limit, len(lines))
+    remaining = len(lines) - shown_end
+    more = ""
+    if remaining > 0:
+        more = (
+            f"\n...[file has {len(lines)} lines; showing {offset}-{shown_end}. "
+            f"{remaining} more line(s) — call read_file with offset={shown_end + 1}]"
+        )
+        truncated = True
     _emit(ctx, "read_file", {"code": code, "truncated": truncated})
-    marker = "\n...[truncated]" if truncated else ""
+    marker = "\n...[truncated]" if truncated and not more else ""
     return {
         "ok": True,
         "blocked": False,
         "code": code,
-        "text": safe + marker if truncated and not safe.endswith("[truncated]") else safe,
+        "text": safe + marker + more if not safe.endswith("[truncated]") else safe,
         "truncated": truncated,
-        "result_for_model": f"read {raw_path} ({len(safe)} chars)",
+        "result_for_model": (
+            f"read {raw_path} ({len(safe)} chars, lines {offset}-{shown_end} of {len(lines)})"
+            + (f" — {remaining} more, use offset={shown_end + 1}" if remaining > 0 else "")
+        ),
     }
 
 
