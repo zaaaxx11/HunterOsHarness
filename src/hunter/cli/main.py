@@ -361,6 +361,17 @@ def hunt(
                 json_out=json_out,
             )
         )
+    # Interactive mode: no positional targets → ask the operator what to hunt.
+    if not targets:
+        console.print("[bold]HunterOs — What do you want to hunt?[/bold]")
+        raw = typer.prompt("Target (URL, dir, repo, or description)")
+        if not raw or not raw.strip():
+            err_console.print("[hunter.error]BLOCKED:[/hunter.error] no target provided.")
+            raise typer.Exit(3)
+        targets = [raw.strip()]
+    # Interactive mode: no --time → ask the operator.
+    if not time_opt:
+        time_opt = typer.prompt("Time budget? (e.g. 30m, 2h, 6h)", default="2h")
     # Free-form description: if the single argument is not a URL/dir, ask the
     # LLM to extract concrete targets from it.
     if len(targets or []) == 1:
@@ -423,16 +434,11 @@ def hunt(
                 err_console.print("[hunter.error]BLOCKED:[/hunter.error] no hunt target found in description")
                 raise typer.Exit(3)
 
-    # Agent mode: a single long-lived agent run with its whole
-    # time budget in one loop. The old RAG feeder ("Recursive Autonomous Grind")
-    # chopped the mandate into many short queued hunts, which meant every child
-    # stopped on its own schedule and the wall-clock floor was never consumed by
-    # anything. One agent, one budget, one loop — the model decides when it is
-    # done, and only the clock can say otherwise.
-    #
-    # RAG is still reachable for genuinely multi-target work (>1 target), where
-    # a queue is the right shape; see `hunter rag`.
-    if len(targets or []) > 1:
+    # Agent mode: every hunt runs through the daemon BFS scheduler.
+    # A single target is one task in the queue; multiple targets are
+    # multiple tasks. The daemon handles ordering, retry, and child
+    # spawning. One session, one daemon — no free-form loops.
+    if len(targets or []) >= 1:
         from hunter.daemon import daemon_running, enqueue_hunt, start_daemon
         from hunter.duration import parse_duration
         from hunter.home import state_dir as _state_dir
