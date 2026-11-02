@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -30,8 +31,12 @@ from hunter.agent.toolchain import (
     cast_call,
     forge_build,
     forge_test,
+    gobuster_dir,
+    nuclei_scan,
+    port_scan,
     register_toolchain_tools,
     slither_run,
+    sqlmap_test,
 )
 from hunter.agent.tools_base import ToolContext, ToolOutcome, ToolRegistry
 from hunter.tools.scope import ScopeSet, scope_from_manifest
@@ -50,11 +55,17 @@ class _FakeScope:
             return False
         return True
 
-    def check_url(self, url: str) -> None:  # pragma: no cover - overridden per test
-        raise AssertionError("check_url should have been stubbed")
+    def allows_host(self, host) -> bool:
+        return host == "example.com"
+
+    def check_url(self, url: str) -> None:
+        # Default: allow. Tests that need a refusal install their own scope
+        # (see _DenyScope below) rather than relying on this raising.
+        if "example.com" not in url:
+            raise AssertionError(f"check_url should have been stubbed for {url}")
 
 
-def _ctx(root: Path, *, scope: _FakeScope | None = None, config: dict | None = None) -> ToolContext:
+def _ctx(root: Path, *, scope: Any | None = None, config: dict | None = None) -> ToolContext:
     events: list[tuple[str, dict]] = []
     ctx = ToolContext(
         run_id="R-test",
@@ -542,7 +553,19 @@ def test_every_toolchain_tool_has_an_install_hint():
     """A tool with no install path is a dead end for the operator."""
     for name, (binary, hint) in _BINARIES.items():
         assert hint.strip(), name
-        assert "install" in hint.lower() or "foundryup" in hint, name
+        assert "install" in hint.lower() or "foundryup" in hint or "clone" in hint.lower(), name
+
+
+def test_every_toolchain_binary_is_in_the_inventory():
+    """A binary wired into a tool must also be in INVENTORY_BINARIES.
+
+    The inventory is what `hunt doctor` and the runtime checks report on; a
+    tool whose binary is missing from it would be invisible to both.
+    """
+    from hunter.agent.inventory import INVENTORY_BINARIES
+
+    for binary in _BINARIES:
+        assert binary in INVENTORY_BINARIES, f"{binary} is wired but not inventoried"
 
 
 def test_resolve_is_cached_per_process(monkeypatch):
@@ -576,3 +599,235 @@ def test_resolve_cache_is_resettable(monkeypatch):
     assert toolchain._RESOLVE_CACHE is not None
     toolchain.reset_resolve_cache()
     assert toolchain._RESOLVE_CACHE is None
+
+
+# ------------------------------------------------------- web2 offensive tools
+#
+# port_scan / nuclei_scan / gobuster_dir / sqlmap_test. The load-bearing
+# assertions here are the ones that keep these from becoming duplicates of
+# what already exists: port_hint is a zero-socket hint and stays that way,
+# and each new tool refuses to run without its own required argument rather
+# than falling back to a default that may not exist on this machine.
+
+
+def test_port_scan_requires_a_host(tmp_path):
+    ctx = _ctx(tmp_path)
+    out = port_scan({}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "port.host_required"
+
+
+def test_port_scan_rejects_a_host_out_of_scope(tmp_path):
+    class _DenyAll:
+        def allows_host(self, host):
+            return False
+
+    ctx = _ctx(tmp_path, scope=_DenyAll())
+    out = port_scan({"host": "evil.example.com"}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "scope.target_out_of_scope"
+
+
+def test_port_scan_does_not_launder_an_internal_error_into_a_scope_refusal(tmp_path):
+    """A bug in the scope object must not be reported as a policy decision.
+
+    The first version of these tools caught bare ``Exception`` around the
+    scope check, which turned an ``AssertionError`` from a broken scope into
+    ``scope.target_out_of_scope`` — a lie about why the tool refused. Only
+    ``ScopeViolation`` is a refusal; anything else must propagate.
+    """
+    class _BrokenScope:
+        def allows_host(self, host):
+            raise AssertionError("this scope object is broken")
+
+    ctx = _ctx(tmp_path, scope=_BrokenScope())
+    with pytest.raises(AssertionError):
+        port_scan({"host": "example.com"}, ctx)
+
+
+def test_port_scan_rejects_shell_metacharacters_in_ports(tmp_path):
+    """A port list is not a shell command line."""
+    ctx = _ctx(tmp_path)
+    for bad in ("80; rm -rf /", "80 $(id)", "80 `id`", "80\n443", "80 443", "-p 80"):
+        out = port_scan({"host": "example.com", "ports": bad}, ctx)
+        assert out["ok"] is False, f"{bad!r} must be refused"
+        assert out["code"] == "toolchain.bad_ports", f"{bad!r} -> {out['code']}"
+
+
+def test_port_scan_accepts_a_plain_port_list(tmp_path, monkeypatch):
+    monkeypatch.setattr(toolchain, "_run",
+                        lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
+                                            "stdout": "", "stderr": ""})
+
+    """The allowlist must not reject legitimate lists."""
+    for good in ("80", "80,443", "0-65535", "22,80,443,8000-8100"):
+        ctx = _ctx(tmp_path)
+        out = port_scan({"host": "example.com", "ports": good}, ctx)
+        # Either it ran, or the binary is missing — but never bad_ports.
+        assert out.get("code") != "toolchain.bad_ports", f"{good!r} refused"
+
+
+def test_port_scan_caps_the_rate(tmp_path, monkeypatch):
+    monkeypatch.setattr(toolchain, "_run",
+                        lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
+                                            "stdout": "", "stderr": ""})
+
+    """A rate above the ceiling is clamped, not passed through."""
+    ctx = _ctx(tmp_path)
+    out = port_scan({"host": "example.com", "rate": 10_000_000}, ctx)
+    # The tool either ran (rate clamped) or reported the binary missing.
+    # What it must never do is build an argv with the raw 10M rate.
+    if out.get("ok"):
+        assert "--rate" not in out.get("argv", []) or \
+            out["argv"][out["argv"].index("--rate") + 1] == "100000"
+
+
+def test_nuclei_scan_requires_a_target(tmp_path):
+    ctx = _ctx(tmp_path)
+    out = nuclei_scan({}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "nuclei.target_required"
+
+
+def test_nuclei_scan_rejects_an_unknown_severity(tmp_path):
+    """Severity is a closed set; anything else is a flag in disguise."""
+    ctx = _ctx(tmp_path)
+    out = nuclei_scan({"target": "https://example.com", "severity": "high,evil"}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "toolchain.bad_severity"
+
+
+def test_nuclei_scan_accepts_a_known_severity(tmp_path, monkeypatch):
+    """A known severity passes validation — and the child is NOT executed.
+
+    ``_run`` is stubbed: this test is about argv validation, and letting a
+    real nuclei download its template set turns a 0.1s test into an 80s one.
+    """
+    monkeypatch.setattr(toolchain, "_run",
+                        lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
+                                            "stdout": "", "stderr": ""})
+    ctx = _ctx(tmp_path)
+    out = nuclei_scan({"target": "https://example.com", "severity": "high,critical"}, ctx)
+    assert out.get("code") != "toolchain.bad_severity"
+    # argv[0] is the resolved absolute path — that is the point of _resolve.
+    assert out["argv"][0].endswith("/nuclei")
+    assert out["argv"][1:3] == ["-u", "https://example.com"]
+    assert out["argv"][out["argv"].index("-severity") + 1] == "critical,high"
+
+
+def test_gobuster_dir_requires_a_wordlist(tmp_path):
+    """No default wordlist: guessing one that may not exist is a lie."""
+    ctx = _ctx(tmp_path)
+    out = gobuster_dir({"target": "https://example.com"}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "gobuster.wordlist_required"
+
+
+def test_gobuster_dir_reports_a_missing_wordlist(tmp_path):
+    ctx = _ctx(tmp_path)
+    out = gobuster_dir({"target": "https://example.com",
+                        "wordlist": str(tmp_path / "nope.txt")}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "gobuster.wordlist_missing"
+
+
+def test_gobuster_dir_refuses_a_wordlist_outside_local_roots(tmp_path):
+    """The wordlist is a model-supplied path — it gets the strictest gate."""
+    root = tmp_path / "jail"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("admin\n", encoding="utf-8")
+    ctx = _ctx(root, scope=_FakeScope(root))
+    out = gobuster_dir({"target": "https://example.com", "wordlist": str(outside)}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "scope.local_root_out_of_scope"
+
+
+def test_gobuster_dir_accepts_a_wordlist_inside_local_roots(tmp_path, monkeypatch):
+    monkeypatch.setattr(toolchain, "_run",
+                        lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
+                                            "stdout": "", "stderr": ""})
+
+    root = tmp_path / "jail"
+    root.mkdir()
+    wl = root / "words.txt"
+    wl.write_text("admin\n", encoding="utf-8")
+    ctx = _ctx(root, scope=_FakeScope(root))
+    out = gobuster_dir({"target": "https://example.com", "wordlist": str(wl)}, ctx)
+    assert out.get("code") not in ("gobuster.wordlist_missing", "scope.local_root_out_of_scope")
+
+
+def test_sqlmap_test_requires_a_target(tmp_path):
+    ctx = _ctx(tmp_path)
+    out = sqlmap_test({}, ctx)
+    assert out["ok"] is False
+    assert out["code"] == "sqlmap.target_required"
+
+
+def test_sqlmap_test_never_builds_a_shell_escalation_argv(tmp_path, monkeypatch):
+    monkeypatch.setattr(toolchain, "_run",
+                        lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
+                                            "stdout": "", "stderr": ""})
+
+    """Read-only by construction: no --os-shell, no --sql-shell, ever."""
+    ctx = _ctx(tmp_path)
+    out = sqlmap_test({"target": "https://example.com/?id=1"}, ctx)
+    argv = out.get("argv", [])
+    for forbidden in ("--os-shell", "--sql-shell", "--os-cmd", "--file-write"):
+        assert forbidden not in argv, f"{forbidden} must never appear"
+
+
+def test_sqlmap_test_clamps_level_and_risk(tmp_path, monkeypatch):
+    monkeypatch.setattr(toolchain, "_run",
+                        lambda argv, **kw: {"ok": True, "argv": argv, "exit_code": 0,
+                                            "stdout": "", "stderr": ""})
+
+    ctx = _ctx(tmp_path)
+    out = sqlmap_test({"target": "https://example.com/?id=1", "level": 99, "risk": 99}, ctx)
+    argv = out.get("argv", [])
+    if "--level" in argv:
+        assert int(argv[argv.index("--level") + 1]) <= 5
+    if "--risk" in argv:
+        assert int(argv[argv.index("--risk") + 1]) <= 3
+
+
+def test_toolchain_tools_are_eight_and_unique():
+    """Eight tools, no duplicate names — the redundancy rule."""
+    names = [s["name"] for s in toolchain.TOOLCHAIN_TOOLS]
+    assert len(names) == len(set(names)), f"duplicate tool name in {names}"
+    assert len(names) == 8, f"expected 8 tools, got {len(names)}: {names}"
+
+
+def test_toolchain_tools_do_not_duplicate_existing_tools():
+    """A toolchain tool must not shadow a tool that already exists.
+
+    port_hint (tools_network) is a zero-socket inventory hint. port_scan is
+    the real scanner. Both are allowed to exist because they answer
+    different questions — but no toolchain tool may reuse an existing name.
+    """
+    from hunter.agent.tools_network import SPECS as NETWORK_SPECS
+
+    existing = {s["name"] for s in NETWORK_SPECS}
+    overlap = {s["name"] for s in toolchain.TOOLCHAIN_TOOLS} & existing
+    assert not overlap, f"toolchain shadows existing tools: {overlap}"
+
+
+def test_register_toolchain_tools_advertises_every_binary(tmp_path, monkeypatch):
+    """Every tool must be registered — as a real tool or as unavailable.
+
+    The failure mode this pins: a new tool added to TOOLCHAIN_TOOLS but
+    missing from the binary map in register_toolchain_tools would raise
+    KeyError and take the whole registry down.
+    """
+    from hunter.agent.tools_base import ToolRegistry
+
+    registry = ToolRegistry()
+    monkeypatch.setattr(toolchain, "_resolve", lambda b: None)
+    register_toolchain_tools(registry)
+    expected = {s["name"] for s in toolchain.TOOLCHAIN_TOOLS}
+    for name in expected:
+        assert registry.get(name) is None, name
+        assert name in registry._unavailable, name
+        code, message = registry._unavailable[name]
+        assert code == "tool.unavailable"
+        assert "install with:" in message

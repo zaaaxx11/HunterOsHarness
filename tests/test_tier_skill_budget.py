@@ -33,12 +33,17 @@ def test_basic_16_advanced_17_shell_exec_only_advanced():
     advanced = build_registry("advanced", plugins_enabled=False).schemas_for_tier("advanced")
     basic_names = [t["function"]["name"] for t in basic]
     advanced_names = [t["function"]["name"] for t in advanced]
-    # 16 basic / 18 advanced: advanced carries shell_exec and delegate_task, so
-    # every role that reaches advanced tooling can spawn a real sub-agent.
-    assert len(basic) == 16 and len(advanced) == 18, \
+    # 19 basic / 26 advanced: advanced carries shell_exec and delegate_task,
+    # so every role that reaches advanced tooling can spawn a real sub-agent.
+    # The 8 toolchain tools (forge_build/test, cast_call, slither_run,
+    # port_scan, nuclei_scan, gobuster_dir, sqlmap_test) are the only
+    # advanced-only additions beyond that pair.
+    assert len(basic) == 19 and len(advanced) == 26, \
         f"pin counts: basic={len(basic)} advanced={len(advanced)}"
-    assert set(advanced_names) - set(basic_names) == {"shell_exec", "delegate_task"}, \
-        f"advanced-only drift: {sorted(set(advanced_names) - set(basic_names))}"
+    assert set(advanced_names) - set(basic_names) == {
+        "shell_exec", "delegate_task", "slither_run", "port_scan",
+        "nuclei_scan", "gobuster_dir", "sqlmap_test",
+    }, f"advanced-only drift: {sorted(set(advanced_names) - set(basic_names))}"
     assert set(basic_names) <= set(advanced_names), "basic tak boleh lebih kaya"
     assert load_corpus() is not None and MAX_MOUNTED == 5, "pin konstanta skill"
 

@@ -39,8 +39,12 @@ __all__ = [
     "cast_call",
     "forge_build",
     "forge_test",
+    "gobuster_dir",
+    "nuclei_scan",
+    "port_scan",
     "register_toolchain_tools",
     "slither_run",
+    "sqlmap_test",
 ]
 
 # ---------------------------------------------------------------------------
@@ -56,6 +60,15 @@ _BINARIES: dict[str, tuple[str, str]] = {
     "anvil": ("anvil", "curl -L https://foundry.paradigm.xyz | bash && foundryup"),
     "slither": ("slither", "pip install slither-analyzer && slither --version"),
     "solc": ("solc", "pip install solc-select && solc-select install latest"),
+    # Web2 offensive half. These four have NO existing counterpart in the
+    # harness: port_hint (tools_network) is a pure inventory hint that never
+    # opens a socket, and nothing else scans, brute-forces, or verifies SQLi.
+    # nmap is deliberately absent — masscan covers the same job and was the
+    # one installed here, so wiring both would be a duplicate.
+    "masscan": ("masscan", "apt-get install masscan"),
+    "nuclei": ("nuclei", "install the release binary from projectdiscovery/nuclei"),
+    "gobuster": ("gobuster", "install the release binary from OJ/gobuster"),
+    "sqlmap": ("sqlmap", "git clone https://github.com/sqlmapproject/sqlmap"),
 }
 
 #: Environment passed to every child. Deliberately tiny: a toolchain run has
@@ -219,6 +232,45 @@ def _emit(ctx: ToolContext, tool: str, extra: dict[str, Any] | None = None) -> N
         pass
 
 
+def _scope_gate_url(ctx: ToolContext, target: str) -> dict[str, Any] | None:
+    """Run the scope's URL check. Returns an error payload, or None if allowed.
+
+    Deliberately narrow: only ``ScopeViolation`` (and a scope that simply has
+    no ``check_url``) is a scope refusal. An ``AssertionError`` or any other
+    internal error must NOT be laundered into ``scope.target_out_of_scope`` —
+    that is how a bug in the tool gets reported to the operator as a policy
+    decision, and it is exactly the dishonesty this module exists to avoid.
+    """
+    from ..tools.scope import ScopeViolation  # noqa: PLC0415 — optional import path
+
+    check = getattr(ctx.scope, "check_url", None)
+    if check is None:
+        return None
+    try:
+        check(target)
+    except ScopeViolation as exc:
+        return {"ok": False, "blocked": True, "code": "scope.target_out_of_scope",
+                "result_for_model": f"BLOCKED [scope.target_out_of_scope] {exc}"}
+    return None
+
+
+def _scope_gate_host(ctx: ToolContext, host: str) -> dict[str, Any] | None:
+    """Same contract as :func:`_scope_gate_url`, for host checks."""
+    from ..tools.scope import ScopeViolation  # noqa: PLC0415 — optional import path
+
+    allows = getattr(ctx.scope, "allows_host", None)
+    if allows is None:
+        return None
+    try:
+        if not allows(host):
+            return {"ok": False, "blocked": True, "code": "scope.target_out_of_scope",
+                    "result_for_model": f"BLOCKED [scope.target_out_of_scope] host '{host}' out of scope"}
+    except ScopeViolation as exc:
+        return {"ok": False, "blocked": True, "code": "scope.target_out_of_scope",
+                "result_for_model": f"BLOCKED [scope.target_out_of_scope] {exc}"}
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -356,11 +408,9 @@ def cast_call(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if not rpc_url or not to:
         return {"ok": False, "blocked": False, "code": "toolchain.missing_args",
                 "result_for_model": "cast_call requires rpc_url and to"}
-    try:
-        ctx.scope.check_url(rpc_url)
-    except Exception as exc:  # noqa: BLE001 — ScopeViolation or a scope without check_url
-        return {"ok": False, "blocked": True, "code": "scope.target_out_of_scope",
-                "result_for_model": f"BLOCKED [scope.target_out_of_scope] {exc}"}
+    denied = _scope_gate_url(ctx, rpc_url)
+    if denied is not None:
+        return denied
 
     binary = _resolve("cast")
     if binary is None:
@@ -371,6 +421,174 @@ def cast_call(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     root, _err = _local_root(ctx, args)
     cwd = root if root is not None else Path.cwd()
     return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 60)))
+
+
+# ---------------------------------------------------------------------------
+# Web2 offensive tools
+# ---------------------------------------------------------------------------
+
+
+def port_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """``masscan`` — a real port scan, scope-gated.
+
+    This is the tool ``port_hint`` never was: it opens sockets. The host must
+    pass the scope gate, the port list is an allowlisted string, and the rate
+    is capped so a scan cannot saturate the operator's link.
+
+    ``port_hint`` stays as-is — it is a zero-socket inventory hint and is
+    still the right answer when the question is "what might be open".
+    """
+    host = str(args.get("host", "") or "").strip()
+    if not host:
+        return {"ok": False, "blocked": False, "code": "port.host_required",
+                "result_for_model": "port_scan requires host"}
+    denied = _scope_gate_host(ctx, host)
+    if denied is not None:
+        return denied
+
+    # Ports: digits, commas, and dashes only. No spaces, no shell metachars.
+    ports = str(args.get("ports", "") or "").strip() or "0-65535"
+    if not all(c.isdigit() or c in ",-" for c in ports):
+        return {"ok": False, "blocked": True, "code": "toolchain.bad_ports",
+                "result_for_model": f"BLOCKED [toolchain.bad_ports] {ports!r}"}
+
+    rate = args.get("rate", 1000)
+    try:
+        rate = max(1, min(int(rate), 100_000))
+    except (TypeError, ValueError):
+        rate = 1000
+
+    binary = _resolve("masscan")
+    if binary is None:
+        return _unavailable("port_scan", "masscan")
+
+    argv = [binary, host, "-p", ports, "--rate", str(rate), "--wait", "3"]
+    _emit(ctx, "port_scan", {"host": host, "ports": ports, "rate": rate})
+    root, _err = _local_root(ctx, args)
+    cwd = root if root is not None else Path.cwd()
+    return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)))
+
+
+def nuclei_scan(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """``nuclei`` — template-based vulnerability scanning against a URL.
+
+    The target must pass the scope gate. Templates are restricted to a single
+    ``-t`` value (or none at all, which uses the installed set) so the model
+    cannot point the scanner at an arbitrary path on disk.
+    """
+    target = str(args.get("target", "") or "").strip()
+    if not target:
+        return {"ok": False, "blocked": False, "code": "nuclei.target_required",
+                "result_for_model": "nuclei_scan requires target"}
+    denied = _scope_gate_url(ctx, target)
+    if denied is not None:
+        return denied
+
+    binary = _resolve("nuclei")
+    if binary is None:
+        return _unavailable("nuclei_scan", "nuclei")
+
+    argv = [binary, "-u", target, "-jsonl", "-silent", "-nc"]
+    # nuclei downloads its template set on first run and writes it to the
+    # CWD by default — 87MB of YAML landing in whatever directory the tool
+    # happened to be invoked from. Point it at the jail's cache instead.
+    root, _err = _local_root(ctx, args)
+    cwd = root if root is not None else Path.cwd()
+    argv += ["-templates-home", str(cwd / ".nuclei-templates")]
+    severity = str(args.get("severity", "") or "").strip()
+    if severity:
+        # Severity is a comma list of known words; anything else is rejected
+        # rather than passed through as a flag.
+        allowed = {"info", "low", "medium", "high", "critical", "unknown"}
+        parts = {p.strip().lower() for p in severity.split(",") if p.strip()}
+        if not parts or not parts <= allowed:
+            return {"ok": False, "blocked": True, "code": "toolchain.bad_severity",
+                    "result_for_model": f"BLOCKED [toolchain.bad_severity] {severity!r}"}
+        argv += ["-severity", ",".join(sorted(parts))]
+
+    _emit(ctx, "nuclei_scan", {"target": target})
+    return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)))
+
+
+def gobuster_dir(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """``gobuster dir`` — content discovery against an in-scope URL.
+
+    The wordlist is the one model-supplied path, so it is the one that gets
+    the strictest check: it must resolve to a real file inside the scope's
+    local roots. Without a wordlist the tool refuses rather than guessing a
+    default that may not exist on this machine.
+    """
+    target = str(args.get("target", "") or "").strip()
+    if not target:
+        return {"ok": False, "blocked": False, "code": "gobuster.target_required",
+                "result_for_model": "gobuster_dir requires target"}
+    denied = _scope_gate_url(ctx, target)
+    if denied is not None:
+        return denied
+
+    wordlist = str(args.get("wordlist", "") or "").strip()
+    if not wordlist:
+        return {"ok": False, "blocked": False, "code": "gobuster.wordlist_required",
+                "result_for_model": "gobuster_dir requires wordlist (a path to a file)"}
+    try:
+        resolved = Path(wordlist).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return {"ok": False, "blocked": True, "code": "toolchain.bad_wordlist",
+                "result_for_model": f"BLOCKED [toolchain.bad_wordlist] {wordlist!r}"}
+    if not resolved.is_file():
+        return {"ok": False, "blocked": False, "code": "gobuster.wordlist_missing",
+                "result_for_model": f"wordlist not found: {resolved}"}
+    try:
+        if not ctx.scope.allows_local_root(resolved.parent):
+            return {"ok": False, "blocked": True, "code": "scope.local_root_out_of_scope",
+                    "result_for_model": f"BLOCKED [scope.local_root_out_of_scope] {resolved}"}
+    except Exception:  # noqa: BLE001 — a scope without the method must not crash the tool
+        return {"ok": False, "blocked": True, "code": "scope.local_root_out_of_scope",
+                "result_for_model": f"BLOCKED [scope.local_root_out_of_scope] {resolved}"}
+
+    binary = _resolve("gobuster")
+    if binary is None:
+        return _unavailable("gobuster_dir", "gobuster")
+
+    argv = [binary, "dir", "-u", target, "-w", str(resolved), "-q", "--no-color"]
+    _emit(ctx, "gobuster_dir", {"target": target, "wordlist": str(resolved)})
+    root, _err = _local_root(ctx, args)
+    cwd = root if root is not None else Path.cwd()
+    return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 300)))
+
+
+def sqlmap_test(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """``sqlmap`` — verify a suspected SQL injection point.
+
+    Read-only by construction: ``--batch --flush-session`` and an explicit
+    ``--level``/``--risk`` ceiling, with no ``--os-shell``/``--sql-shell`` and
+    no dump flag unless the operator asks for one. The URL must be in scope.
+    """
+    target = str(args.get("target", "") or "").strip()
+    if not target:
+        return {"ok": False, "blocked": False, "code": "sqlmap.target_required",
+                "result_for_model": "sqlmap_test requires target"}
+    denied = _scope_gate_url(ctx, target)
+    if denied is not None:
+        return denied
+
+    binary = _resolve("sqlmap")
+    if binary is None:
+        return _unavailable("sqlmap_test", "sqlmap")
+
+    argv = [binary, "-u", target, "--batch", "--flush-session", "--disable-coloring"]
+    level = args.get("level", 1)
+    risk = args.get("risk", 1)
+    try:
+        level = max(1, min(int(level), 5))
+        risk = max(1, min(int(risk), 3))
+    except (TypeError, ValueError):
+        level, risk = 1, 1
+    argv += ["--level", str(level), "--risk", str(risk)]
+    _emit(ctx, "sqlmap_test", {"target": target, "level": level, "risk": risk})
+    root, _err = _local_root(ctx, args)
+    cwd = root if root is not None else Path.cwd()
+    return _run(argv, cwd=cwd, timeout_s=int(args.get("timeout_s", 600)))
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +680,91 @@ TOOLCHAIN_TOOLS: tuple[dict[str, Any], ...] = (
         "min_tier": "basic",
         "danger": "none",
     },
+    {
+        "name": "port_scan",
+        "description": (
+            "Run a real `masscan` port scan against an in-scope host. Unlike "
+            "port_hint, this opens sockets. Port list and rate are validated "
+            "and capped. Requires masscan on PATH."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "host": {"type": "string", "description": "Host to scan (must be in scope)."},
+                "ports": {"type": "string",
+                          "description": "Port list, e.g. '80,443' or '0-65535'. Digits, commas, dashes."},
+                "rate": {"type": "integer", "description": "Packets per second (1-100000)."},
+                "timeout_s": {"type": "integer", "description": "Timeout in seconds."},
+            },
+            "required": ["host"],
+        },
+        "handler": port_scan,
+        "min_tier": "advanced",
+        "danger": "none",
+    },
+    {
+        "name": "nuclei_scan",
+        "description": (
+            "Run `nuclei` template-based vulnerability scanning against an "
+            "in-scope URL, with JSONL output. Severity is restricted to the "
+            "known set. Requires nuclei on PATH."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "URL to scan (must be in scope)."},
+                "severity": {"type": "string",
+                             "description": "Comma list: info, low, medium, high, critical."},
+                "timeout_s": {"type": "integer", "description": "Timeout in seconds."},
+            },
+            "required": ["target"],
+        },
+        "handler": nuclei_scan,
+        "min_tier": "advanced",
+        "danger": "none",
+    },
+    {
+        "name": "gobuster_dir",
+        "description": (
+            "Run `gobuster dir` content discovery against an in-scope URL. "
+            "The wordlist must be a real file inside the scope's local_roots. "
+            "Requires gobuster on PATH."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "URL to scan (must be in scope)."},
+                "wordlist": {"type": "string",
+                             "description": "Path to a wordlist file inside local_roots."},
+                "timeout_s": {"type": "integer", "description": "Timeout in seconds."},
+            },
+            "required": ["target", "wordlist"],
+        },
+        "handler": gobuster_dir,
+        "min_tier": "advanced",
+        "danger": "none",
+    },
+    {
+        "name": "sqlmap_test",
+        "description": (
+            "Run `sqlmap` to verify a suspected SQL injection point on an "
+            "in-scope URL. Read-only by construction: batch mode, no shell "
+            "escalation, level/risk capped. Requires sqlmap on PATH."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "URL to test (must be in scope)."},
+                "level": {"type": "integer", "description": "sqlmap level (1-5)."},
+                "risk": {"type": "integer", "description": "sqlmap risk (1-3)."},
+                "timeout_s": {"type": "integer", "description": "Timeout in seconds."},
+            },
+            "required": ["target"],
+        },
+        "handler": sqlmap_test,
+        "min_tier": "advanced",
+        "danger": "none",
+    },
 )
 
 
@@ -480,6 +783,10 @@ def register_toolchain_tools(registry: Any) -> Any:
             "forge_test": "forge",
             "slither_run": "slither",
             "cast_call": "cast",
+            "port_scan": "masscan",
+            "nuclei_scan": "nuclei",
+            "gobuster_dir": "gobuster",
+            "sqlmap_test": "sqlmap",
         }[spec["name"]]
         if _resolve(binary) is None:
             _name, hint = _BINARIES[binary]

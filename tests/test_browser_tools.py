@@ -306,14 +306,14 @@ def test_registry_adds_exact_browser_tools_only_when_available():
     module = FakePlaywrightModule()
     default_registry = build_registry("basic")
     # M8 drift: runtime_inventory joins the basic tier (15 → 16).
-    assert len(default_registry.schemas_for_tier("basic")) == 16
+    assert len(default_registry.schemas_for_tier("basic")) == 19
     assert not (BROWSER_NAMES & {s["function"]["name"] for s in default_registry.schemas_for_tier("basic")})
     assert module.drivers == []
 
     registry = build_registry("basic", browser_enabled=True, playwright_module=module)
     schemas = registry.schemas_for_tier("basic")
     names = [schema["function"]["name"] for schema in schemas]
-    assert len(names) == 20
+    assert len(names) == 23
     assert set(names) >= BROWSER_NAMES
     assert names == sorted(names)
 

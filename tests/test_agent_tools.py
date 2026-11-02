@@ -168,7 +168,7 @@ def test_tier_gating_is_handler_level_schemas_identical(env):
     advanced_names = [t["function"]["name"] for t in advanced]
     assert set(basic_names) <= set(advanced_names)  # basic is never richer
     assert "shell_exec" in advanced_names and "shell_exec" not in basic_names
-    assert len(basic) == 16 and len(advanced) == 17
+    assert len(basic) == 19 and len(advanced) == 25
     assert all(spec.min_tier == "basic" for spec in env.registry.specs_for_tier("basic"))
 
 
