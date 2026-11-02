@@ -26,6 +26,7 @@ network, or filesystem directly. Governance invariants implemented here:
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import random
 import shlex
@@ -1889,6 +1890,24 @@ def build_registry(
             handler=_agent_delegate,
         )
     )
+
+    # Web2 recon surface (DNS / TLS / headers / subdomain / pagination) and the
+    # local glob+archive readers. These were fully implemented with handlers and
+    # specs but nobody ever CALLED their register functions, so ten tools were
+    # absent from every run: a hunt could not resolve DNS, inventory TLS, or read
+    # an archive. Registered like the toolchain: after the built-ins, before the
+    # drop-in plugins, so a plugin may override but never shadow.
+    for _module_name, _register_name in (
+        (".tools_network", "register_network_tools"),
+        (".tools_local", "register_local_tools"),
+    ):
+        try:
+            _mod = importlib.import_module(_module_name, __package__)
+            getattr(_mod, _register_name)(registry)
+        except Exception as exc:  # pragma: no cover - defensive
+            registry.register_unavailable(
+                _register_name, "surface.loader_failed", f"{type(exc).__name__}: {exc}"
+            )
 
     # Offensive toolchain (Foundry / Slither / solc). Registered AFTER the
     # built-ins and BEFORE the drop-in plugins, so a plugin can still override
