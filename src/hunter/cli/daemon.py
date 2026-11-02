@@ -417,6 +417,9 @@ def _cmd_start(
         min_wall_seconds=min_wall or 0.0,
         max_wall_seconds=max_wall or 0.0,
         max_cost_usd=max_cost,
+        # budget.max_iterations: 0 means unlimited — the daemon must forward it
+        # or RunBudget's dataclass default (60) ends a long mandate early.
+        max_iterations=int(getattr(budget, "max_iterations", 0) or 0),
         force=force,
     )
     if code == 0:

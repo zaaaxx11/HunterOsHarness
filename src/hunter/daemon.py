@@ -528,6 +528,7 @@ def enqueue_hunt(
     max_wall_seconds: float,
     max_cost_usd: float = 0.0,
     min_wall_seconds: float = 0.0,
+    max_iterations: int = 0,
 ) -> Path:
     """Validate and enqueue one independent hunt task."""
     task = {
@@ -537,6 +538,7 @@ def enqueue_hunt(
         "max_wall_seconds": float(max_wall_seconds),
         "max_cost_usd": float(max_cost_usd),
         "min_wall_seconds": float(min_wall_seconds),
+        "max_iterations": int(max_iterations),
     }
     _validate_hunt_task(task)
     return enqueue_task(state_dir, task)
@@ -632,6 +634,7 @@ def start_daemon(
     min_wall_seconds: float = 0.0,
     max_wall_seconds: float = 0.0,
     max_cost_usd: float = 0.0,
+    max_iterations: int = 0,
     force: bool = False,
 ) -> int:
     """Start the persistent engine, optionally enqueueing one initial hunt.
@@ -661,6 +664,7 @@ def start_daemon(
             "min_wall_seconds": float(min_wall_seconds),
             "max_wall_seconds": float(max_wall_seconds),
             "max_cost_usd": float(max_cost_usd),
+            "max_iterations": int(max_iterations),
             "created_ts": time.time(),
             "claimed_by": None,
             "claimed_ts": None,
@@ -1033,6 +1037,10 @@ async def hunt_worker(state_dir: str, *, stop_path: Path, heartbeat: dict[str, A
                 max_cost_usd=float(task.get("max_cost_usd", 0.0) or 0.0),
                 wall_seconds=float(task.get("max_wall_seconds", 0.0) or 0.0),
                 min_wall_seconds=float(task.get("min_wall_seconds", 0.0) or 0.0),
+                # Without this the RunBudget dataclass default (60) silently
+                # overrode budget.max_iterations from config, so a run with
+                # max_iterations: 0 (unlimited) still died at 60 turns.
+                max_iterations=int(task.get("max_iterations", 0) or 0),
                 stop_file=str(stop_path),
             )
             budget.start()

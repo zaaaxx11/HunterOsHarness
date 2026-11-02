@@ -75,6 +75,7 @@ def test_hunt_start_without_target_boots_engine_exactly(monkeypatch, tmp_path):
         "min_wall_seconds": 0.0,
         "max_wall_seconds": 0.0,
         "max_cost_usd": 0.0,
+        "max_iterations": 60,
         "force": False,
     }
 
