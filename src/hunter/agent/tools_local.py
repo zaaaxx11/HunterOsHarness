@@ -40,6 +40,10 @@ OUTCOME_TABLE: dict[str, tuple[str, ...]] = {
 }
 
 _MAX_FILE_BYTES = 1_048_576  # 1MB read cap
+# A real Solidity file is 500-800 lines, so the default page is the whole
+# file. The byte cap above is what actually bounds what reaches the model.
+_DEFAULT_READ_LIMIT = 2000
+_MAX_READ_LIMIT = 2000
 _MAX_PATTERN_CHARS = 1000
 _DEFAULT_MAX_HITS = 20
 
@@ -163,6 +167,52 @@ def _jail_roots(ctx: Any) -> tuple[Path, ...]:
     return (jail,)
 
 
+def _inside_any_root(path: Path, jail: Any) -> bool:
+    """Containment against every configured root, not just the first."""
+    if isinstance(jail, _MultiRoot):
+        return jail.contains(path)
+    return path == jail or jail in path.parents
+
+
+def _resolve_against_roots(raw: str, jail: Any) -> Path | None:
+    """Resolve ``raw`` against each root; return the first that exists.
+
+    Used when the direct resolution lands outside every root — which is what
+    happens when the agent writes an absolute path (correct for the project)
+    while the jail's first root is the state dir.
+
+    An ABSOLUTE path is checked for containment directly, never joined onto a
+    root: joining ``/etc/passwd`` onto ``/state`` yields
+    ``/state/etc/passwd``, which is inside the root and therefore "allowed" —
+    a path that exists nowhere. The join only ever applies to a RELATIVE path.
+    """
+    text = str(raw)
+    is_absolute = text.startswith(("/", "\\"))
+    norm = _norm_seps(text).lstrip("/")
+    if not norm or ".." in norm.split("/"):
+        return None
+    if is_absolute:
+        try:
+            candidate = Path("/" + norm).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return candidate if _inside_any_root(candidate, jail) else None
+    for root in _jail_roots_from(jail):
+        try:
+            candidate = (root / norm).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if candidate == root or root in candidate.parents:
+            return candidate
+    return None
+
+
+def _jail_roots_from(jail: Any) -> tuple[Path, ...]:
+    if isinstance(jail, _MultiRoot):
+        return jail.roots
+    return (jail,)
+
+
 def _relative_display(path: Path, jail: Any) -> str:
     """Path relative to whichever root contains it, for display in hits."""
     if isinstance(jail, _MultiRoot):
@@ -226,20 +276,48 @@ def search_glob(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
                 "hits": [], "result_for_model": "search requires non-empty 'pattern'"}
     norm = _norm_seps(raw_glob).lstrip("/")
     parts = norm.split("/") if norm else []
-    if (not norm or re.match(r"^[a-zA-Z]:/", norm) or raw_glob.startswith("/")
-            or raw_glob.startswith("\\") or ".." in parts):
+    # An ABSOLUTE glob is not automatically an escape. read_file accepts an
+    # absolute path inside any root, and the agent that was told the project
+    # lives at /home/.../smart-contracts naturally writes an absolute glob —
+    # refusing it while the file it names is readable is an inconsistency the
+    # agent pays for in wasted turns.
+    #
+    # But it is not automatically ALLOWED either: an absolute glob that
+    # resolves outside every root is refused, not silently walked and filtered
+    # afterwards. "ok with zero hits" reads as "nothing matched" to the agent,
+    # which is a lie when the real answer is "that path is not yours".
+    if not norm or re.match(r"^[a-zA-Z]:/", norm) or ".." in parts:
         return _blocked("search.jail_violation",
                         f"BLOCKED [search.jail_violation] glob escapes jail: {raw_glob!r}")
+    if raw_glob.startswith(("/", "\\")):
+        # Containment is checked on the RESOLVED glob, not on its first
+        # segment: /home/simon/project/contracts/*.sol has the segment /home,
+        # which is not the root, so a first-segment check refuses the very
+        # path it should allow.
+        try:
+            glob_base = Path("/" + norm).resolve()
+        except (OSError, RuntimeError, ValueError):
+            glob_base = None
+        if glob_base is None or not _inside_any_root(glob_base, jail):
+            return _blocked("search.jail_violation",
+                            f"BLOCKED [search.jail_violation] glob is outside the jail: {raw_glob!r}")
     hits: list[dict[str, Any]] = []
     try:
         # A multi-root jail has no single directory to glob from, so walk each
         # root and keep the hits. Globbing only the first root would silently
         # hide the target project when the state dir happens to be listed
         # first.
+        #
+        # An ABSOLUTE glob is walked from the filesystem root, not re-joined
+        # onto each jail root: re-joining /home/.../contracts/*.sol onto
+        # /state yields /state/home/.../contracts/*.sol, which matches
+        # nothing, so the search silently returns zero hits.
         roots = jail.roots if isinstance(jail, _MultiRoot) else (jail,)
+        glob_from = Path("/") if raw_glob.startswith(("/", "\\")) else None
         paths: list[Path] = []
         for root in roots:
-            paths.extend(p for p in root.glob(norm) if p.is_file())
+            base = glob_from if glob_from is not None else root
+            paths.extend(p for p in base.glob(norm) if p.is_file())
         paths.sort()
     except (OSError, ValueError):
         _emit(ctx, "search_glob", {"code": "search.io_error"})
@@ -431,12 +509,14 @@ def search_files(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     try:
         resolved = candidate.resolve()
     except OSError:
-        code = "search.jail_violation"
-        blocked = True
-        ok = False
-        result_for_model = f"BLOCKED [{code}] root outside jail"
-        return _finish()
-    if resolved != jail and jail not in resolved.parents:
+        resolved = None
+    # An absolute root is not automatically an escape: read_file accepts an
+    # absolute path inside any root, and a search whose root is refused while
+    # the file it would find is readable is an inconsistency the agent pays
+    # for. Try every root, then fall back to containment against the jail.
+    if resolved is None or not _inside_any_root(resolved, jail):
+        resolved = _resolve_against_roots(root_raw, jail)
+    if resolved is None:
         code = "search.jail_violation"
         blocked = True
         ok = False
@@ -539,9 +619,9 @@ def read_file(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     # re-downloading one file. Default to the whole file; the byte cap below
     # still bounds what actually reaches the model.
     try:
-        limit = max(1, min(2000, int(args.get("limit", 2000))))
+        limit = max(1, min(_MAX_READ_LIMIT, int(args.get("limit", _DEFAULT_READ_LIMIT))))
     except (TypeError, ValueError):
-        limit = 2000
+        limit = _DEFAULT_READ_LIMIT
     code = "ok"
 
     def _blocked(c: str, msg: str) -> dict[str, Any]:
@@ -616,18 +696,23 @@ def read_file(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     if len(safe) > _MAX_FILE_BYTES + 256:
         safe = safe[: _MAX_FILE_BYTES + 256]
         truncated = True
-    # Tell the model what it did NOT get. A silent 200-line cut looks like a
-    # complete file, so the agent concludes "nothing here" and moves on — or
-    # worse, goes around the tool. Naming the remainder and the exact next
-    # offset turns the gap into one more read_file call instead of a dozen
-    # http_request round-trips.
+    # Tell the model what it did NOT get. A silent cut looks like a complete
+    # file, so the agent concludes "nothing here" and moves on — or worse,
+    # goes around the tool. Naming the remainder turns the gap into one more
+    # read_file call.
+    #
+    # The instruction must name the LIMIT as well as the offset. An earlier
+    # version said only "call read_file with offset=259", and the agent took
+    # it literally with limit=1 — reading a 725-line contract one line per
+    # turn, 467 turns to finish a file it could have had in one call.
     shown_end = min(offset - 1 + limit, len(lines))
     remaining = len(lines) - shown_end
     more = ""
     if remaining > 0:
         more = (
             f"\n...[file has {len(lines)} lines; showing {offset}-{shown_end}. "
-            f"{remaining} more line(s) — call read_file with offset={shown_end + 1}]"
+            f"{remaining} more line(s) — call read_file with offset={shown_end + 1} "
+            f"and limit={limit} (or omit limit for the default {_DEFAULT_READ_LIMIT})]"
         )
         truncated = True
     _emit(ctx, "read_file", {"code": code, "truncated": truncated})

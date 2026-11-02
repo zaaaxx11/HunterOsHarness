@@ -438,3 +438,59 @@ def test_relative_fallback_cannot_escape_the_root(tmp_path: Path):
         outcome = tools_local.read_file({"path": evil}, ctx)
         assert outcome.get("blocked") is True, evil
         assert "outside secret" not in outcome.get("text", ""), evil
+
+
+# -- absolute paths inside the root are not escapes ----------------------------
+
+
+def test_absolute_glob_and_root_inside_the_project_are_allowed(tmp_path: Path):
+    """read_file accepts an absolute path; search must agree.
+
+    The agent is told the project lives at /home/.../smart-contracts, so it
+    naturally writes an absolute glob or root. Refusing those while the file
+    they name is readable is an inconsistency the agent pays for in wasted
+    turns — one run recorded 2 search.jail_violations for exactly this.
+    """
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    (project / "contracts").mkdir(parents=True)
+    (project / "contracts" / "A.sol").write_text("// replay risk\ncontract A {}\n", encoding="utf-8")
+    state = tmp_path / "state"
+    state.mkdir()
+    ctx = _multi_ctx(tmp_path, jail=state, local_root=project)
+
+    globbed = tools_local.search_glob(
+        {"glob": f"{project}/contracts/*.sol", "pattern": "replay"}, ctx
+    )
+    assert globbed.get("ok") is True, globbed
+    assert any("A.sol" in hit.get("path", "") for hit in globbed.get("hits", [])), globbed
+
+    searched = tools_local.search_files(
+        {"pattern": "replay", "root": str(project / "contracts")}, ctx
+    )
+    assert searched.get("ok") is True, searched
+
+
+def test_absolute_path_outside_every_root_is_blocked(tmp_path: Path):
+    """The absolute-path allowance must not become a hole.
+
+    Joining /etc/passwd onto a root yields <root>/etc/passwd — inside the
+    root, and therefore "allowed", for a path that exists nowhere. An
+    absolute path is checked for containment directly instead.
+    """
+    tools_local = _require_tools_local()
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside" / "secret.txt"
+    outside.parent.mkdir()
+    outside.write_text("outside secret", encoding="utf-8")
+    ctx = _multi_ctx(tmp_path, jail=project, local_root=project)
+
+    for evil in (str(outside), "/etc/passwd", "/home/simon/x.sol"):
+        outcome = tools_local.read_file({"path": evil}, ctx)
+        assert outcome.get("blocked") is True, evil
+        assert "outside secret" not in outcome.get("text", ""), evil
+
+    for evil_root in (str(outside.parent), "/etc", "/home/simon"):
+        outcome = tools_local.search_files({"pattern": "secret", "root": evil_root}, ctx)
+        assert outcome.get("blocked") is True, evil_root
