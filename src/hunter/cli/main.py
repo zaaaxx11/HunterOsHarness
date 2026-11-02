@@ -841,11 +841,19 @@ def scan(
     scope: Path | None = typer.Option(
         None, "--scope", help="Scope manifest JSON (required for non-localhost targets)."
     ),
-    engine: str = typer.Option("deterministic", "--engine", help="Engine: deterministic | mock | llm."),
+    engine: str = typer.Option("deterministic", "--engine", help="Engine: deterministic | mock | llm | evm."),
     state: Path | None = typer.Option(None, "--state", help="State directory."),
+    local_root: Path | None = typer.Option(
+        None, "--local-root",
+        help="Local directory to audit (required by the evm engine; must be inside the scope's local_roots).",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Scan an authorized target. localhost is always allowed; else --scope is mandatory."""
+    """Scan an authorized target. localhost is always allowed; else --scope is mandatory.
+
+    A local path (or --local-root) selects the ``evm`` engine's filesystem
+    mode: it walks .sol files under the root instead of making requests.
+    """
     from hunter.errors import HunterError
     from hunter.workflow.pipeline import run_scan
 
@@ -855,8 +863,26 @@ def scan(
         err_console.print(f"[hunter.error]{exc}[/hunter.error]")
         raise typer.Exit(2) from exc
 
+    # The evm engine reads its target from ctx.config["local_root"] (or
+    # target.notes["local_root"]) — neither of which `scan` used to supply,
+    # so `scan --engine evm` silently walked nothing and reported zero
+    # findings. A bare local path implies the root; --local-root overrides.
+    normalized: str | None = None
+    if local_root is not None:
+        normalized = str(local_root)
+    else:
+        candidate = Path(target)
+        if candidate.is_dir():
+            normalized = str(candidate.resolve())
+
     try:
-        summary = run_scan(target, engine_name=engine, scope=chosen_scope, state_dir=state)
+        summary = run_scan(
+            target,
+            engine_name=engine,
+            scope=chosen_scope,
+            state_dir=state,
+            config={"local_root": normalized} if normalized else None,
+        )
     except ValueError as exc:  # unknown engine — usage error, not a scan outcome
         err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
         raise typer.Exit(2) from exc
