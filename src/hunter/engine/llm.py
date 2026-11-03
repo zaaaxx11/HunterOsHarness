@@ -116,6 +116,10 @@ class LLMEngine:
                 **ctx.config,
                 "browser_enabled": browser_enabled,
                 "hunt_permission": True,
+                # toolchain._local_root reads args["path"] OR config["local_root"];
+                # forge_build/slither_run are called with no args, so the local
+                # root must ride here or both fail closed with toolchain.no_root.
+                "local_root": target.url,
             },
         )
         # M8 F1: daemon/hunter-mode hunts auto-allow approval-danger tools
@@ -170,6 +174,16 @@ class LLMEngine:
                         "stage": "pre_agent_slither",
                         "detector_count": slither_result.get("detector_count", 0),
                         "status": "ok",
+                    })
+                else:
+                    # Never report ok on a failed parse — that hid a 16KB
+                    # truncation bug for four hunts and produced 0 findings.
+                    ctx.emit("engine_event", {
+                        "stage": "pre_agent_slither",
+                        "status": "failed",
+                        "error": slither_result.get("slither_parse_error")
+                        or slither_result.get("code")
+                        or slither_result.get("result_for_model", "")[:300],
                     })
             except Exception as exc:
                 ctx.emit("engine_event", {"stage": "pre_agent", "error": str(exc)})
