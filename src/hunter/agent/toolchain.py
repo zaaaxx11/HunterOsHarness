@@ -510,6 +510,15 @@ def slither_run(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
                     f"  [{d['impact']}|{d['confidence']}] {d['check']}: {d['description']}"
                 )
             result["result_for_model"] = "\n".join(summary_lines)[:4000]
+            # Emit detector data separately so auto_extract can read it.
+            # The evidence table stores local_read text — the parsed detector
+            # list lives in this engine event's payload where scan_slither_evidence
+            # can find it.
+            _emit(ctx, "slither_run", {
+                "root": str(root),
+                "detector_count": len(detectors),
+                "detectors": result["detectors"],
+            })
     return result
 
 

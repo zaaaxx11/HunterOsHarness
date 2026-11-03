@@ -24,34 +24,59 @@ from hunter.kernel.findings import Finding, FindingStatus, Severity
 # ---------------------------------------------------------------------------
 
 def scan_slither_evidence(ledger, run_id: str) -> list[dict[str, Any]]:
-    """Return parsed detectors from the most recent slither evidence.
+    """Return parsed detectors from the most recent slither_run event.
 
-    Returns empty list when no slither evidence exists in this run.
+    The evidence table stores raw text; the parsed detector list lives in
+    engine_event payloads emitted by slither_run. Scan both sources.
     """
     detectors: list[dict[str, Any]] = []
-    try:
-        rows = ledger.evidence(run_id)
-    except Exception:
-        return detectors
 
-    for ev in rows:
-        if ev.get("kind") != "local_read":
-            continue
-        data = ev.get("data", {})
-        if isinstance(data, str):
+    # 1. Scan engine events for slither_run payloads with detector data
+    try:
+        events = ledger.events(run_id)
+    except Exception:
+        events = []
+
+    for ev in events:
+        payload = ev.get("payload", {})
+        if isinstance(payload, str):
             try:
-                data = json.loads(data)
+                payload = json.loads(payload)
             except json.JSONDecodeError:
                 continue
-        # Slither evidence carries detector_count + detectors array
-        if isinstance(data, dict) and "detectors" in data and "detector_count" in data:
-            for d in data.get("detectors", []):
+        if not isinstance(payload, dict):
+            continue
+        if "detectors" in payload and "detector_count" in payload:
+            for d in payload.get("detectors", []):
                 if isinstance(d, dict):
                     detectors.append({
                         **d,
                         "_evidence_id": ev.get("id", ""),
                         "_run_id": run_id,
                     })
+
+    # 2. Also scan evidence table for local_read entries with detector data
+    if not detectors:
+        try:
+            rows = ledger.evidence(run_id)
+        except Exception:
+            rows = []
+        for ev in rows:
+            data = ev.get("data", {})
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+            if isinstance(data, dict) and "detectors" in data:
+                for d in data.get("detectors", []):
+                    if isinstance(d, dict):
+                        detectors.append({
+                            **d,
+                            "_evidence_id": ev.get("id", ""),
+                            "_run_id": run_id,
+                        })
+
     return detectors
 
 
