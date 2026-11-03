@@ -364,13 +364,16 @@ def auto_debunk(
 
         ev_ok = False
         for ev in evidence_rows:
-            # Only verify evidence bound to this finding
-            if ev.get("id") not in finding_evidence:
+            # Event objects use attribute access, not dict .get()
+            eid = ev.id if hasattr(ev, "id") else ev.get("id", "")
+            if eid not in finding_evidence:
                 continue
-            # kind is at row level, not nested inside data
-            if ev.get("kind") != "local_read":
+            ekind = ev.kind if hasattr(ev, "kind") else ev.get("kind", "")
+            if hasattr(ekind, "value"):
+                ekind = ekind.value
+            if ekind != "local_read":
                 continue
-            ev_data = ev.get("data", {})
+            ev_data = ev.data if hasattr(ev, "data") else ev.get("data", {})
             if isinstance(ev_data, str):
                 try:
                     ev_data = json.loads(ev_data)
