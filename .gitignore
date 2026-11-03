@@ -34,3 +34,4 @@ rules.md
 backup/
 # local source image for the ASCII emblem (the derived art ships in _data/branding)
 moriarty.jpg
+poc/
