@@ -154,6 +154,21 @@ class LLMEngine:
             )
             agent_result = loop.run(tool_ctx, goal, stream_cb=ctx.config.get("stream_cb"))
 
+            # AUTO-EXTRACT: slither evidence -> findings -> debunk verify
+            # The agent describes vulns but can't construct create_finding_request()
+            # with 15+ params. This bridge auto-creates from slither detectors.
+            from hunter.engine.auto_extract import run_auto_extract
+
+            auto_extract = run_auto_extract(ctx.ledger, tool_ctx, run_id)
+            if auto_extract.get("detectors", 0) > 0:
+                ctx.emit("engine_event", {
+                    "stage": "auto_extract",
+                    "detectors": auto_extract["detectors"],
+                    "auto_created": auto_extract["created"],
+                    "auto_verified": auto_extract["verified"],
+                    "auto_ruled_out": auto_extract["ruled_out"],
+                })
+
             # Debunk: deterministic replay for every finding still CANDIDATE.
             # This — not the model — promotes findings to VERIFIED (RULE-E2).
             debunk_verified = 0
