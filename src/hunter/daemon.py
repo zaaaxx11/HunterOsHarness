@@ -1135,6 +1135,42 @@ def _inject_cross_pollination(task: dict[str, Any], state_dir: str | Path) -> No
         pass  # cross-pollination is best-effort; never block a task
 
 
+
+def _build_task_goal(task: dict) -> str:
+    """Generate a specific, actionable goal for this task."""
+    kind = str(task.get("kind", "audit"))
+    target = str(task.get("target", ""))
+    finding_id = str(task.get("spawned_from_finding", ""))
+    
+    goals = {
+        "audit": (
+            f"Find ONE vulnerability in {target}. Run slither, pick a detector, "
+            "read the vulnerable function, and call create_finding_request. "
+            "A slither detector you can verify IS a finding. Do NOT read more "
+            "than 3 contracts. Ship within 5 turns."
+        ),
+        "verify": (
+            f"Verify finding {finding_id}. Re-read the evidence from disk. "
+            "Confirm the code pattern matches the claim. If the claim is real, "
+            "call verify_finding with verdict=confirmed, poc=<exploit code>, "
+            "logs=<verification log>. If the claim is wrong, call verify_finding "
+            "with verdict=ruled_out."
+        ),
+        "promote": (
+            f"Challenge finding {finding_id}. List every condition required for "
+            "exploitation. Judge each: TRIVIAL / MODERATE / HARD / IMPOSSIBLE. "
+            "If any condition is IMPOSSIBLE, call verify_finding with "
+            "verdict=ruled_out. Otherwise, call verify_finding with promote=true."
+        ),
+        "prove": (
+            f"Final verification of {finding_id}. Confirm POC compiles with "
+            "forge build. Confirm logs.txt exists. Call verify_finding with "
+            "prove=true, verdict=confirmed."
+        ),
+    }
+    return goals.get(kind, goals["audit"])
+
+
 def _process_task_bfs(ledger, state: Path, task: dict[str, Any], *, stop_path: Path,
                       heartbeat: dict[str, Any]) -> dict[str, Any]:
     """Process one task from the ledger queue with timeout, retry, and

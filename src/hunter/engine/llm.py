@@ -135,7 +135,7 @@ class LLMEngine:
                     auto_allow=True,
                 )
         try:
-            goal = build_goal(target)
+            goal = build_goal(target, injected_goal=task.get("injected_goal") if (task := ctx.config.get("task")) else None)
             registry = build_registry(browser_enabled=browser_enabled)
             # Delegation needs the provider and the full registry in the tool
             # context: a child AgentLoop is built from these.  Both stay inside

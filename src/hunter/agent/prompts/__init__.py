@@ -383,6 +383,7 @@ def build_goal(
     *args: Any,
     ledger=None,
     run_id=None,
+    injected_goal: str | None = None,
 ) -> str:
     """Build the user-role goal for one audit run of ``target``.
 
@@ -410,6 +411,8 @@ def build_goal(
     url = target.url.rstrip("/")
     notes = ", ".join(f"{k}={v}" for k, v in sorted(target.notes.items())) if target.notes else ""
     notes_line = f"\nTarget notes: {notes}" if notes else ""
+    if injected_goal and injected_goal.strip():
+        return injected_goal.strip()
     # The brain has to know WHAT it is looking at before it can pick a tool.
     # A Solidity tree mounted on a loopback URL is not a web app: probing it
     # with http_request finds directory listings and nothing else, which is
