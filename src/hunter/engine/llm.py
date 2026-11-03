@@ -152,6 +152,26 @@ class LLMEngine:
                 budget=self._budget,
                 interrupt_check=ctx.config.get("interrupt_check"),
             )
+
+            # HARDCODED: run slither BEFORE the agent loop so auto_extract
+            # always has detector data regardless of what the model decides.
+            # Agent loop still runs for contract reading and analysis.
+            slither_evidence = None
+            try:
+                from hunter.agent.toolchain import slither_run
+                slither_args = {"timeout_s": 180}
+                ctx.emit("engine_event", {"stage": "pre_agent_slither", "status": "starting"})
+                slither_result = slither_run(slither_args, tool_ctx)
+                if slither_result.get("slither_json_ok"):
+                    slither_evidence = slither_result  # Auto-extract reads this from events
+                    ctx.emit("engine_event", {
+                        "stage": "pre_agent_slither",
+                        "detector_count": slither_result.get("detector_count", 0),
+                        "status": "ok",
+                    })
+            except Exception as exc:
+                ctx.emit("engine_event", {"stage": "pre_agent_slither", "error": str(exc)})
+
             agent_result = loop.run(tool_ctx, goal, stream_cb=ctx.config.get("stream_cb"))
 
             # AUTO-EXTRACT: slither evidence -> findings -> debunk verify
