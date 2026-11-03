@@ -129,6 +129,19 @@ def _build_local_read_evidence(
 # 2. Scan ledger for slither evidence
 # ---------------------------------------------------------------------------
 
+def _ev_attr(ev: Any, name: str, default: Any = None) -> Any:
+    """Read an attribute off an Event object or a key off a dict row.
+
+    The ledger returns ``Event`` dataclasses from ``ledger.events()`` but plain
+    dicts from ``ledger.evidence()`` — this normalises both call sites.
+    """
+    if hasattr(ev, name):
+        return getattr(ev, name)
+    if isinstance(ev, dict):
+        return ev.get(name, default)
+    return default
+
+
 def scan_slither_evidence(ledger, run_id: str) -> list[dict[str, Any]]:
     """Return parsed detectors from the most recent slither_run event.
 
@@ -144,7 +157,7 @@ def scan_slither_evidence(ledger, run_id: str) -> list[dict[str, Any]]:
         events = []
 
     for ev in events:
-        payload = ev.get("payload", {})
+        payload = _ev_attr(ev, "payload", {})
         if isinstance(payload, str):
             try:
                 payload = json.loads(payload)
@@ -157,7 +170,7 @@ def scan_slither_evidence(ledger, run_id: str) -> list[dict[str, Any]]:
                 if isinstance(d, dict):
                     detectors.append({
                         **d,
-                        "_evidence_id": ev.get("id", ""),
+                        "_evidence_id": _ev_attr(ev, "id", ""),
                         "_run_id": run_id,
                     })
 
@@ -168,7 +181,7 @@ def scan_slither_evidence(ledger, run_id: str) -> list[dict[str, Any]]:
         except Exception:
             rows = []
         for ev in rows:
-            data_val = ev.get("data", {})
+            data_val = _ev_attr(ev, "data", {})
             if isinstance(data_val, str):
                 try:
                     data_val = json.loads(data_val)
@@ -179,7 +192,7 @@ def scan_slither_evidence(ledger, run_id: str) -> list[dict[str, Any]]:
                     if isinstance(d, dict):
                         detectors.append({
                             **d,
-                            "_evidence_id": ev.get("id", ""),
+                            "_evidence_id": _ev_attr(ev, "id", ""),
                             "_run_id": run_id,
                         })
 
