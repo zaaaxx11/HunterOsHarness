@@ -1146,10 +1146,23 @@ def _build_task_goal(task: dict) -> str:
     
     goals = {
         "audit": (
-            f"Find ONE vulnerability in {target}. Run slither, pick a detector, "
-            "read the vulnerable function, and call create_finding_request. "
-            "A slither detector you can verify IS a finding. Do NOT read more "
-            "than 3 contracts. Ship within 5 turns."
+            f"STEP 1: forge_build. STEP 2: slither_run. STEP 3: read_file on ONE vulnerable contract. "
+            f"STEP 4: Copy-paste this EXACT call, filling in [BRACKETS]:\n\n"
+            f"create_finding_request(\n"
+            f"  check_id=\"[vuln-class]\",\n"
+            f"  title=\"[one-line description of the vulnerability]\",\n"
+            f"  endpoint=\".\",\n"
+            f"  description=\"[detailed explanation of how the bug works]\",\n"
+            f"  impact=\"[what the attacker gains]\",\n"
+            f"  severity_justification=\"[why this severity level]\",\n"
+            f"  counterevidence=\"[what you checked that did NOT reproduce]\",\n"
+            f"  evidence_ids=[EV-XXXX],\n"
+            f"  severity=\"high\",\n"
+            f"  confidence=\"high\",\n"
+            f"  klass=\"[reentrancy-no-eth|access-control|unchecked-lowlevel|...]\"\n"
+            f")\n\n"
+            f"Replace EV-XXXX with the evidence_id from read_file output. "
+            f"A slither detector you can verify IS a finding. Ship within 5 turns."
         ),
         "verify": (
             f"Verify finding {finding_id}. Re-read the evidence from disk. "
