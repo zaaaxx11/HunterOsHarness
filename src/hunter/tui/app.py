@@ -38,7 +38,7 @@ from textual.widgets import (
 )
 
 from hunter import __version__
-from hunter.branding import logo_text
+from hunter.branding import logo_text, wordmark_text
 from hunter.cli.doctor_core import collect_checks
 from hunter.daemon import daemon_status, start_daemon, stop_daemon
 from hunter.kernel.events import Event
@@ -516,7 +516,11 @@ class HunterTui(App[None]):
         yield Header(show_clock=True)
         with TabbedContent():
             with TabPane("Dashboard", id="tab-dashboard"):
-                yield Static(logo_text("small"), id="logo")
+                yield Static(logo_text("moriarty"), id="logo")
+                yield Static(Text.assemble(
+                    ("H U N T E R   O S", f"bold {PALETTE['base']}"),
+                    ("\nEvidence or Nothing", f"dim {PALETTE['dim']}"),
+                ), id="wordmark")
                 yield Static(
                     "No runs yet — press [b]d[/b] to run the demo scan.",
                     id="dashboard-empty",

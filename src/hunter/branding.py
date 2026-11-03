@@ -162,10 +162,20 @@ def ansi256(role: str) -> int:
 
 
 def logo_lines(variant: str = "small") -> list[str]:
-    """Read the HunterOS ASCII emblem (grayscale). ``variant``: small|full."""
-    suffix = "_small" if variant == "small" else ""
+    """Read the HunterOS ASCII emblem (grayscale).
+
+    ``variant`` sorot:
+    - ``small`` — emblem kecil (20 baris, 40 kolom)
+    - ``full``  — emblem penuh (28 baris, 56 kolom可分)
+    - ``moriarty`` — wajah moriarty 60 baris x 120 kolom
+    """
+    if variant == "moriarty":
+        path = _LOGO_DIR / "logo_moriarty.txt"
+    else:
+        suffix = "_small" if variant == "small" else ""
+        path = _LOGO_DIR / f"logo{suffix}.txt"
     try:
-        raw = (_LOGO_DIR / f"logo{suffix}.txt").read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except OSError:
         return []
     return raw.rstrip("\n").splitlines()
@@ -191,10 +201,22 @@ def logo_text(variant: str = "small") -> Any:
 
 
 def _tint_lines(lines: list[str]) -> Any:
+    """Tint ASCII art along the tosca gradient.
+
+    Handles two ramps:
+    - Standard emblem ramp: `` .:-=+*#%@`` (24 levels)
+    - Moriarty detail ramp: box-drawing & quote chars that map differently
+    """
     try:
         from rich.text import Text
     except ImportError:  # pragma: no cover - rich is a hard runtime dep
         return "\n".join(lines)
+
+    # Detect which ramp this art uses
+    is_moriarty = any(any(c in l for c in ("'\"`~,;:!?|/\\()[]{}")) for l in lines)
+    if is_moriarty:
+        return _tint_moriarty(lines)
+
     text = Text()
     span = max(1, len(_LOGO_RAMP) - 1)
     stops = len(_TOSCA_STOPS)
@@ -203,6 +225,43 @@ def _tint_lines(lines: list[str]) -> Any:
             lum = _LOGO_RAMP.index(ch) if ch in _LOGO_RAMP else 0
             idx = min(int(lum / span * (stops - 1)), stops - 2)
             text.append(ch, style=_TOSCA_STOPS[idx])
+        if row != len(lines) - 1:
+            text.append("\n")
+    return text
+
+
+# Character classes for moriarty — control tosca gradient per glyph
+_MORIARTY_BRIGHT = frozenset('/\\()|[]}{!<>+-*#@$%&')
+_MORIARTY_UPPER = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_MORIARTY_DIGITS = frozenset("0123456789")
+
+
+def _tint_moriarty(lines: list[str]) -> Any:
+    """Tint the moriarty face: body gradient, bright edges white, detail cyan."""
+    from rich.text import Text
+
+    text = Text()
+    total = len(lines)
+    for row, line in enumerate(lines):
+        for ch in line:
+            if ch in '^"`:;,.~_':
+                # Fill/shading → deepest tosca
+                text.append(ch, style=_TOSCA_STOPS[0])
+            elif ch in _MORIARTY_BRIGHT:
+                # Structure edges → bright white-ish
+                text.append(ch, style=_TOSCA_STOPS[4])
+            elif ch in _MORIARTY_UPPER:
+                # Letters (C,D,J,Q etc) → cyan highlight
+                text.append(ch, style="#5AC8C8")
+            elif ch in _MORIARTY_DIGITS:
+                text.append(ch, style=_TOSCA_STOPS[3])
+            elif ch.isalpha():
+                # Alphabet detail → gradient by row position
+                ratio = row / max(total - 1, 1)
+                idx = min(int(ratio * (len(_TOSCA_STOPS) - 1)), len(_TOSCA_STOPS) - 1)
+                text.append(ch, style=_TOSCA_STOPS[idx])
+            else:
+                text.append(ch, style=_TOSCA_STOPS[1])
         if row != len(lines) - 1:
             text.append("\n")
     return text
