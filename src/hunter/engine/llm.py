@@ -180,6 +180,13 @@ class LLMEngine:
             from hunter.engine.auto_extract import run_auto_extract
 
             auto_extract = run_auto_extract(ctx.ledger, tool_ctx, run_id)
+            if slither_evidence and auto_extract.get("detectors", 0) == 0:
+                # The pre-agent slither evidence had detectors but scan found none —
+                # feed them directly.
+                auto_extract = run_auto_extract(
+                    ctx.ledger, tool_ctx, run_id,
+                    direct_detectors=slither_evidence.get("detectors", []),
+                )
             if auto_extract.get("detectors", 0) > 0:
                 ctx.emit("engine_event", {
                     "stage": "auto_extract",

@@ -197,9 +197,10 @@ def run_auto_extract(
     run_id: str,
     *,
     max_findings: int = 0,
+    direct_detectors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Full auto-extract pipeline. Returns summary dict."""
-    detectors = scan_slither_evidence(ledger, run_id)
+    detectors = direct_detectors or scan_slither_evidence(ledger, run_id)
     if not detectors:
         return {"detectors": 0, "created": 0, "verified": 0, "ruled_out": 0,
                 "status": "no_slither_evidence"}
