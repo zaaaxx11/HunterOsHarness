@@ -238,6 +238,8 @@ def _run(
         "code": "ok",
         "argv": command,
         "exit_code": completed.returncode,
+        "stdout_raw": completed.stdout or "",
+        "stderr_raw": completed.stderr or "",
         "stdout": stdout,
         "stderr": stderr,
         "result_for_model": (
@@ -466,59 +468,55 @@ def slither_run(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     argv = [binary, str(root), "--json", "-"]
     _emit(ctx, "slither_run", {"root": str(root)})
     result = _run(argv, cwd=root, timeout_s=int(args.get("timeout_s", 300)))
-    if result.get("ok"):
-        # Slither JSON output is routinely 30-80 KB — well past the 16 KB
-        # _truncate cap. A truncated JSON fails to parse, so the agent never
-        # sees a single detector. _run already captured the full stdout via
-        # subprocess; _truncate cuts it afterwards. Re-collect without it.
-        raw_stdout = ""
-        try:
-            raw = subprocess.run(  # noqa: S603
-                argv, cwd=root, env=_child_env(root),
-                capture_output=True, text=True,
-                timeout=300, check=False,
+
+    # _run stores UNTRUNCATED stdout in result["stdout_raw"]. The truncated
+    # result["stdout"] is 16 KB — slither produces 4.6 MB JSON, which fails
+    # json.loads when truncated. Use stdout_raw, never re-run slither.
+    raw_stdout = result.get("stdout_raw", "") or result.get("stdout", "")
+    if not raw_stdout.strip():
+        result["slither_json_ok"] = False
+        result["slither_parse_error"] = "empty stdout from slither"
+        return result
+    try:
+        parsed = json.loads(raw_stdout)
+    except json.JSONDecodeError as exc:
+        result["slither_json_ok"] = False
+        result["slither_parse_error"] = f"{type(exc).__name__}: {exc}"
+    else:
+        result["slither_json_ok"] = True
+        detectors = parsed.get("results", {}).get("detectors", []) or []
+        result["detector_count"] = len(detectors)
+        result["detectors"] = [
+            {
+                "check": d.get("check"),
+                "impact": d.get("impact"),
+                "confidence": d.get("confidence"),
+                "description": (d.get("description") or "")[:300],
+                "elements": d.get("elements") or [],
+            }
+            for d in detectors
+        ]
+        # result_for_model was raw stdout — thousands of lines of JSON.
+        # The agent saw the raw text, not the parsed detector list, so it
+        # never knew slither flagged reentrancy, access control gaps, etc.
+        # Four hunts ran slither and produced zero findings because the
+        # summary was invisible.
+        summary_lines = [f"Slither found {len(detectors)} detector(s)."]
+        for d in result["detectors"][:20]:
+            summary_lines.append(
+                f"  [{d['impact']}|{d['confidence']}] {d['check']}: {d['description']}"
             )
-            raw_stdout = raw.stdout or ""
-        except (subprocess.TimeoutExpired, OSError):
-            raw_stdout = result.get("stdout", "")
-        try:
-            parsed = json.loads(raw_stdout or "{}")
-        except json.JSONDecodeError as exc:
-            result["slither_json_ok"] = False
-            result["slither_parse_error"] = f"{type(exc).__name__}: {exc}"
-        else:
-            result["slither_json_ok"] = True
-            detectors = parsed.get("results", {}).get("detectors", []) or []
-            result["detector_count"] = len(detectors)
-            result["detectors"] = [
-                {
-                    "check": d.get("check"),
-                    "impact": d.get("impact"),
-                    "confidence": d.get("confidence"),
-                    "description": (d.get("description") or "")[:300],
-                }
-                for d in detectors[:50]
-            ]
-            # result_for_model was raw stdout — thousands of lines of JSON.
-            # The agent saw the raw text, not the parsed detector list, so it
-            # never knew slither flagged reentrancy, access control gaps, etc.
-            # Four hunts ran slither and produced zero findings because the
-            # summary was invisible.
-            summary_lines = [f"Slither found {len(detectors)} detector(s)."]
-            for d in result["detectors"][:20]:
-                summary_lines.append(
-                    f"  [{d['impact']}|{d['confidence']}] {d['check']}: {d['description']}"
-                )
-            result["result_for_model"] = "\n".join(summary_lines)[:4000]
-            # Emit detector data separately so auto_extract can read it.
-            # The evidence table stores local_read text — the parsed detector
-            # list lives in this engine event's payload where scan_slither_evidence
-            # can find it.
-            _emit(ctx, "slither_run", {
-                "root": str(root),
-                "detector_count": len(detectors),
-                "detectors": result["detectors"],
-            })
+        result["result_for_model"] = "\n".join(summary_lines)[:4000]
+        # Emit detector data separately so auto_extract can read it.
+        # The evidence table stores local_read text — the parsed detector
+        # list lives in this engine event's payload where scan_slither_evidence
+        # can find it.
+        _emit(ctx, "slither_run", {
+            "root": str(root),
+            "detector_count": len(detectors),
+            "detectors": result["detectors"],
+        })
+
     return result
 
 
