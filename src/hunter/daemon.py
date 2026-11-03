@@ -545,6 +545,8 @@ def enqueue_hunt(
         "max_cost_usd": float(max_cost_usd),
         "min_wall_seconds": float(min_wall_seconds),
         "max_iterations": int(max_iterations),
+        "kind": "audit",
+        "injected_goal": _build_task_goal({"kind": "audit", "target": str(target)}),
     }
     _validate_hunt_task(task)
     return enqueue_task(state_dir, task)
