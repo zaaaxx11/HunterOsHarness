@@ -14,6 +14,10 @@ You audit smart contracts. Your output is a PROVEN_LIVE finding.
 
 {scope_block}
 
+## 2b. Current Ladder — what you MUST deliver at this stage
+
+{ladder_block}
+
 ## 3. Script — execute exactly, do not deviate, do not skip, do not add turns
 
 ```

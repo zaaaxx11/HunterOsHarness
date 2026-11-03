@@ -38,6 +38,26 @@ __all__ = [
 
 _TEMPLATE_RESOURCE = "_data/prompts/audit_system_prompt.md"
 
+# Per-ladder prompt injection: one markdown file per FindingStatus value.
+_LADDER_RESOURCE = "_data/prompts/ladders"
+
+
+def build_ladder_block(ladder: str | None) -> str:
+    """Load the per-ladder guidance block for ``ladder`` (a FindingStatus
+    value: ``theoretical``, ``candidate``, ``verified``, ``promoted``,
+    ``proven_live``). Returns ``""`` when no block is loaded."""
+    if not ladder:
+        return ""
+    key = str(ladder).strip().lower()
+    try:
+        return (
+            resources.files("hunter")
+            .joinpath(f"{_LADDER_RESOURCE}/{key}.md")
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        return ""
+
 # Content mirrors the shipped template; used when package data is unavailable.
 _INLINE_FALLBACK = """# HunterOs Audit Agent — System Prompt (v0.2)
 
@@ -236,10 +256,11 @@ def build_system_prompt(
     target_url: str,
     scope_summary: str | dict[str, Any],
     skills_index: str,
-    tier: str | None = None,  # DEPRECATED, ignored: one capability level.
+    tier: str | None = None,
     config_note: str = "",
     soul_block: str = "",
     state: str | None = None,
+    ladder: str | None = None,
 ) -> str:
     """Render the audit system prompt for one run.
 
@@ -266,6 +287,7 @@ def build_system_prompt(
             skills_index=skills_index or "(no skills mounted)",
             soul_block=soul_block or "",
             output_format_block=output_format_block(state),
+            ladder_block=build_ladder_block(ladder),
         )
     )
     if config_note:
