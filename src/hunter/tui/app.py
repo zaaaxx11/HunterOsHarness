@@ -25,14 +25,17 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import VerticalScroll, Vertical, Horizontal
 from textual.widgets import (
+    Button,
     DataTable,
     Footer,
     Header,
     Input,
+    Label,
     RichLog,
     Static,
+    Switch,
     TabbedContent,
     TabPane,
 )
@@ -473,6 +476,7 @@ class HunterTui(App[None]):
         Binding("3", "show_tab('tab-events')", "Events", show=False),
         Binding("4", "show_tab('tab-doctor')", "Doctor", show=False),
         Binding("5", "show_tab('tab-hunt')", "Hunt", show=False),
+        Binding("6", "show_tab('tab-deploy')", "Deploy", show=False),
         Binding("s", "start_engine", "Start engine", show=False),
         Binding("x", "stop_engine", "Stop engine", show=False),
         Binding("q", "quit", "Quit", priority=True),
@@ -561,6 +565,34 @@ class HunterTui(App[None]):
                 yield Static("config: checking…", id="config-report")
             with TabPane("Doctor", id="tab-doctor"), VerticalScroll():
                 yield Static("Checking environment…", id="doctor-report")
+            with TabPane("Deploy", id="tab-deploy"):
+                with Vertical(id="deploy-form"):
+                    yield Label("VPS Deploy — HunterOs Harness", id="deploy-title")
+                    yield Label("Host/IP", classes="deploy-label")
+                    yield Input(placeholder="e.g. 47.129.151.92", id="deploy-host")
+                    yield Label("Username", classes="deploy-label")
+                    yield Input(placeholder="ubuntu", value="ubuntu", id="deploy-user")
+                    yield Label("Auth method", classes="deploy-label")
+                    with Horizontal(id="deploy-auth-row"):
+                        yield Switch(value=False, id="deploy-use-key")
+                        yield Label("Use SSH key", classes="deploy-label")
+                    yield Label("Password / SSH key path", classes="deploy-label")
+                    yield Input(placeholder="VPS password", password=True, id="deploy-pass")
+                    yield Input(
+                        placeholder="~/.ssh/id_rsa", value="~/.ssh/id_rsa", id="deploy-key",
+                    )
+                    yield Label("Remote install path", classes="deploy-label")
+                    yield Input(placeholder="~/.hunteros", value="~/.hunteros", id="deploy-remote")
+                    yield Label("Remote port", classes="deploy-label")
+                    yield Input(placeholder="22", value="22", id="deploy-port")
+                    with Horizontal(id="deploy-actions"):
+                        yield Button("Deploy", id="deploy-run", variant="primary")
+                        yield Button("Ping", id="deploy-ping", variant="default")
+                        yield Button("Clear log", id="deploy-clear", variant="default")
+                yield Static("status: idle", id="deploy-status")
+                yield RichLog(
+                    id="deploy-log", markup=True, highlight=True, wrap=True, max_lines=2000
+                )
         yield Static(
             f"hunter {__version__} · model (unset) · tier basic · engine stopped",
             id="status-bar",
@@ -704,7 +736,7 @@ class HunterTui(App[None]):
 
     def action_help(self) -> None:
         self.notify(
-            "d demo · r refresh · / filter · l logo · s start · x stop · 1-5 tabs · q quit",
+            "d demo · r refresh · / filter · l logo · s start · x stop · 1-6 tabs · q quit",
             title="Keys",
             timeout=8,
         )
@@ -719,6 +751,77 @@ class HunterTui(App[None]):
             if text:
                 self.notify(f"steer sent: {text}", title="Steer", timeout=5)
                 event.input.value = ""
+
+    # -- deploy tab (tab 6) ----------------------------------------------------
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        if event.switch.id == "deploy-use-key":
+            use_key = bool(event.value)
+            self.query_one("#deploy-pass", Input).display = not use_key
+            self.query_one("#deploy-key", Input).display = use_key
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "deploy-ping":
+            self._deploy_ping()
+        elif event.button.id == "deploy-clear":
+            self.query_one("#deploy-log", RichLog).clear()
+            self.query_one("#deploy-status", Static).update("status: idle")
+        elif event.button.id == "deploy-run":
+            self._deploy_start()
+
+    def _read_deploy_form(self) -> dict[str, str]:
+        return {
+            "host": self.query_one("#deploy-host", Input).value.strip(),
+            "user": self.query_one("#deploy-user", Input).value.strip() or "ubuntu",
+            "pass": self.query_one("#deploy-pass", Input).value,
+            "key": str(Path(self.query_one("#deploy-key", Input).value).expanduser()),
+            "remote": self.query_one("#deploy-remote", Input).value.strip() or "~/.hunteros",
+            "port": self.query_one("#deploy-port", Input).value.strip() or "22",
+            "use_key": str(self.query_one("#deploy-use-key", Switch).value),
+        }
+
+    @work(exclusive=True, group="deploy", exit_on_error=False)
+    async def _deploy_start(self) -> None:
+        form = self._read_deploy_form()
+        if not form["host"]:
+            self.query_one("#deploy-status", Static).update("status: no host entered")
+            return
+        log = self.query_one("#deploy-log", RichLog)
+        status = self.query_one("#deploy-status", Static)
+        log.clear()
+        log.write(Text(f"Deploying HunterOs to {form['host']}...", style="italic"))
+        status.update("status: connecting...")
+        self._disable_deploy_buttons(True)
+        try:
+            from hunter.tui.deploy import DeployWorker
+            worker = DeployWorker(form)
+            await worker.run(log)
+            status.update("status: deploy complete")
+        except Exception as error:
+            log.write(Text(f"Deploy failed: {error}", style="bold red"))
+            status.update("status: deploy failed")
+        finally:
+            self._disable_deploy_buttons(False)
+
+    def _deploy_ping(self) -> None:
+        form = self._read_deploy_form()
+        if not form["host"]:
+            self.query_one("#deploy-status", Static).update("status: no host entered")
+            return
+        from hunter.tui.deploy import deploy_ping_sync
+        ok, msg = deploy_ping_sync(form)
+        log = self.query_one("#deploy-log", RichLog)
+        status = self.query_one("#deploy-status", Static)
+        style = "green" if ok else "red"
+        log.write(Text(msg, style=style))
+        status.update(f"status: {msg}")
+
+    def _disable_deploy_buttons(self, disabled: bool) -> None:
+        for btn_id in ("deploy-run", "deploy-ping", "deploy-clear"):
+            try:
+                self.query_one(f"#{btn_id}", Button).disabled = disabled
+            except Exception:
+                pass
 
     @work(exclusive=True, group="hunt", exit_on_error=False)
     async def refresh_hunt(self) -> None:

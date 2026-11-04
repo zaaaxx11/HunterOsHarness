@@ -108,9 +108,11 @@ async def test_six_tabs_present() -> None:
             "tab-dashboard",
             "tab-findings",
             "tab-events",
+            "tab-hunt",
             "tab-engine",
             "tab-config",
             "tab-doctor",
+            "tab-deploy",
         }
 
 
