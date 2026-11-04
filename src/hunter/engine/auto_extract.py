@@ -147,15 +147,22 @@ def scan_slither_evidence(ledger, run_id: str) -> list[dict[str, Any]]:
 
     The evidence table stores raw text; the parsed detector list lives in
     engine_event payloads emitted by slither_run. Scan both sources.
+
+    Only the LAST slither_run payload is used: the agent may invoke
+    ``slither_run`` several times during a hunt, and concatenating every
+    payload triples the detector count (168 x 3 = 504) and creates duplicate
+    findings with identical keys.
     """
     detectors: list[dict[str, Any]] = []
 
-    # 1. Scan engine events for slither_run payloads with detector data
+    # 1. Scan engine events for the most recent slither_run payload
     try:
         events = ledger.events(run_id)
     except Exception:
         events = []
 
+    latest_payload: dict[str, Any] | None = None
+    latest_evidence_id = ""
     for ev in events:
         payload = _ev_attr(ev, "payload", {})
         if isinstance(payload, str):
@@ -166,13 +173,17 @@ def scan_slither_evidence(ledger, run_id: str) -> list[dict[str, Any]]:
         if not isinstance(payload, dict):
             continue
         if "detectors" in payload and "detector_count" in payload:
-            for d in payload.get("detectors", []):
-                if isinstance(d, dict):
-                    detectors.append({
-                        **d,
-                        "_evidence_id": _ev_attr(ev, "id", ""),
-                        "_run_id": run_id,
-                    })
+            latest_payload = payload
+            latest_evidence_id = _ev_attr(ev, "id", "")
+
+    if latest_payload is not None:
+        for d in latest_payload.get("detectors", []):
+            if isinstance(d, dict):
+                detectors.append({
+                    **d,
+                    "_evidence_id": latest_evidence_id,
+                    "_run_id": run_id,
+                })
 
     # 2. Also scan evidence table for local_read entries with detector data
     if not detectors:
