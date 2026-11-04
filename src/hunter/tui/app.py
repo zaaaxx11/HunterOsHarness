@@ -51,6 +51,7 @@ from hunter.palette import PALETTE, get_token, palette_css, rich_style
 from hunter.palette import SKINS as _SKINS_REGISTRY
 from hunter.palette import skin_css as _skin_css
 from hunter.phases import current_phase
+from hunter.tui.hunt_form import HuntForm
 
 TAIL_WINDOW = 100  # events shown in the live tail
 PAYLOAD_WIDTH = 64  # characters of payload preview in the tail
@@ -457,6 +458,46 @@ def build_config_diff(old: list[str] | str, new: list[str] | str) -> str:
     return "\n".join(difflib.unified_diff(old_lines, new_lines, lineterm=""))
 
 
+class TabHeader(Static):
+    """Tiny logo top-left + HUNTEROS centered above — static on every screen."""
+
+    DEFAULT_CSS = """
+    TabHeader {
+        height: 3;
+        width: 100%;
+        padding: 0 1;
+        dock: top;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="tab-header-text")
+
+    def on_mount(self) -> None:
+        self._paint()
+
+    def _paint(self) -> None:
+        from hunter.branding import logo_text
+
+        try:
+            logo = logo_text("moriarty", compact=True)
+        except TypeError:
+            logo = logo_text("moriarty")
+        if isinstance(logo, Text):
+            logo = str(logo.plain) if hasattr(logo, "plain") else str(logo)
+        logo_lines = logo.splitlines() if logo else ["", ""]
+        # Row 0: tiny logo on the left, HUNTEROS centered.
+        first = logo_lines[0] if len(logo_lines) > 0 else ""
+        second = logo_lines[1] if len(logo_lines) > 1 else ""
+        title = "H U N T E R O S"
+        left_pad = max(0, (len(title) - len(first)) // 2)
+        row = f"{first}  {' ' * left_pad}{title}"
+        rows = [row]
+        if second:
+            rows.append(second)
+        self.query_one("#tab-header-text", Static).update(Text("\n".join(rows), style="bold"))
+
+
 class HunterTui(App[None]):
     """Evidence-first dashboard: runs, findings, live events, doctor."""
 
@@ -471,12 +512,13 @@ class HunterTui(App[None]):
         Binding("slash", "focus_filter", "Filter"),
         Binding("question_mark", "help", "Help"),
         Binding("l", "toggle_logo", "LoGo"),
-        Binding("1", "show_tab('tab-dashboard')", "Dashboard", show=False),
-        Binding("2", "show_tab('tab-findings')", "Findings", show=False),
-        Binding("3", "show_tab('tab-events')", "Events", show=False),
-        Binding("4", "show_tab('tab-doctor')", "Doctor", show=False),
-        Binding("5", "show_tab('tab-hunt')", "Hunt", show=False),
-        Binding("6", "show_tab('tab-deploy')", "Deploy", show=False),
+        Binding("1", "show_tab('tab-chat')", "Chat", show=False),
+        Binding("2", "show_tab('tab-hunt')", "Hunt", show=False),
+        Binding("3", "show_tab('tab-dashboard')", "Dashboard", show=False),
+        Binding("4", "show_tab('tab-findings')", "Findings", show=False),
+        Binding("5", "show_tab('tab-events')", "Events", show=False),
+        Binding("6", "show_tab('tab-doctor')", "Doctor", show=False),
+        Binding("7", "show_tab('tab-deploy')", "Deploy", show=False),
         Binding("s", "start_engine", "Start engine", show=False),
         Binding("x", "stop_engine", "Stop engine", show=False),
         Binding("q", "quit", "Quit", priority=True),
@@ -520,6 +562,28 @@ class HunterTui(App[None]):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with TabbedContent():
+            with TabPane("Home", id="tab-home"):
+                yield Static(logo_text("moriarty"), id="logo")
+                yield Static(Text.assemble(
+                    ("H U N T E R O S", f"bold {PALETTE['base']}"),
+                    ("\nEvidence or Nothing", f"dim {PALETTE['dim']}"),
+                ), id="wordmark")
+                yield Static(
+                    "[bold]Welcome to HunterOs[/bold]\n\n"
+                    "[1] Chat — interactive AI assistant, /scan to hunt\n"
+                    "[2] Hunt — configure a loop hunt with goals & time budget",
+                    id="home-menu",
+                )
+                yield Static("Press 1 or 2, or use the tabs below.", id="home-hint")
+            with TabPane("Chat", id="tab-chat"):
+                yield TabHeader(id="chat-header")
+                yield Input(id="chat-input", placeholder="Chat with HunterOs… ( /help for commands )")
+                yield RichLog(
+                    id="chat-log", markup=True, highlight=True, wrap=True, max_lines=5000
+                )
+            with TabPane("Hunt", id="tab-hunt"):
+                yield TabHeader(id="hunt-header")
+                yield HuntForm(id="hunt-form")
             with TabPane("Dashboard", id="tab-dashboard"):
                 yield Static(logo_text("moriarty"), id="logo")
                 yield Static(Text.assemble(
@@ -551,7 +615,7 @@ class HunterTui(App[None]):
                 yield RichLog(
                     id="events-log", markup=True, highlight=True, wrap=True, max_lines=2000
                 )
-            with TabPane("Hunt", id="tab-hunt"):
+            with TabPane("Live", id="tab-hunt-live"):
                 yield Static("hunt status: checking…", id="hunt-summary")
                 yield Static("agent: idle", id="hunt-agent")
                 yield Static("progress: idle", id="hunt-progress")
@@ -751,6 +815,28 @@ class HunterTui(App[None]):
             if text:
                 self.notify(f"steer sent: {text}", title="Steer", timeout=5)
                 event.input.value = ""
+        elif event.input.id == "chat-input":
+            text = event.value.strip()
+            if text:
+                event.input.value = ""
+                self._do_chat_turn(text)
+
+    @work(exclusive=True, group="chat", exit_on_error=False)
+    async def _do_chat_turn(self, text: str) -> None:
+        log = self.query_one("#chat-log", RichLog)
+        log.write(Text(f"[bold]hunter>[/bold] {text}"))
+        try:
+            from hunter.chat.repl import ChatEngine
+            engine = ChatEngine(
+                state_dir=str(self._state_display()),
+                session_id="tui-chat",
+            )
+            output = await asyncio.to_thread(engine.handle_text, text)
+            reply = output.text if hasattr(output, "text") else str(output)
+            if reply:
+                log.write(Text(reply))
+        except Exception as exc:
+            log.write(Text(f"└ Error: {type(exc).__name__}: {exc}", style="red"))
 
     # -- deploy tab (tab 6) ----------------------------------------------------
 

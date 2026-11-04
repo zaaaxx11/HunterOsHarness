@@ -99,16 +99,19 @@ def _all_static_text(app) -> str:
 
 
 @requires_pilot
-async def test_six_tabs_present() -> None:
+async def test_tabs_present() -> None:
     app = _make_app()
     async with app.run_test() as pilot:
         await pilot.pause()
         ids = {pane.id for pane in app.query("TabPane")}
         assert ids == {
+            "tab-home",
+            "tab-chat",
+            "tab-hunt",
             "tab-dashboard",
             "tab-findings",
             "tab-events",
-            "tab-hunt",
+            "tab-hunt-live",
             "tab-engine",
             "tab-config",
             "tab-doctor",
