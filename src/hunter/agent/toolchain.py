@@ -162,7 +162,18 @@ def _child_env(cwd: Path) -> dict[str, str]:
     # Pointing HOME at the run root keeps all of that inside the state dir —
     # which is also why the jail must never fall back to the repo root (see
     # _jail_cwd).
-    env["HOME"] = str(cwd)
+    env["HOME"] = os.environ.get("HOME", str(cwd))
+    # Foundry tools invoke solc/forge by name; the child's PATH must include
+    # the install dirs or slither exits 1 with empty stdout and no stderr.
+    extra_dirs = []
+    home = os.environ.get("HOME", "")
+    for sub in (".foundry/bin", "hunteros-venv/bin", ".local/bin"):
+        if home:
+            candidate = os.path.join(home, sub)
+            if os.path.isdir(candidate) and candidate not in extra_dirs:
+                extra_dirs.append(candidate)
+    if extra_dirs:
+        env["PATH"] = os.pathsep.join(extra_dirs + [env.get("PATH", "")])
     env["HUNTER_SANDBOX"] = "1"
     env["NO_COLOR"] = "1"
     return env
@@ -494,7 +505,10 @@ def slither_run(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     raw_stdout = result.get("stdout_raw", "") or result.get("stdout", "")
     if not raw_stdout.strip():
         result["slither_json_ok"] = False
-        result["slither_parse_error"] = "empty stdout from slither"
+        result["slither_parse_error"] = (
+            "empty stdout from slither; stderr="
+            + str(result.get("stderr_raw", result.get("stderr", "")))[:300]
+        )
         return result
     try:
         parsed = json.loads(raw_stdout)
