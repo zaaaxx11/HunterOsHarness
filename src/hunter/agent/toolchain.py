@@ -109,16 +109,35 @@ _RESOLVE_CACHE_EPOCH = -1
 def _resolve(binary: str) -> str | None:
     """Absolute path to ``binary`` on PATH (or the CWD), or None.
 
+    The daemon runs as a service whose PATH may not include the operator's
+    shell additions (``~/.foundry/bin``, the activated venv). As a fallback,
+    the most common install directories are checked so a daemon-launched
+    hunt still finds its tools regardless of how it was started.
+
     Cached per process: ``build_registry`` resolves the same binary once per
     tool that uses it (``forge`` twice, for build and test), and a PATH scan
     is not free. The cache is keyed by binary name only.
     """
+    import os as _os
+
     global _RESOLVE_CACHE, _RESOLVE_CACHE_EPOCH
     if _RESOLVE_CACHE is None or _RESOLVE_CACHE_EPOCH != _RESOLVE_EPOCH:
         _RESOLVE_CACHE = {}
         _RESOLVE_CACHE_EPOCH = _RESOLVE_EPOCH
     if binary not in _RESOLVE_CACHE:
-        _RESOLVE_CACHE[binary] = shutil.which(binary)
+        found = shutil.which(binary)
+        if found is None:
+            for home in (_os.environ.get("HOME"), "/home/ubuntu"):
+                if not home:
+                    continue
+                for sub in (".foundry/bin", "hunteros-venv/bin", ".local/bin"):
+                    candidate = Path(home) / sub / binary
+                    if candidate.exists() and candidate.is_file():
+                        found = str(candidate)
+                        break
+                if found is not None:
+                    break
+        _RESOLVE_CACHE[binary] = found
     return _RESOLVE_CACHE[binary]
 
 
