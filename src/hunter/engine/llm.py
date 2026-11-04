@@ -163,15 +163,21 @@ class LLMEngine:
             slither_evidence = None
             try:
                 from hunter.agent.toolchain import forge_build, slither_run
+                # The daemon serves a local dir as an HTTP URL (SimpleHTTPServer),
+                # so target.url is http://127.0.0.1:PORT/ — NOT the directory.
+                # The real filesystem root rides in scope.local_roots.
+                local_root = (target.scope.local_roots or ())[0] if getattr(target.scope, "local_roots", None) else ""
                 ctx.emit("engine_event", {
                     "stage": "pre_agent_forge", "status": "starting",
                     "target_url": str(target.url)[:200],
-                    "target_kind": getattr(target, "kind", "?"),
+                    "local_root": str(local_root)[:200],
                 })
-                forge_build({"path": "/home/ubuntu/relay-settlement/smart-contracts"}, tool_ctx)
+                if not local_root:
+                    raise RuntimeError("no local_root in scope for forge/slither")
+                forge_build({"path": local_root}, tool_ctx)
                 ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "ok"})
                 ctx.emit("engine_event", {"stage": "pre_agent_slither", "status": "starting"})
-                slither_result = slither_run({"path": "/home/ubuntu/relay-settlement/smart-contracts", "timeout_s": 300}, tool_ctx)
+                slither_result = slither_run({"path": local_root, "timeout_s": 300}, tool_ctx)
                 if slither_result.get("slither_json_ok"):
                     slither_evidence = slither_result
                     ctx.emit("engine_event", {
