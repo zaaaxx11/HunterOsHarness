@@ -163,7 +163,11 @@ class LLMEngine:
             slither_evidence = None
             try:
                 from hunter.agent.toolchain import forge_build, slither_run
-                ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "starting"})
+                ctx.emit("engine_event", {
+                    "stage": "pre_agent_forge", "status": "starting",
+                    "target_url": str(target.url)[:200],
+                    "target_kind": getattr(target, "kind", "?"),
+                })
                 forge_build({"path": target.url}, tool_ctx)
                 ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "ok"})
                 ctx.emit("engine_event", {"stage": "pre_agent_slither", "status": "starting"})
