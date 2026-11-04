@@ -947,8 +947,7 @@ def loop(
 
     # Scope: local dir = localhost; else from manifest or host-based
     if kind == "dir":
-        chosen_scope = localhost_scope()
-        chosen_scope.local_roots = (normalized,)
+        chosen_scope = ScopeSet(frozenset(), name="loop-local", local_roots=(normalized,))
     elif scope is not None:
         try:
             chosen_scope = scope_from_manifest(scope)
