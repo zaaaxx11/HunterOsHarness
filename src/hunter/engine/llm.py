@@ -164,10 +164,10 @@ class LLMEngine:
             try:
                 from hunter.agent.toolchain import forge_build, slither_run
                 ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "starting"})
-                forge_build({}, tool_ctx)
+                forge_build({"path": target.url}, tool_ctx)
                 ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "ok"})
                 ctx.emit("engine_event", {"stage": "pre_agent_slither", "status": "starting"})
-                slither_result = slither_run({"timeout_s": 180}, tool_ctx)
+                slither_result = slither_run({"path": target.url, "timeout_s": 180}, tool_ctx)
                 if slither_result.get("slither_json_ok"):
                     slither_evidence = slither_result
                     ctx.emit("engine_event", {
