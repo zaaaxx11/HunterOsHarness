@@ -112,8 +112,9 @@ def _scope_gate(
     yes: bool,
     config: Any | None = None,
 ) -> tuple[Any | None, int]:
-    """The daemon-start scope gate (M11 locked decision 3): localhost is
-    always allowed; off-localhost with ``--scope`` uses the manifest; WITHOUT
+    """The daemon-start scope gate (M11 locked decision 3): localhost and
+    local FILESYSTEM targets are always allowed (the process is already
+    local); off-localhost with ``--scope`` uses the manifest; WITHOUT
     a manifest the minimal ``ScopeSet({host})`` is AUTO-AUTHORIZED and
     recorded under ``agent.approved_scopes`` (audit trail, capped at 50) —
     unless ``agent.scope_confirm`` is true, which restores the old
@@ -122,6 +123,16 @@ def _scope_gate(
     from urllib.parse import urlparse
 
     from hunter.tools.scope import LOCAL_HOSTS, ScopeSet, localhost_scope, scope_from_manifest
+
+    # A local filesystem target (directory or file) needs no network scope —
+    # the tools are already local. Treat it exactly like localhost.
+    # Inline path check avoids importing `hunter.hunt` (which pulls in
+    # builtins.input and the full workflow surface).
+    from pathlib import Path as _Path
+
+    _path = _Path(target).expanduser().resolve()
+    if _path.is_dir():
+        return localhost_scope(), 0
 
     try:
         host = (urlparse(target).hostname or "").lower()
@@ -165,12 +176,20 @@ def cfg_scope_confirm(config: Any | None) -> bool:
 def _record_approved_scope(host: str, config: Any | None) -> None:
     """Append the auto-authorized minimal scope to ``agent.approved_scopes``
     (audit trail; capped at the last 50 entries). Best-effort: a failed write
-    warns and continues — the hunt start itself must not fail over bookkeeping."""
+    warns and continues — the hunt start itself must not fail over bookkeeping.
+
+    A blank host is silently skipped: the scope gate normalizes local-filesystem
+    targets before this function is reached, but a caller error must never
+    poison the config with an empty entry."""
     import time as _time
 
     from hunter.errors import HunterError
     from hunter.llm.config import load_config
     from hunter.llm.writing import write_config
+
+    # Never write an empty host — it will refuse ALL future config loads.
+    if not host or not host.strip():
+        return
 
     try:
         cfg = config if config is not None else load_config()

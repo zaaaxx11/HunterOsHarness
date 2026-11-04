@@ -362,7 +362,10 @@ def hunt(
             )
         )
     # Interactive mode: no positional targets → ask the operator what to hunt.
-    if not targets:
+    # Unless --target was explicitly set (the daemon flag) — use it directly.
+    if not targets and daemon_target:
+        targets = [daemon_target]
+    elif not targets:
         console.print("[bold]HunterOs — What do you want to hunt?[/bold]")
         raw = typer.prompt("Target (URL, dir, repo, or description)")
         if not raw or not raw.strip():
@@ -370,7 +373,8 @@ def hunt(
             raise typer.Exit(3)
         targets = [raw.strip()]
     # Interactive mode: no --time → ask the operator.
-    if not time_opt:
+    # When --time was explicitly set to "0" (unlimited), skip the prompt.
+    if not time_opt and daemon_target is None:
         time_opt = typer.prompt("Time budget? (e.g. 30m, 2h, 6h)", default="2h")
     # Free-form description: if the single argument is not a URL/dir, ask the
     # LLM to extract concrete targets from it.
@@ -482,12 +486,18 @@ def hunt(
         # ``None`` as "probe for a provider", so this binding must keep that
         # possibility visible to the type checker.
         selected_engine: str | None = engine or ("llm" if provider is not None else "deterministic")
-        try:
-            budget_s = parse_duration(time_opt or "6h")
-        except Exception:
+        # `--time 0` is the documented spelling for "no wall clock cap" (the
+        # config default when wall_seconds is unset); a non-positive parse of
+        # an EXPLICIT --time is therefore unlimited, not the 6h fallback.
+        # Only a MISSING --time falls back to 6h.
+        if time_opt is None:
             budget_s = 6 * 3600
-        if budget_s <= 0:
-            budget_s = 6 * 3600
+        else:
+            try:
+                budget_s = parse_duration(time_opt)
+            except Exception:
+                budget_s = 6 * 3600
+        unlimited_wall = budget_s <= 0
         first_scope = None
         # The RAG queue validates each task's target with
         # `normalize_hunt_target`, which rejects a bare contract address. So
@@ -537,7 +547,8 @@ def hunt(
                     target=tgt,
                     scope=tgt_scope,
                     engine=rag_engine,
-                    max_wall_seconds=float(budget_s),
+                    # 0.0 = unlimited (RunBudget treats 0 as "no cap").
+                    max_wall_seconds=0.0 if unlimited_wall else float(budget_s),
                     max_cost_usd=0.0,
                     min_wall_seconds=0.0,
                 )
