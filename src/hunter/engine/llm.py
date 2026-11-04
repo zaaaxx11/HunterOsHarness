@@ -174,7 +174,12 @@ class LLMEngine:
                 })
                 if not local_root:
                     raise RuntimeError("no local_root in scope for forge/slither")
-                forge_build({"path": local_root}, tool_ctx)
+                forge_result = forge_build({"path": local_root}, tool_ctx)
+                if forge_result.get("exit_code") != 0:
+                    raise RuntimeError(
+                        "forge build failed (exit=%s): %s"
+                        % (forge_result.get("exit_code"), forge_result.get("result_for_model", "?")[:200])
+                    )
                 ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "ok"})
                 ctx.emit("engine_event", {"stage": "pre_agent_slither", "status": "starting"})
                 slither_result = slither_run({"path": local_root, "timeout_s": 300}, tool_ctx)

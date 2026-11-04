@@ -388,6 +388,7 @@ def auto_debunk(
         finding_evidence = set(finding.evidence_ids)
 
         ev_ok = False
+        ev_data: dict[str, Any] = {}
         for ev in evidence_rows:
             # Event objects use attribute access, not dict .get()
             eid = ev.id if hasattr(ev, "id") else ev.get("id", "")
