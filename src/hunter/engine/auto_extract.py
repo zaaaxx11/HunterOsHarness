@@ -21,6 +21,7 @@ from typing import Any
 
 from hunter.kernel.findings import Finding, FindingStatus, Severity
 from hunter.engine.replay_generator import write_replay
+from hunter.workflow.chain_spawner import find_chain_candidates
 
 # ---------------------------------------------------------------------------
 # Slither → Taxonomy klass mapping
@@ -461,7 +462,98 @@ def auto_debunk(
 
 
 # ---------------------------------------------------------------------------
-# 5. Extract + create + debunk — one call
+# 5. Chain review — pair findings into exploit chains
+# ---------------------------------------------------------------------------
+
+def _value(raw: Any) -> str:
+    """Plain string of a (str, Enum) member or anything else."""
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def auto_chain_review(
+    ledger,
+    run_id: str,
+) -> int:
+    """Read VERIFIED findings, find candidate chains, create chain findings.
+
+    Uses ``find_chain_candidates`` from the chain_spawner to pair findings
+    that may combine into a multi-step exploit. Each pair becomes a
+    THEORETICAL finding (hypothesis, not yet proven) with its own entry
+    in the ledger so the agent can review it later.
+    """
+    from hunter.workflow.chain_spawner import find_chain_candidates
+
+    try:
+        findings = list(ledger.findings(run_id))
+    except Exception:
+        return 0
+
+    verified = [f for f in findings if _value(f.status) == "verified"]
+    if len(verified) < 2:
+        return 0
+
+    candidates = find_chain_candidates(verified)
+    created = 0
+    # find_chain_candidates lowercases ids via _field_of; the ledger keeps
+    # them uppercase (F-0001). Index by the lowercased form so the lookup
+    # actually hits.
+    by_id = {f.id.lower(): f for f in verified}
+    for a_id, b_id, reason in candidates:
+        fa = by_id.get(str(a_id).lower())
+        fb = by_id.get(str(b_id).lower())
+        if fa is None or fb is None:
+            continue
+
+        title = f"[Chain] {fa.title[:50]} + {fb.title[:50]}"
+        description = (
+            f"Chain hypothesis: {reason}\n\n"
+            f"Finding A ({fa.id}): {fa.title}\n"
+            f"  severity={fa.severity} klass={fa.klass}\n"
+            f"  poc_path={fa.poc_path}\n\n"
+            f"Finding B ({fb.id}): {fb.title}\n"
+            f"  severity={fb.severity} klass={fb.klass}\n"
+            f"  poc_path={fb.poc_path}\n\n"
+            f"▸ _auto-generated chain hypothesis by auto_extract_"
+        )
+        key = f"chain|{fa.key}|{fb.key}"
+
+        chain_finding = Finding(
+            id="",
+            run_id=run_id,
+            key=key,
+            title=title,
+            severity=fa.severity,
+            cwe="",
+            endpoint=fa.endpoint or fb.endpoint or ".",
+            method="CHAIN",
+            param=None,
+            payload_used=None,
+            description=description,
+            impact=(
+                f"Two verified findings chain via {reason}. "
+                f"Combined severity: {fa.severity}."
+            ),
+            remediation="Review chain hypothesis — combine PoCs into single exploit.",
+            status=FindingStatus.THEORETICAL,
+            evidence_ids=fa.evidence_ids + fb.evidence_ids,
+            klass="unknown",
+            falsifier="",
+            action_class="review",
+            surface=None,
+            poc_path=None,
+            logs_path=None,
+        )
+        try:
+            ledger.create_theoretical_finding(chain_finding)
+            created += 1
+        except Exception:
+            pass
+
+    return created
+
+
+# ---------------------------------------------------------------------------
+# 6. Extract + create + debunk + chain — one call
 # ---------------------------------------------------------------------------
 
 def run_auto_extract(
@@ -485,11 +577,13 @@ def run_auto_extract(
 
     created = auto_create_findings(ledger, run_id, detectors, max_findings=max_findings)
     debunk_result = auto_debunk(ledger, tool_ctx, run_id)
+    chain_count = auto_chain_review(ledger, run_id)
 
     return {
         "detectors": len(detectors),
         "created": len(created),
         "verified": debunk_result.get("verified", 0),
         "ruled_out": debunk_result.get("ruled_out", 0),
+        "chain_hypotheses": chain_count,
         "status": "ok",
     }
