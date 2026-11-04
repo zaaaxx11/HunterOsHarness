@@ -913,6 +913,122 @@ def _render_hunt_outcome(outcome, *, json_out: bool) -> None:
         typer.echo("report unavailable — chain blocked")
 
 
+@app.command()
+def loop(
+    target: str = typer.Argument(..., help="Target URL, host, or local directory to hunt."),
+    time_opt: str | None = typer.Option(None, "--time", help="Max wall time [Nh][Nm][Ns] (0 = unlimited)."),
+    min_time_opt: str | None = typer.Option(None, "--min-time", help="Minimum wall time floor before early stop."),
+    idle_seconds: float = typer.Option(15.0, "--idle", help="Pause between cycles (seconds)."),
+    engine: str | None = typer.Option(None, "--engine", help="deterministic | llm (default: llm)."),
+    goals: str | None = typer.Option(None, "--goals", help="Comma-separated goals, e.g. 'rce-proven-live:1,findings-min:100'."),
+    state: Path | None = typer.Option(None, "--state", help="State directory."),
+    scope: Path | None = typer.Option(None, "--scope", help="Scope manifest JSON."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Assume yes for proposed scope."),
+) -> None:
+    """Loop hunt — daemon-free, state-driven, goals-aware.
+
+    Keeps hunting the target until either the time budget expires
+    or every declared goal is met. State is saved to
+    ``<state>/hunt_runs/<slug>/state.json`` every cycle — a crash
+    or a cron restart picks up exactly where it left off.
+    """
+    from hunter.duration import parse_duration
+    from hunter.home import state_dir as _state_dir
+    from hunter.hunt import normalize_hunt_target
+    from hunter.tools.scope import LOCAL_HOSTS, ScopeSet, localhost_scope, scope_from_manifest
+    from hunter.workflow.hunt_state import _slugify, load_mission
+    from hunter.workflow.loop import run_loop as _run_loop
+
+    resolved_state: Path = _state_dir(state)
+    normalized, kind = normalize_hunt_target(target)
+    if kind == "invalid":
+        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid target: {target!r}")
+        raise typer.Exit(3)
+
+    # Scope: local dir = localhost; else from manifest or host-based
+    if kind == "dir":
+        chosen_scope = localhost_scope()
+        chosen_scope.local_roots = (normalized,)
+    elif scope is not None:
+        try:
+            chosen_scope = scope_from_manifest(scope)
+        except (ValueError, OSError) as exc:
+            err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope manifest: {exc}")
+            raise typer.Exit(3) from exc
+    else:
+        from urllib.parse import urlparse
+        host = (urlparse(normalized).hostname or "").lower()
+        if host in LOCAL_HOSTS:
+            chosen_scope = localhost_scope()
+        elif not yes:
+            err_console.print(
+                f"[hunter.error]BLOCKED:[/hunter.error] non-localhost target '{host}' requires "
+                "[bold]--yes[/bold] to auto-authorize a minimal scope."
+            )
+            raise typer.Exit(3)
+        else:
+            chosen_scope = ScopeSet(frozenset({host}), False, name=host)
+
+    # Goals
+    goal_list = []
+    if goals:
+        for item in goals.split(","):
+            item = item.strip()
+            if ":" in item:
+                kind, count = item.split(":", 1)
+                goal_list.append({"kind": kind.strip(), "count": int(count)})
+    if not goal_list:
+        goal_list = [{"kind": "rce-proven-live", "count": 1}]
+
+    # Time budget
+    wall_s = 0.0
+    if time_opt is not None:
+        try:
+            wall_s = parse_duration(time_opt)
+        except Exception:
+            err_console.print(f"[hunter.error]config error:[/hunter.error] invalid duration {time_opt!r}")
+            raise typer.Exit(8)
+    min_wall_s = 0.0
+    if min_time_opt is not None:
+        try:
+            min_wall_s = parse_duration(min_time_opt)
+        except Exception:
+            err_console.print(f"[hunter.error]config error:[/hunter.error] invalid min duration {min_time_opt!r}")
+            raise typer.Exit(8)
+
+    engine_name = engine or "llm"
+
+    slug = _slugify(target)
+    mission = load_mission(resolved_state, slug)
+    console.print(f"[bold]Hunt loop:[/bold] {mission.target}")
+    console.print(f"  goals: {goal_list}")
+    console.print(f"  time: {wall_s}s wall / {min_wall_s}s floor  ·  idle: {idle_seconds}s")
+    console.print(f"  state: {mission.state_dir}")
+    if mission.run_count > 0:
+        console.print(f"  resumes: run #{mission.run_count}  ·  last: {mission.last_run_id} ({mission.last_run_status})")
+
+    try:
+        code = _run_loop(
+            normalized,
+            scope=chosen_scope,
+            state_dir=resolved_state,
+            engine=engine_name,
+            wall_seconds=wall_s,
+            min_wall_seconds=min_wall_s,
+            idle_seconds=idle_seconds,
+            goals=goal_list,
+        )
+        raise typer.Exit(code)
+    except KeyboardInterrupt:
+        mission = load_mission(resolved_state, slug)
+        mission.completed = True
+        mission.completion_reason = "stopped"
+        from hunter.workflow.hunt_state import save_mission
+        save_mission(mission)
+        console.print(f"\nStopped after {mission.run_count} runs · {mission.total_findings} findings")
+        raise typer.Exit(0)
+
+
 @app.command("scope")
 def scope_cmd(
     targets: list[str] = typer.Argument(None, help="Targets to recognize."),
