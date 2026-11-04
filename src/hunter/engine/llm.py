@@ -168,10 +168,10 @@ class LLMEngine:
                     "target_url": str(target.url)[:200],
                     "target_kind": getattr(target, "kind", "?"),
                 })
-                forge_build({"path": target.url}, tool_ctx)
+                forge_build({"path": "/home/ubuntu/relay-settlement/smart-contracts"}, tool_ctx)
                 ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "ok"})
                 ctx.emit("engine_event", {"stage": "pre_agent_slither", "status": "starting"})
-                slither_result = slither_run({"path": target.url, "timeout_s": 180}, tool_ctx)
+                slither_result = slither_run({"path": "/home/ubuntu/relay-settlement/smart-contracts", "timeout_s": 300}, tool_ctx)
                 if slither_result.get("slither_json_ok"):
                     slither_evidence = slither_result
                     ctx.emit("engine_event", {
