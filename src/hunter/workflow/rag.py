@@ -287,6 +287,9 @@ class RagLoop:
             float(self.config.time_budget_s),
             float(self.config.child_time_s) if self.config.child_time_s else float(self.config.time_budget_s),
         )
+        # time_budget_s == 0 means unlimited — treat as infinity for the slice.
+        if slice_s <= 0:
+            slice_s = float("inf")
         task["max_wall_seconds"] = slice_s
         task["min_wall_seconds"] = slice_s
         if parent_finding_id:
@@ -449,7 +452,8 @@ class RagLoop:
                       flush=True)
                 return 3
 
-        deadline = time.monotonic() + float(self.config.time_budget_s)
+        # time_budget_s == 0 means unlimited — no deadline.
+        deadline = time.monotonic() + float(self.config.time_budget_s) if self.config.time_budget_s > 0 else float("inf")
         last_finding_count = 0
         cycles = 0
         total_enqueued = 0
