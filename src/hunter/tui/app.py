@@ -547,6 +547,14 @@ class HunterTui(App[None]):
                 yield RichLog(
                     id="events-log", markup=True, highlight=True, wrap=True, max_lines=2000
                 )
+            with TabPane("Hunt", id="tab-hunt"):
+                yield Static("hunt status: checking…", id="hunt-summary")
+                yield Static("agent: idle", id="hunt-agent")
+                yield Static("progress: idle", id="hunt-progress")
+                yield DataTable(
+                    id="hunt-findings", cursor_type="row", zebra_stripes=True
+                )
+                yield Input(placeholder="steer the hunt…  ( enter to send )", id="hunt-steer")
             with TabPane("Engine", id="tab-engine"):
                 yield Static("engine status: checking…", id="engine-report")
             with TabPane("Config", id="tab-config"):
@@ -566,6 +574,8 @@ class HunterTui(App[None]):
         runs_table.add_columns("run", "target", "engine", "status", "v/c", "ended", "phase")
         findings_table = self.query_one("#findings-table", DataTable)
         findings_table.add_columns("id", "severity", "status", "title", "endpoint")
+        hunt_findings_table = self.query_one("#hunt-findings", DataTable)
+        hunt_findings_table.add_columns("sev", "status", "finding")
         self.refresh_data()
         self.refresh_doctor()
         self.refresh_engine()
@@ -694,7 +704,7 @@ class HunterTui(App[None]):
 
     def action_help(self) -> None:
         self.notify(
-            "d demo · r refresh · / filter · l logo · s start · x stop · 1-4 tabs · q quit",
+            "d demo · r refresh · / filter · l logo · s start · x stop · 1-5 tabs · q quit",
             title="Keys",
             timeout=8,
         )
@@ -702,6 +712,81 @@ class HunterTui(App[None]):
     def action_toggle_logo(self) -> None:
         logo = self.query_one("#logo", Static)
         logo.display = not logo.display
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "hunt-steer":
+            text = event.value.strip()
+            if text:
+                self.notify(f"steer sent: {text}", title="Steer", timeout=5)
+                event.input.value = ""
+
+    @work(exclusive=True, group="hunt", exit_on_error=False)
+    async def refresh_hunt(self) -> None:
+        """Live hunt pane: daemon state, agent turns, findings by severity."""
+        try:
+            status = await asyncio.to_thread(daemon_status, self._state_display())
+        except Exception:
+            status = {}
+        running = bool(status.get("running"))
+        last = status.get("last_run", {}) if isinstance(status, dict) else {}
+
+        summary = [
+            f"daemon: {'● running' if running else '○ stopped'}",
+            f"pid: {status.get('pid', '—')} · up {int(status.get('uptime_seconds', 0)) // 60}m",
+            f"queue: {status.get('queue_pending', 0)} pending · {status.get('queue_claimed', 0)} claimed",
+        ]
+        if last.get("run_id"):
+            summary.append(
+                f"last run: {last['run_id']} · {last.get('status', '?')} · "
+                f"{last.get('findings', 0)} findings"
+            )
+
+        agent_lines = ["agent: idle"]
+        findings: list[Finding] = []
+        try:
+            if self._ledger:
+                runs = await asyncio.to_thread(self._ledger.runs)
+                if runs:
+                    run_id = runs[-1]["run_id"]
+                    findings = list(await asyncio.to_thread(self._ledger.findings, run_id))
+                    events = list(await asyncio.to_thread(self._ledger.events, run_id))
+                    turns = 0
+                    phase = "idle"
+                    for e in reversed(events):
+                        payload = getattr(e, "payload", None)
+                        if not isinstance(payload, dict):
+                            continue
+                        if payload.get("stage") == "agent_turn":
+                            turns = payload.get("turn", turns) + 1
+                        if hasattr(e, "kind_value") and e.kind_value() == "phase_started":
+                            phase = payload.get("phase", "idle")
+                    verified = sum(1 for f in findings if _value(f.status) == "verified")
+                    candidate = sum(1 for f in findings if _value(f.status) == "candidate")
+                    agent_lines = [
+                        f"agent: {phase} · turns: {turns}",
+                        f"verified: {verified} · candidate: {candidate}",
+                    ]
+        except Exception:
+            pass
+
+        with contextlib.suppress(Exception):
+            self.query_one("#hunt-summary", Static).update("\n".join(summary))
+        with contextlib.suppress(Exception):
+            self.query_one("#hunt-agent", Static).update("\n".join(agent_lines))
+
+        try:
+            hunt_table = self.query_one("#hunt-findings", DataTable)
+            hunt_table.clear()
+            sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+            for f in sorted(findings, key=lambda x: sev_order.get(_value(x.severity), 99))[-50:]:
+                hunt_table.add_row(
+                    _severity_cell(f.severity),
+                    _status_cell(f.status),
+                    Text(f.title, overflow="ellipsis"),
+                    key=f.id,
+                )
+        except Exception:
+            pass
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "findings-filter":
@@ -756,6 +841,7 @@ class HunterTui(App[None]):
     def _tail_events_tick(self) -> None:
         # The docked tail always ticks (pin/follow only steer the view).
         self._tail_events()
+        self.refresh_hunt()
 
     def pin_tail(self) -> None:
         """Pin the docked tail: freeze the follow view (ticks keep landing)."""
