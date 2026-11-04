@@ -39,6 +39,13 @@ providers:                     # credentials per provider name
     key_env: ANTHROPIC_API_KEY # env var is preferred over inline api_key
   openai:
     key_env: OPENAI_API_KEY
+# Inline api_key is supported too — write it DIRECTLY in the provider block.
+# The wizard (`hunter config provider add`) now asks where to store the key;
+# pick [2] for inline. NOTE: config.yaml then holds a SECRET — chmod 600 it:
+#   chmod 600 ~/.hunter/config.yaml
+#   devgateway:
+#     base_url: https://gateway.example.com/v1
+#     api_key: sk-1234abcd...   # prefer key_env + chmod 600 keys.env over this
 # OpenAI-compatible gateways: declare base_url plus a key_env indirection, and
 # keep the key in a chmod 600 env file next to the ledger (never inline here).
 #   nostate:

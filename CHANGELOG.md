@@ -6,6 +6,9 @@ Compare releases: `v0.3.1...v0.6.0`.
 
 ## [Unreleased]
 
+- Provider wizard now offers inline `api_key` storage in config.yaml (option [2]
+  during key capture). The default remains `keys.env`. Config example updated.
+
 ## 0.7.0 - 2026-10-31
 
 ### Taxonomy and evidence ladder

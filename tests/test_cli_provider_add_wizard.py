@@ -632,6 +632,85 @@ def test_provider_add_updates_pure_shape():
 
 # ----------------------------------------------------------------- W12/W13 --
 
+def test_provider_add_wizard_inline_api_key_config_yaml(tmp_path):
+    """W12.5: inline api_key stored in config.yaml when the operator picks [2];
+    keys.env is NOT written; the sentinel appears in the config but
+    NEVER in stdout/stderr."""
+    from hunter.cli.provider_add import run_provider_add_wizard
+
+    target = tmp_path / "config.yaml"
+    console, err_console, out = _string_console()
+    code = run_provider_add_wizard(
+        path=target,
+        console=console,
+        err_console=err_console,
+        ask=_scripted_ask(
+            [
+                ("provider", "custom"),
+                ("base URL", CUSTOM_BASE_URL),
+                ("env var name", "CORP_KEY"),
+                ("store key", "2"),  # inline in config.yaml
+                ("model [1]", "1"),
+            ]
+        ),
+        secret=lambda _prompt: SENTINEL,
+        ping_fn=_boom_ping,
+        probe_fn=_no_probe,
+        list_models_fn=lambda *_args, **_kwargs: ["corp-alpha"],
+        environ={},
+        home=tmp_path,
+    )
+    assert code == 0
+    text = _wizard_text(out, err_console)
+    # key never on screen
+    assert SENTINEL not in text
+    # config.yaml HAS the api_key
+    raw = _raw(target)
+    assert raw["providers"]["custom"]["api_key"] == SENTINEL
+    assert raw["providers"]["custom"]["key_env"] == "CORP_KEY"
+    # keys.env was NEVER written
+    assert not (tmp_path / ".hunter" / "keys.env").exists()
+    # the storage note was printed
+    assert "inline api_key in config.yaml" in text
+
+    cfg = load_config(target, env={}, home=tmp_path)
+    assert cfg.providers["custom"].api_key == SENTINEL
+
+
+def test_provider_add_wizard_inline_route_defaults_to_keys_env(tmp_path):
+    """W12.6: default [1] stores in keys.env — inline route is opt-in only."""
+    from hunter.cli.provider_add import run_provider_add_wizard
+
+    target = tmp_path / "config.yaml"
+    console, err_console, out = _string_console()
+    code = run_provider_add_wizard(
+        path=target,
+        console=console,
+        err_console=err_console,
+        ask=_scripted_ask(
+            [
+                ("provider", "custom"),
+                ("base URL", CUSTOM_BASE_URL),
+                ("env var name", "CORP_KEY"),
+                ("store key", "1"),  # keys.env (explicit default)
+                ("model [1]", "1"),
+            ]
+        ),
+        secret=lambda _prompt: SENTINEL,
+        ping_fn=_boom_ping,
+        probe_fn=_no_probe,
+        list_models_fn=lambda *_args, **_kwargs: ["corp-alpha"],
+        environ={},
+        home=tmp_path,
+    )
+    assert code == 0
+    raw = _raw(target)
+    # config.yaml has NO api_key
+    assert "api_key" not in raw.get("providers", {}).get("custom", {})
+    # keys.env was written
+    keys_text = (tmp_path / ".hunter" / "keys.env").read_text(encoding="utf-8")
+    assert f'CORP_KEY="{SENTINEL}"' in keys_text
+
 
 def test_provider_top_level_shortcut_group(monkeypatch, tmp_path):
     """W12: `hunter provider ...` === `hunter config provider ...` (same app)."""

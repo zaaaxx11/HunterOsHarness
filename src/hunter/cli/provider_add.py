@@ -47,7 +47,8 @@ class ProviderAddAnswers:
     base_url: str = ""
     endpoint: str = ""                 # "" (chat default) | "chat" | "responses"
     key_env: str = ""
-    key_inline: str = ""               # keys.env ONLY, never config.yaml, never echoed
+    key_inline: str = ""               # never echoed; keys.env by default, config.yaml when key_store="config"
+    key_store: str = "keys_env"        # "keys_env" (default) | "config" (inline api_key in config.yaml)
     role_models: dict[str, str] = field(default_factory=dict)  # canonical tier -> model
     notes: list[str] = field(default_factory=list)
 
@@ -55,12 +56,15 @@ class ProviderAddAnswers:
 def provider_add_updates(a: ProviderAddAnswers) -> dict[str, Any]:
     """Pure. The write_config fragment: the providers block (+ ``endpoint``
     only when set) + model_tiers for the four canonical tiers, each pinned to
-    ``a.provider`` (or "auto"). The pasted key is NEVER in this fragment."""
+    ``a.provider`` (or "auto"). The pasted key goes to keys.env (default) or
+    inline ``api_key`` in config.yaml when ``a.key_store == "config"``."""
     updates: dict[str, Any] = {}
     if a.provider:
         block: dict[str, Any] = {}
         if a.key_env:
             block["key_env"] = a.key_env
+        if a.key_store == "config" and a.key_inline:
+            block["api_key"] = a.key_inline
         if a.base_url:
             block["base_url"] = a.base_url
         if a.endpoint:
@@ -178,6 +182,26 @@ def run_provider_add_wizard(
         elif known is not None and not known.key_env:
             console.print("step 2/6 key: none needed — this provider is keyless",
                           markup=False, highlight=False)
+    # ---- step 2b/6: where to STORE the key (keys.env default | inline config) ----
+    if key_env and key_inline:
+        store_reply = ask(
+            "store key [1] in keys.env (recommended) or [2] inline in config.yaml",
+            "1",
+        ).strip()
+        if store_reply == "2":
+            answers.key_store = "config"
+            console.print(
+                "step 2b/6 key storage: inline api_key in config.yaml "
+                "(chmod 600 the file — it now contains a secret)",
+                markup=False,
+                highlight=False,
+            )
+        else:
+            console.print(
+                "step 2b/6 key storage: keys.env (the file stays secret-free)",
+                markup=False,
+                highlight=False,
+            )
     answers.key_env = key_env
     answers.key_inline = key_inline
     key_value = env.get(key_env, "").strip() or key_inline
@@ -247,7 +271,9 @@ def run_provider_add_wizard(
 
     # ---- write phase (keys.env BEFORE config — a crash can only leave keys
     #      without a config, which the next wizard run heals) ---------------------------
-    if answers.key_inline and answers.key_env:
+    # Inline route: the api_key lands in config.yaml itself (provider_add_updates),
+    # so keys.env is skipped entirely.
+    if answers.key_inline and answers.key_env and answers.key_store != "config":
         written_keys = write_keys_env({answers.key_env: answers.key_inline}, env=env, home=home)
         console.print("[green]wrote[/green]", written_keys)
         print_key_saved(console, answers.key_env)
