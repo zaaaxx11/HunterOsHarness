@@ -18,15 +18,19 @@ from pathlib import Path
 from typing import Any
 
 
-# Canonical goal vocabulary — the loop stops when a goal's condition is met.
-# All other findings are collected regardless; RCE (proven-live) is the
-# primary stop signal.
-GOAL_RCE_PROVEN_LIVE = "rce-proven-live"       # at least 1 PROVEN_LIVE RCE finding
-GOAL_FINDINGS_MIN = "findings-min"              # at least N total findings
-GOAL_VERIFIED_MIN = "verified-min"              # at least N VERIFIED+ findings
+# Canonical goal vocabulary — the loop stops when EVERY declared goal is met,
+# OR when the wall clock budget expires (time priority > goals).
+# Each goal has a `kind` and a `count`.
+GOAL_EXPLOITABLE_MIN = "exploitable-min"      # at least N proven-exploitable findings
+GOAL_FINDINGS_MIN    = "findings-min"          # at least N total findings
+GOAL_VERIFIED_MIN    = "verified-min"          # at least N VERIFIED+ findings
+# Legacy alias kept for backward compatibility with old state.json files:
+_GOAL_ALIASES: dict[str, str] = {
+    "rce-proven-live": GOAL_EXPLOITABLE_MIN,
+}
 
 DEFAULT_GOALS: list[dict[str, Any]] = [
-    {"kind": GOAL_RCE_PROVEN_LIVE, "count": 1},
+    {"kind": GOAL_EXPLOITABLE_MIN, "count": 1},
 ]
 
 
@@ -49,7 +53,7 @@ class HuntMission:
     last_cycle_ts: float | None = None
     total_findings: int = 0
     verified_findings: int = 0
-    rce_proven_live: int = 0
+    exploitable: int = 0                              # proven-exploitable (RCE / reentrancy / access-control)
     last_run_id: str = ""
     last_run_status: str = ""
     error: str = ""
@@ -80,7 +84,6 @@ def load_mission(state_dir: str | Path, slug: str) -> HuntMission:
 
 def save_mission(mission: HuntMission) -> None:
     sd = Path(mission.state_dir) if not isinstance(mission.state_dir, Path) else mission.state_dir
-    # state_dir may be the target folder OR the root; normalize to root.
     if sd.name == mission.target_slug and sd.parent.name == "hunt_runs":
         base = sd.parent.parent
     else:
@@ -97,17 +100,26 @@ def save_mission(mission: HuntMission) -> None:
 
 
 def goals_met(mission: HuntMission) -> bool:
-    """Check whether every declared goal is satisfied."""
+    """Check whether EVERY declared goal is satisfied.
+
+    A goal kind that matches a legacy alias is automatically translated.
+    The loop stops ONLY when ALL goals have been met; a partial match
+    (e.g. findings-min done but exploitable-min still zero) returns False.
+    """
+    if not mission.goals:
+        return False
     for g in mission.goals:
         kind = g.get("kind", "")
+        # Normalise legacy keys silently so old state files survive a rename.
+        kind = _GOAL_ALIASES.get(kind, kind)
         need = int(g.get("count", 1))
-        if kind == GOAL_RCE_PROVEN_LIVE and mission.rce_proven_live < need:
+        if kind == GOAL_EXPLOITABLE_MIN and mission.exploitable < need:
             return False
         if kind == GOAL_FINDINGS_MIN and mission.total_findings < need:
             return False
         if kind == GOAL_VERIFIED_MIN and mission.verified_findings < need:
             return False
-    return bool(mission.goals)  # at least one goal must exist
+    return True
 
 
 def _slugify(target: str) -> str:

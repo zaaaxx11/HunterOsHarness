@@ -1,9 +1,17 @@
 """Hunt loop — daemon-free, cron-friendly, state-driven. PURE SYNC.
 
 Runs a target through the existing pipeline repeatedly until either
-time expires or the mission goals are met. No daemon, no queue, no
+time expires or ALL mission goals are met. No daemon, no queue, no
 async — each cycle invokes a subprocess worker so a wedged hunt cannot
 stall the loop.
+
+**Time has priority over goals.** If wall_seconds expires before every
+goal is met, the loop stops with ``completion_reason="time-expired"``
+and writes a final state summary which the caller/operator can read.
+The intent is: ``--time 20000 --goals rce:1,all-vulns:100`` means the
+loop MUST stop after 20,000 seconds regardless of whether RCE or the
+vuln threshold was reached — and the result of either outcome is always
+auditable from the state file.
 
 Cycle timing:
   - run one hunt (engine llm/deterministic) against the target
@@ -58,17 +66,15 @@ def _new_mission(
     return mission
 
 
-def _is_rce_klass(finding: Any) -> bool:
-    """True when the finding's klass names an RCE-style OR reentrancy class.
+def _is_exploitable_klass(finding: Any) -> bool:
+    """True when the finding's klass names a live-exploitable vector.
 
-    The taxonomy uses several spellings (``rce``, ``arbitrary-code-execution``,
-    ``remote-code-execution``, ``command-injection``); match on the
-    normalised class string so a class rename does not silently zero the
-    goal counter.
-
-    Also includes ``reentrancy`` — the most common live-exploitable vector
-    in bridge/cross-chain protocols. A reentrancy finding with real proof
-    (poc_path + logs_path) IS proof of live execution.
+    Matches RCE (``rce``, ``code-execution``, ``command-injection``),
+    ``reentrancy`` (the most common live-exploitable vector in bridge
+    protocols), and ``access-control`` bypass. A finding that passes this
+    gate AND has real proof on disk (poc_path / logs_path) IS proof of
+    live execution — not a static tool flag, not a by-design system
+    capability.
     """
     klass = str(getattr(finding, "klass", "") or "").lower()
     if not klass:
@@ -80,16 +86,19 @@ def _is_rce_klass(finding: Any) -> bool:
         or "command-injection" in klass
         or "command_injection" in klass
         or "reentrancy" in klass
+        or "access-control" in klass
+        or "access_control" in klass
+        or "privilege-escalation" in klass
     )
 
 
 def _count_findings(state_dir: str | Path) -> tuple[int, int, int]:
-    """(total, verified, rce_proven_live) from the ledger.
+    """(total, verified, exploitable) from the ledger.
 
-    ``rce_proven_live`` counts findings that carry REAL PROOF — not a
+    ``exploitable`` counts findings that carry REAL PROOF — not a
     static tool flag and not a by-design system capability:
 
-    - the class is RCE-shaped (rce / code-execution / command-injection),
+    - the class is live-exploitable (RCE / reentrancy / access-control),
     - the finding is VERIFIED or better (>=2 bound evidence artifacts),
     - AND a proof artifact exists on disk (logs_path, else poc_path).
 
@@ -99,7 +108,7 @@ def _count_findings(state_dir: str | Path) -> tuple[int, int, int]:
     VERIFIED + a real artifact on disk IS the proof of live the doctrine
     asks for.
     """
-    total = verified = rce = 0
+    total = verified = exploitable = 0
     try:
         import contextlib
         from hunter.kernel.findings import FindingStatus
@@ -119,19 +128,19 @@ def _count_findings(state_dir: str | Path) -> tuple[int, int, int]:
                 )
                 if strong:
                     verified += 1
-                if not strong or not _is_rce_klass(f):
+                if not strong or not _is_exploitable_klass(f):
                     continue
                 # Real artifact on disk = proof of live execution.
                 for artifact in (f.logs_path, f.poc_path):
                     if artifact and Path(artifact).is_file():
-                        rce += 1
+                        exploitable += 1
                         break
         finally:
             with contextlib.suppress(Exception):
                 ledger.close()
     except Exception:
         pass
-    return total, verified, rce
+    return total, verified, exploitable
 
 
 def _run_one(
@@ -242,15 +251,16 @@ def run_loop(
             mission.last_run_status = str(result.get("status", "completed"))
         if result.get("error"):
             mission.error = str(result["error"])[:500]
-        total, verified, rce = _count_findings(state_dir)
+        total, verified, exploitable = _count_findings(state_dir)
         mission.total_findings = total
         mission.verified_findings = verified
-        mission.rce_proven_live = rce
+        mission.exploitable = exploitable
         save_mission(mission)
 
         print(
-            f"cycle {mission.run_count}: findings={total} verified={verified} "
-            f"rce={rce} · {mission.last_run_id} ({mission.last_run_status})",
+            f"cycle {mission.run_count}: findings={mission.total_findings} "
+            f"verified={mission.verified_findings} exploitable={mission.exploitable} · "
+            f"{mission.last_run_id} ({mission.last_run_status})",
             flush=True,
         )
 
