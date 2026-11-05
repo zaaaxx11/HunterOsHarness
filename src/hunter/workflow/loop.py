@@ -59,12 +59,16 @@ def _new_mission(
 
 
 def _is_rce_klass(finding: Any) -> bool:
-    """True when the finding's klass names an RCE-style class.
+    """True when the finding's klass names an RCE-style OR reentrancy class.
 
     The taxonomy uses several spellings (``rce``, ``arbitrary-code-execution``,
     ``remote-code-execution``, ``command-injection``); match on the
     normalised class string so a class rename does not silently zero the
     goal counter.
+
+    Also includes ``reentrancy`` — the most common live-exploitable vector
+    in bridge/cross-chain protocols. A reentrancy finding with real proof
+    (poc_path + logs_path) IS proof of live execution.
     """
     klass = str(getattr(finding, "klass", "") or "").lower()
     if not klass:
@@ -75,6 +79,7 @@ def _is_rce_klass(finding: Any) -> bool:
         or "code_execution" in klass
         or "command-injection" in klass
         or "command_injection" in klass
+        or "reentrancy" in klass
     )
 
 
