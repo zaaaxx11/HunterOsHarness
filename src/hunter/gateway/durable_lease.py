@@ -202,7 +202,7 @@ def scheduler_for(state_dir: str | Path) -> Any:
 def _proc_signature() -> str:
     """Daemon identity when verifiable, else pid-uuid fallback (never empty)."""
     try:
-        from hunter.daemon import process_identity as _identity
+        from hunter._daemon_shim import process_identity as _identity
 
         identity = _identity(os.getpid())
         if identity.verified and identity.signature:

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from hunter.daemon import daemon_running, enqueue_hunts
+from hunter._daemon_shim import daemon_running, enqueue_hunts
 from hunter.errors import HunterError
 from hunter.kernel.findings import SEVERITY_ORDER
 from hunter.kernel.ledger import Ledger

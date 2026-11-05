@@ -238,7 +238,7 @@ def pause(
     state: Path | None = typer.Option(None, "--state", help="State directory."),
 ) -> None:
     """Pause new daemon work without killing an in-flight hunt."""
-    from hunter.daemon import daemon_running, pause_flag_path
+    from hunter._daemon_shim import daemon_running, pause_flag_path
     from hunter.home import state_dir
     from hunter.hospitality import paused_message
 
@@ -257,7 +257,7 @@ def resume(
     state: Path | None = typer.Option(None, "--state", help="State directory."),
 ) -> None:
     """Resume queued daemon work and clear a stale pause flag."""
-    from hunter.daemon import daemon_running, pause_flag_path, queue_dir
+    from hunter._daemon_shim import daemon_running, pause_flag_path, queue_dir
     from hunter.home import state_dir
     from hunter.hospitality import resume_message
 
@@ -322,7 +322,7 @@ def hunt(
     # misrouted: normalize_hunt_target rejects those tokens as targets.
     if targets and targets[0] in {"start", "stop", "status", "restart", "logs"}:
         target = targets[0]
-        from hunter.cli.daemon import dispatch_hunt_alias
+        from hunter._daemon_shim import dispatch_hunt_alias
 
         raise typer.Exit(
             dispatch_hunt_alias(
@@ -443,7 +443,7 @@ def hunt(
     # multiple tasks. The daemon handles ordering, retry, and child
     # spawning. One session, one daemon — no free-form loops.
     if len(targets or []) >= 1:
-        from hunter.daemon import daemon_running, enqueue_hunt, start_daemon
+        from hunter._daemon_shim import daemon_running, enqueue_hunt, start_daemon
         from hunter.duration import parse_duration
         from hunter.home import state_dir as _state_dir
         from hunter.tools.scope import scope_from_manifest
@@ -1867,7 +1867,7 @@ def gateway_stop(
     force: bool = typer.Option(False, "--force", help="Terminate/kill after the timeout."),
 ) -> None:
     """Stop the 24/7 engine (drain-safe cooperative stop)."""
-    from hunter.cli.daemon import _cmd_stop
+    from hunter._daemon_shim import _cmd_stop
 
     raise typer.Exit(_cmd_stop(state=state, timeout=timeout, force=force))
 
@@ -1880,7 +1880,7 @@ def gateway_restart(
     ),
 ) -> None:
     """Restart the engine (drain-first; auto-starts when nothing runs)."""
-    from hunter.cli.daemon import _cmd_restart
+    from hunter._daemon_shim import _cmd_restart
 
     raise typer.Exit(
         _cmd_restart(
@@ -1896,7 +1896,7 @@ def gateway_status(
     json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON."),
 ) -> None:
     """Show engine status (running/paused/stopped, queue, last run)."""
-    from hunter.cli.daemon import _cmd_status
+    from hunter._daemon_shim import _cmd_status
 
     raise typer.Exit(_cmd_status(state=state, json_out=json_out))
 
@@ -1908,7 +1908,7 @@ def gateway_logs(
     follow: bool = typer.Option(False, "--follow", help="Keep the log open and print new lines."),
 ) -> None:
     """Tail the engine log."""
-    from hunter.cli.daemon import _cmd_logs
+    from hunter._daemon_shim import _cmd_logs
 
     raise typer.Exit(_cmd_logs(state=state, lines=lines, follow=follow))
 
@@ -2270,7 +2270,7 @@ def main() -> None:
 # The daemon CLI (M8 F2) lives in cli/daemon.py and registers the `daemon`
 # sub-app plus the top-level start/stop/status aliases on THIS app. The
 # import sits at the bottom because it needs the fully-built app object.
-from hunter.cli.daemon import register_daemon_commands  # noqa: E402
+from hunter._daemon_shim import register_daemon_commands  # noqa: E402
 
 register_daemon_commands(app)
 
@@ -2436,11 +2436,11 @@ def cron_add(
     min_wall: float | None = None
     max_cost: float | None = None
     if time_text is not None:
-        from hunter.cli.daemon import _parse_duration_or_exit as _parse
+        from hunter._daemon_shim import _parse_duration_or_exit as _parse
 
         max_wall = _parse(time_text, option="--time")
     if min_time_text is not None:
-        from hunter.cli.daemon import _parse_duration_or_exit as _parse2
+        from hunter._daemon_shim import _parse_duration_or_exit as _parse2
 
         min_wall = _parse2(min_time_text, option="--min-time")
     if budget_text is not None:

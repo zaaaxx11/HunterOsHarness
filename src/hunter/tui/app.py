@@ -43,7 +43,7 @@ from textual.widgets import (
 from hunter import __version__
 from hunter.branding import logo_text, wordmark_text
 from hunter.cli.doctor_core import collect_checks
-from hunter.daemon import daemon_status, start_daemon, stop_daemon
+from hunter._daemon_shim import daemon_status, start_daemon, stop_daemon
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
 from hunter.kernel.ledger import Ledger

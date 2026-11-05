@@ -106,7 +106,7 @@ class GatewayApp:
     def _current_proc_signature(self, *, fresh: bool = False) -> str:
         """Daemon identity when verifiable, else stable pid-uuid fallback."""
         try:
-            from hunter.daemon import process_identity as _identity
+            from hunter._daemon_shim import process_identity as _identity
 
             identity = _identity(os.getpid())
             if identity.verified and identity.signature:

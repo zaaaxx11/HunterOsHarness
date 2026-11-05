@@ -101,7 +101,7 @@ def _platform_check() -> Check:
         detail += " (WSL2 — Linux userspace; install inside the distro)"
     identity = "unavailable"
     try:
-        from hunter.daemon import process_identity
+        from hunter._daemon_shim import process_identity
 
         probe = process_identity(os.getpid())
         identity = "verified" if probe.verified else (probe.reason or "unverified")

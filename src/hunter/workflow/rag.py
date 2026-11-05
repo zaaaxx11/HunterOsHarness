@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-from hunter.daemon import (
+from hunter._daemon_shim import (
     drain_daemon,
     enqueue_task,
     queue_dir,
@@ -263,7 +263,7 @@ class RagLoop:
         return self.config.target.rstrip("/")
 
     def _enqueue(self, target: str, parent_finding_id: str | None = None) -> bool:
-        from hunter.daemon import _validate_hunt_task
+        from hunter._daemon_shim import _validate_hunt_task
 
         task = {
             "target": str(target),
@@ -419,7 +419,7 @@ class RagLoop:
             # was consuming — the operator saw a running process and an
             # idle ledger with no way to tell which half was broken.
             try:
-                from hunter.daemon import daemon_running
+                from hunter._daemon_shim import daemon_running
 
                 running, detail = daemon_running(self.state_dir)
                 if not running:

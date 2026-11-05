@@ -58,8 +58,42 @@ def _new_mission(
     return mission
 
 
+def _is_rce_klass(finding: Any) -> bool:
+    """True when the finding's klass names an RCE-style class.
+
+    The taxonomy uses several spellings (``rce``, ``arbitrary-code-execution``,
+    ``remote-code-execution``, ``command-injection``); match on the
+    normalised class string so a class rename does not silently zero the
+    goal counter.
+    """
+    klass = str(getattr(finding, "klass", "") or "").lower()
+    if not klass:
+        return False
+    return (
+        "rce" in klass
+        or "code-execution" in klass
+        or "code_execution" in klass
+        or "command-injection" in klass
+        or "command_injection" in klass
+    )
+
+
 def _count_findings(state_dir: str | Path) -> tuple[int, int, int]:
-    """(total, verified, rce_proven_live) from the ledger."""
+    """(total, verified, rce_proven_live) from the ledger.
+
+    ``rce_proven_live`` counts findings that carry REAL PROOF — not a
+    static tool flag and not a by-design system capability:
+
+    - the class is RCE-shaped (rce / code-execution / command-injection),
+    - the finding is VERIFIED or better (>=2 bound evidence artifacts),
+    - AND a proof artifact exists on disk (logs_path, else poc_path).
+
+    Requiring the PROVEN_LIVE *status* here was wrong: the promotion ladder
+    to PROVEN_LIVE is a manual operator action, so an automated hunt could
+    never satisfy the goal and the loop ran forever on a zero counter.
+    VERIFIED + a real artifact on disk IS the proof of live the doctrine
+    asks for.
+    """
     total = verified = rce = 0
     try:
         import contextlib
@@ -72,19 +106,21 @@ def _count_findings(state_dir: str | Path) -> tuple[int, int, int]:
         try:
             for f in ledger.findings():
                 total += 1
-                if f.status in (
+                status = f.status
+                strong = status in (
                     FindingStatus.VERIFIED,
                     FindingStatus.PROMOTED,
                     FindingStatus.PROVEN_LIVE,
-                ):
+                )
+                if strong:
                     verified += 1
-                if (
-                    f.status == FindingStatus.PROVEN_LIVE
-                    and f.logs_path
-                    and Path(f.logs_path).is_file()
-                    and "rce" in str(getattr(f, "klass", "") or "").lower()
-                ):
-                    rce += 1
+                if not strong or not _is_rce_klass(f):
+                    continue
+                # Real artifact on disk = proof of live execution.
+                for artifact in (f.logs_path, f.poc_path):
+                    if artifact and Path(artifact).is_file():
+                        rce += 1
+                        break
         finally:
             with contextlib.suppress(Exception):
                 ledger.close()
