@@ -21,9 +21,10 @@ from typing import Any
 # Canonical goal vocabulary — the loop stops when EVERY declared goal is met,
 # OR when the wall clock budget expires (time priority > goals).
 # Each goal has a `kind` and a `count`.
-GOAL_EXPLOITABLE_MIN = "exploitable-min"      # at least N proven-exploitable findings
-GOAL_FINDINGS_MIN    = "findings-min"          # at least N total findings
-GOAL_VERIFIED_MIN    = "verified-min"          # at least N VERIFIED+ findings
+GOAL_RCE_MIN         = "rce-min"                # at least N pure RCE findings
+GOAL_EXPLOITABLE_MIN  = "exploitable-min"         # at least N proven-exploitable findings
+GOAL_FINDINGS_MIN     = "findings-min"             # at least N total findings
+GOAL_VERIFIED_MIN     = "verified-min"             # at least N VERIFIED+ findings
 # Legacy alias kept for backward compatibility with old state.json files:
 _GOAL_ALIASES: dict[str, str] = {
     "rce-proven-live": GOAL_EXPLOITABLE_MIN,
@@ -54,6 +55,7 @@ class HuntMission:
     total_findings: int = 0
     verified_findings: int = 0
     exploitable: int = 0                              # proven-exploitable (RCE / reentrancy / access-control)
+    rce: int = 0                                     # pure RCE only (code-exec / command-injection)
     last_run_id: str = ""
     last_run_status: str = ""
     error: str = ""
@@ -113,6 +115,8 @@ def goals_met(mission: HuntMission) -> bool:
         # Normalise legacy keys silently so old state files survive a rename.
         kind = _GOAL_ALIASES.get(kind, kind)
         need = int(g.get("count", 1))
+        if kind == GOAL_RCE_MIN and mission.rce < need:
+            return False
         if kind == GOAL_EXPLOITABLE_MIN and mission.exploitable < need:
             return False
         if kind == GOAL_FINDINGS_MIN and mission.total_findings < need:

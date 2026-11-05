@@ -92,23 +92,34 @@ def _is_exploitable_klass(finding: Any) -> bool:
     )
 
 
-def _count_findings(state_dir: str | Path) -> tuple[int, int, int]:
-    """(total, verified, exploitable) from the ledger.
+def _is_rce_only_klass(finding: Any) -> bool:
+    """True ONLY for RCE-specific klass — code-exec / command-injection / rce.
 
-    ``exploitable`` counts findings that carry REAL PROOF — not a
-    static tool flag and not a by-design system capability:
-
-    - the class is live-exploitable (RCE / reentrancy / access-control),
-    - the finding is VERIFIED or better (>=2 bound evidence artifacts),
-    - AND a proof artifact exists on disk (logs_path, else poc_path).
-
-    Requiring the PROVEN_LIVE *status* here was wrong: the promotion ladder
-    to PROVEN_LIVE is a manual operator action, so an automated hunt could
-    never satisfy the goal and the loop ran forever on a zero counter.
-    VERIFIED + a real artifact on disk IS the proof of live the doctrine
-    asks for.
+    Narrower than _is_exploitable_klass: does NOT match reentrancy or
+    access-control. Used for the ``rce-min`` goal counter.
     """
-    total = verified = exploitable = 0
+    klass = str(getattr(finding, "klass", "") or "").lower()
+    if not klass:
+        return False
+    return (
+        "rce" in klass
+        or "code-execution" in klass
+        or "code_execution" in klass
+        or "command-injection" in klass
+        or "command_injection" in klass
+    )
+
+
+def _count_findings(state_dir: str | Path) -> tuple[int, int, int, int]:
+    """(total, verified, exploitable, rce) from the ledger.
+
+    ``exploitable`` — VERIFIED+ findings with ANY live-exploitable klass
+    (RCE / reentrancy / access-control) AND real proof on disk.
+
+    ``rce`` — same but ONLY for RCE klass (code-exec / command-injection /
+    arbitrary-code-exec), tracked independently for ``rce-min`` goals.
+    """
+    total = verified = exploitable = rce = 0
     try:
         import contextlib
         from hunter.kernel.findings import FindingStatus
@@ -128,19 +139,26 @@ def _count_findings(state_dir: str | Path) -> tuple[int, int, int]:
                 )
                 if strong:
                     verified += 1
+                # Gate: must be live-exploitable klass AND have real proof.
                 if not strong or not _is_exploitable_klass(f):
                     continue
-                # Real artifact on disk = proof of live execution.
+                has_proof = False
                 for artifact in (f.logs_path, f.poc_path):
                     if artifact and Path(artifact).is_file():
-                        exploitable += 1
+                        has_proof = True
                         break
+                if not has_proof:
+                    continue
+                # Count toward both goals: exploitable-min AND rce-min.
+                exploitable += 1
+                if _is_rce_only_klass(f):
+                    rce += 1
         finally:
             with contextlib.suppress(Exception):
                 ledger.close()
     except Exception:
         pass
-    return total, verified, exploitable
+    return total, verified, exploitable, rce
 
 
 def _run_one(
@@ -251,15 +269,17 @@ def run_loop(
             mission.last_run_status = str(result.get("status", "completed"))
         if result.get("error"):
             mission.error = str(result["error"])[:500]
-        total, verified, exploitable = _count_findings(state_dir)
+        total, verified, exploitable, rce = _count_findings(state_dir)
         mission.total_findings = total
         mission.verified_findings = verified
         mission.exploitable = exploitable
+        mission.rce = rce
         save_mission(mission)
 
         print(
             f"cycle {mission.run_count}: findings={mission.total_findings} "
-            f"verified={mission.verified_findings} exploitable={mission.exploitable} · "
+            f"verified={mission.verified_findings} "
+            f"exploitable={mission.exploitable} rce={mission.rce} · "
             f"{mission.last_run_id} ({mission.last_run_status})",
             flush=True,
         )
