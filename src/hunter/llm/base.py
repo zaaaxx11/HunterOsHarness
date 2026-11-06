@@ -80,6 +80,7 @@ class TurnResult:
     """One provider completion, normalized across providers."""
 
     text: str = ""
+    reasoning: str = ""
     tool_calls: tuple[ToolCall, ...] = field(default_factory=tuple)
     finish_reason: str = ""  # "stop" | "tool_calls" | "length" | ...
     input_tokens: int = 0

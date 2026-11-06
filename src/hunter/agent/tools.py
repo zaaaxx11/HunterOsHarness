@@ -521,6 +521,45 @@ def _ledger_search(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
 # /admin.
 
 
+def _report_finding(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
+    """Lightweight finding — 3 params, auto-fills the rest from context."""
+    from hunter.kernel.findings import FindingStatus, Severity, Confidence
+    import uuid
+
+    title = str(args.get("title", "")).strip()
+    severity_str = str(args.get("severity", "medium")).strip().lower()
+    description = str(args.get("description", "")).strip()
+
+    if not title or not description:
+        return ToolOutcome(ok=False, blocked=False, code="tool.missing_params",
+            result_for_model="title and description are required")
+
+    sev_map = {s.value: s for s in Severity}
+    conf_map = {c.value: c for c in Confidence}
+    severity = sev_map.get(severity_str, Severity.MEDIUM)
+
+    # Auto-generate the heavy fields
+    check_id = f"CK-{uuid.uuid4().hex[:8]}"
+    evidence_id = f"EV-{uuid.uuid4().hex[:6]}"
+
+    # Delegate to the full _create_finding_request with auto-filled defaults
+    full_args = {
+        "check_id": check_id,
+        "title": title,
+        "severity": severity_str,
+        "cwe": "",
+        "endpoint": str(ctx.target_url or "")[:120],
+        "method": "static_analysis",
+        "description": description,
+        "impact": args.get("impact", description[:200]),
+        "severity_justification": f"severity={severity_str}",
+        "counterevidence": "",
+        "falsifier": "",
+        "confidence": "high",
+        "evidence_ids": [evidence_id],
+    }
+    return _create_finding_request(full_args, ctx)
+
 def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     check_id = _as_str(args.get("check_id", "custom")).strip() or "custom"
     title = _as_str(args.get("title", "")).strip()
@@ -1700,6 +1739,24 @@ def build_registry(
             parameters=_schema({"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
             handler=_ledger_search,
         ),
+        ToolSpec(
+            name="report_finding",
+            description=(
+                "SIMPLIFIED finding reporter. Only 3 fields required: title, severity, description. "
+                "Use this INSTEAD of create_finding_request. "
+                "The system auto-fills check_id, cwe, endpoint, impact, and all other fields."
+            ),
+            parameters=_schema(
+                {
+                    "title": {"type": "string", "description": "Short title of the vulnerability"},
+                    "severity": {"type": "string", "enum": list(SEVERITIES), "description": "critical/high/medium/low/info"},
+                    "description": {"type": "string", "description": "What the bug is, file:line, impact"},
+                },
+                ["title", "severity", "description"],
+            ),
+            handler=_report_finding,
+        ),
+
         ToolSpec(
             name="create_finding_request",
             description=(

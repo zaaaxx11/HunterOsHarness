@@ -395,9 +395,10 @@ class NativeProvider:
                     continue
                 for choice in event.get("choices") or []:
                     delta = choice.get("delta") or {}
-                    if delta.get("content"):
-                        text_parts.append(delta["content"])
-                        stream_cb(delta["content"])
+                    txt = delta.get("content") or delta.get("reasoning_content", "")
+                    if txt:
+                        text_parts.append(txt)
+                        stream_cb(txt)
                     for tc in delta.get("tool_calls") or []:
                         idx = tc.get("index", 0)
                         slot = calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
@@ -453,6 +454,7 @@ class NativeProvider:
         usage = body.get("usage") or {}
         return TurnResult(
             text=message.get("content") or "",
+            reasoning=message.get("reasoning_content") or "",
             tool_calls=tuple(tool_calls),
             finish_reason=choice.get("finish_reason") or ("tool_calls" if tool_calls else "stop"),
             input_tokens=int(usage.get("prompt_tokens", 0) or 0),

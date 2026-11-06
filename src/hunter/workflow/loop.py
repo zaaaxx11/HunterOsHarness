@@ -191,20 +191,41 @@ def _run_one(
         mission.target_slug,
     ]
     try:
-        proc = subprocess.run(worker, capture_output=True, text=True, timeout=600)
-        try:
-            out = json.loads(
-                proc.stdout.splitlines()[-1] if proc.stdout.strip() else "{}"
-            )
-        except json.JSONDecodeError:
-            out = {}
-        if proc.returncode != 0:
-            out["error"] = (proc.stderr or proc.stdout)[-400:]
+        from hunter.hunt import run_hunt
+        from hunter.llm.budget import RunBudget
+
+        budget = RunBudget(
+            max_cost_usd=0.0,
+            wall_seconds=600.0,
+            min_wall_seconds=30.0,
+            max_iterations=0,
+        )
+        outcome = run_hunt(
+            str(target),
+            scope=scope,
+            engine_name=engine,
+            state_dir=str(state_dir),
+            budget=budget,
+            config={
+                "state_dir": str(state_dir),
+                "approval_auto_allow": True,
+                "session": mission.target_slug,
+            },
+        )
+        out = {
+            "run_id": outcome.run_id,
+            "status": outcome.status,
+            "findings": outcome.findings,
+        }
         return out
-    except subprocess.TimeoutExpired:
-        return {"error": "cycle timed out after 600s", "run_id": ""}
     except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}", "run_id": ""}
+        import traceback as _tb
+
+        return {
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": _tb.format_exc()[-2000:],
+            "run_id": "",
+        }
 
 
 def run_loop(

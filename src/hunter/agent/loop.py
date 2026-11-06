@@ -214,6 +214,29 @@ class AgentLoop:
             # seams are exercised here without changing default behavior.
 
             try:
+                # NUCLEAR PHASE-GATE: after RECON_LIMIT turns, rebuild registry
+                # to verdict-only tools. Model literally cannot call read tools.
+                RECON_LIMIT = 4
+                VERDICT_NAMES = {"create_finding_request", "report_finding", "finish_scan", "respond_to_user"}
+                if stats["turns"] == RECON_LIMIT - 1:
+                    # Build verdict-only registry for remaining turns
+                    from hunter.agent.tools_base import ToolRegistry
+                    verdict_registry = ToolRegistry()
+                    for name in VERDICT_NAMES:
+                        spec = self.registry.get(name)
+                        if spec is not None:
+                            verdict_registry.register(spec)
+                    self.registry = verdict_registry
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "VERDICT PHASE: You have gathered enough evidence. "
+                            "All reading tools have been REMOVED. You can ONLY use: "
+                            "report_finding, create_finding_request, finish_scan, respond_to_user. "
+                            "Create findings NOW for every vulnerability found."
+                        )
+                    })
+
                 turn = self.provider.complete(
                     "orchestrator",
                     _MessagesCapture(messages),
@@ -257,7 +280,7 @@ class AgentLoop:
             )
 
             if turn.error_surface is not None:
-                messages.append({"role": "assistant", "content": turn.text or ""})
+                messages.append({"role": "assistant", "content": turn.text or turn.reasoning or ""})
                 messages.append(
                     {
                         "role": "user",
