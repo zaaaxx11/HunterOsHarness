@@ -1873,6 +1873,24 @@ def gateway_start(
     except Exception:  # noqa: BLE001 - a menu push must never block the gateway
         pass
 
+    # Log to a file. Diagnosing "the bot went quiet" used to require calling
+    # getUpdates from outside, which TERMINATES this gateway's long-poll —
+    # the observer broke the thing it measured. A log removes that need.
+    try:
+        import logging as _logging
+        from pathlib import Path as _Path
+
+        _logdir = _Path(str(state)) if state is not None else _Path.home() / ".hunter" / "gateway"
+        _logdir.mkdir(parents=True, exist_ok=True)
+        _logging.basicConfig(
+            filename=str(_logdir / "gateway.log"),
+            level=_logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+        _logging.getLogger("hunter.gateway").setLevel(_logging.INFO)
+    except Exception:  # noqa: BLE001 - logging must never block start
+        pass
+
     gateway = GatewayApp(
         cfg,
         transports,
