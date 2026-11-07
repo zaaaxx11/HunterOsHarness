@@ -185,8 +185,18 @@ def main(argv: list[str] | None = None) -> int:
 
         def _log(message: str) -> None:
             active.log(message)
-            print(message)
+            text_line = str(message)
+            # Tool activity gets the Claude-Code row shape; other lines print
+            # through the spinner so they never tear the live status line.
+            if "tool call" in text_line.lower():
+                tool_call("hunt", text_line.strip())
+            else:
+                spin.log(text_line)
 
+        from hunter.cli.spinner import Spinner, tool_call
+
+        spin = Spinner(label="Hunting")
+        spin.start()
         loop = HuntLoop(
             llm=llm,
             verify_claim=verify_hook,
@@ -199,7 +209,10 @@ def main(argv: list[str] | None = None) -> int:
             model_tiers=active.model_tiers,
             log=_log,
         )
-        state = loop.run()
+        try:
+            state = loop.run()
+        finally:
+            spin.stop()
         active.round = getattr(state, "round", active.round)
         active.findings = list(getattr(state, "findings", active.findings) or [])
         active.completion_reason = getattr(state, "completion_reason", None)
@@ -208,26 +221,20 @@ def main(argv: list[str] | None = None) -> int:
         if llm is None:
             print("(no LLM provider configured — chat unavailable)")
             return
-        # A live spinner on a TTY so a slow turn does not look frozen; piped or
-        # scripted output stays clean.
-        status = None
-        if sys.stdout.isatty():
-            try:
-                from rich.console import Console
+        from hunter.cli.spinner import Spinner
 
-                status = Console().status("thinking…", spinner="dots")
-                status.start()
-            except Exception:  # noqa: BLE001 - no rich: run without the spinner
-                status = None
+        # One redrawn line while the model works: a starburst glyph, a rotating
+        # verb and a live timer, so a slow turn reads as progress rather than a
+        # hang. Silent when stdout is not a TTY.
+        spin = Spinner()
+        spin.start()
         try:
             answer = llm.complete(CHAT_SYSTEM, text)
         except Exception as exc:  # noqa: BLE001
-            if status is not None:
-                status.stop()
+            spin.stop()
             print(f"[error] {type(exc).__name__}: {exc}")
             return
-        if status is not None:
-            status.stop()
+        spin.stop()
         print(answer)
 
     session._engine = engine
