@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MESSAGE_LIMIT = 4096  # Telegram's limit, in UTF-16 code units
 
+#: Server-side long-poll hold; the client ceiling is this plus slack.
+POLL_HOLD_SECONDS = 25
+
 
 def _chunk_text(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     return chunk_text(text, limit)
@@ -154,11 +157,21 @@ class TelegramAdapter(ChatTransport):
         backoff = 1.0
         while not self._closed:
             try:
-                updates = await self._api.get_updates(offset=self._offset, timeout=25)
+                # Hard ceiling. A half-open socket can leave the HTTP read
+                # waiting indefinitely (observed: 11 minutes idle with four
+                # messages queued and pending_update_count stuck), which looks
+                # exactly like a dead bot. wait_for guarantees the loop advances.
+                updates = await asyncio.wait_for(
+                    self._api.get_updates(offset=self._offset, timeout=POLL_HOLD_SECONDS),
+                    timeout=POLL_HOLD_SECONDS + 20.0,
+                )
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 — network hiccups must not kill polling
-                logger.warning("telegram get_updates failed — retrying in %.0fs", backoff)
+            except Exception as exc:  # noqa: BLE001 — network hiccups must not kill polling
+                logger.warning(
+                    "telegram get_updates failed (%s: %s) — retrying in %.0fs",
+                    type(exc).__name__, str(exc)[:120], backoff,
+                )
                 await asyncio.sleep(backoff)
                 backoff = min(30.0, backoff * 2)
                 continue
