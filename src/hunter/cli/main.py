@@ -1940,7 +1940,7 @@ def gateway_start(
                 _body = _json.dumps({
                     "chat_id": _cid,
                     "text": (
-                        "\xe2\x9a\xa0\xef\xb8\x8f "
+                        "⚠️ "
                         "Gateway restarting\u2026 back online in a moment."
                     ),
                 }).encode()
