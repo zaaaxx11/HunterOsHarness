@@ -67,14 +67,52 @@ def deterministic_verification_pass(claim, target_root=None):
     return verify_deterministic(claim, target_root)
 
 
+def _line_window(path, line, radius=25):
+    """Return (lo, hi, numbered_block) around *line* from *path*, or None."""
+    try:
+        with open(path, "r", errors="replace") as fh:
+            lines = fh.readlines()
+    except Exception:  # noqa: BLE001
+        return None
+    if not lines:
+        return None
+    try:
+        line = int(line)
+    except (TypeError, ValueError):
+        return None
+    lo = max(1, line - radius)
+    hi = min(len(lines), line + radius)
+    body = "".join(
+        "%5d | %s" % (i, lines[i - 1]) for i in range(lo, hi + 1)
+    )
+    return (lo, hi, body)
+
+
 def _collect_snippet(l1):
-    """Assemble the captured source lines L1 actually verified."""
+    """Assemble the source context L1 actually resolved, for the L2 reviewer.
+
+    A single cited line is not enough to adjudicate most claims: the verdict on
+    "nonce consumed before signature verification" depends on seeing that
+    verification happens *later in the same function*. L2 was refuting true
+    findings because it was handed one line and no context, so hand it a window
+    of the real file around every resolved location.
+    """
     parts = []
+    seen = set()
     for c in l1.get("checks", []):
-        if c.get("check") == "file_line" and c.get("line_text") is not None:
-            parts.append(
-                "%s:%s | %s" % (c.get("file"), c.get("line"), c.get("line_text"))
-            )
+        if c.get("check") != "file_line" or c.get("line_text") is None:
+            continue
+        key = (c.get("resolved_path") or c.get("file"), c.get("line"))
+        if key in seen:
+            continue
+        seen.add(key)
+        window = _line_window(c.get("resolved_path"), c.get("line"))
+        if window:
+            lo, hi, body = window
+            parts.append("--- %s (lines %d-%d) ---\n%s" % (
+                c.get("file") or c.get("resolved_path"), lo, hi, body))
+        else:
+            parts.append("%s:%s | %s" % (c.get("file"), c.get("line"), c.get("line_text")))
     return "\n".join(parts)
 
 
