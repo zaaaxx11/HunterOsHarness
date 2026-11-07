@@ -254,16 +254,27 @@ _SKIP_DIRS = {
 _OWN_HINTS = ("src/", "contracts/", "sources/", "programs/", "core/", "app/")
 
 
+def _rel_parts(path: Path, base: Path) -> set[str]:
+    """Lower-cased path parts RELATIVE to base.
+
+    Using absolute parts would make a target under e.g. ``~/.hermes/cache/...``
+    invisible, because ``cache`` is in ``_SKIP_DIRS``.
+    """
+    try:
+        return {p.lower() for p in path.relative_to(base).parts}
+    except Exception:  # noqa: BLE001
+        return {p.lower() for p in path.parts}
+
+
 def _source_rank(path: Path, base: Path) -> tuple[int, int, str]:
     """Sort key: own code first, dependencies last, shallow before deep."""
     try:
         rel = path.relative_to(base).as_posix()
     except Exception:  # noqa: BLE001
         rel = path.name
-    parts = {p.lower() for p in path.parts}
     rel_l = rel.lower()
     score = 0
-    if parts & _SKIP_DIRS:
+    if _rel_parts(path, base) & _SKIP_DIRS:
         score -= 100
     if "/node_modules/" in rel_l or rel_l.startswith("node_modules/"):
         score -= 100
@@ -303,7 +314,7 @@ def read_target_source(
                 p for p in root.rglob("*")
                 if p.is_file()
                 and p.suffix.lower() in _HUNTER_EXTS
-                and not ({x.lower() for x in p.parts} & _SKIP_DIRS)
+                and not (_rel_parts(p, root) & _SKIP_DIRS)
             ]
             files = sorted(candidates, key=lambda p: _source_rank(p, root))
             base = root
@@ -332,6 +343,167 @@ def read_target_source(
         if total >= max_total:
             break
     return "\n\n".join(chunks)
+
+
+def _target_files(root: Path) -> list[tuple[Path, str]]:
+    """Ranked ``(path, relpath)`` for the target's own source files."""
+    try:
+        if root.is_file():
+            return [(root, root.name)]
+        if not root.is_dir():
+            return []
+    except Exception:  # noqa: BLE001
+        return []
+    candidates = [
+        p for p in root.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in _HUNTER_EXTS
+        and not (_rel_parts(p, root) & _SKIP_DIRS)
+    ]
+    out: list[tuple[Path, str]] = []
+    for p in sorted(candidates, key=lambda q: _source_rank(q, root)):
+        try:
+            rel = p.relative_to(root).as_posix()
+        except Exception:  # noqa: BLE001
+            rel = p.name
+        out.append((p, rel))
+    return out
+
+
+#: Lines that start a self-contained unit of code in the languages we audit.
+_BLOCK_START = re.compile(
+    r"^(?P<indent>[ \t]*)"
+    r"(?:"
+    r"(?:abstract\s+)?(?:contract|library|interface)\s+\w+"
+    r"|function\s+\w+"
+    r"|constructor\s*\("
+    r"|modifier\s+\w+"
+    r"|receive\s*\("
+    r"|fallback\s*\("
+    r"|(?:pub(?:lic)?\s+)?(?:async\s+)?fn\s+\w+"
+    r"|def\s+\w+"
+    r"|class\s+\w+"
+    r"|(?:export\s+)?(?:async\s+)?function\s+\w+"
+    r")"
+)
+
+
+def _split_blocks(text: str) -> list[str]:
+    """Split source into unit-sized blocks (contracts, then functions)."""
+    lines = text.splitlines(keepends=True)
+    starts = [i for i, ln in enumerate(lines) if _BLOCK_START.match(ln)]
+    if not starts:
+        return [text]
+    if starts[0] != 0:
+        starts.insert(0, 0)
+    blocks: list[str] = []
+    for a, b in zip(starts, starts[1:] + [len(lines)]):
+        chunk = "".join(lines[a:b])
+        if chunk.strip():
+            blocks.append(chunk)
+    return blocks or [text]
+
+
+def _merge_blocks(blocks: list[str], max_chars: int) -> list[str]:
+    """Greedily pack blocks up to ``max_chars`` so small units share a chunk."""
+    out: list[str] = []
+    cur = ""
+    for b in blocks:
+        if cur and len(cur) + len(b) > max_chars:
+            out.append(cur)
+            cur = b
+        else:
+            cur += b
+    if cur:
+        out.append(cur)
+    return out or [""]
+
+
+def iter_target_chunks(
+    target: str,
+    workdir: str | os.PathLike = ".",
+    *,
+    max_chars: int | None = None,
+) -> list[tuple[str, str]]:
+    """Chunk the target so each unit fits the model's reliable tool-call window.
+
+    Live evidence: with a ~6.8k-char prompt the provider truncates the turn
+    (``finish_reason=length``) before the tool call is emitted, while a small
+    unit-sized prompt calls ``report_finding`` natively on the default output
+    budget. Chunking is therefore the fix that needs no token-budget change.
+
+    Returns ``[(label, code), ...]`` with labels that are safe to cite back as
+    ``file`` in a finding (``path`` or ``path#partN``).
+    """
+    if max_chars is None:
+        try:
+            max_chars = int(os.environ.get("HUNTEROS_CHUNK_CHARS", "4500") or 4500)
+        except ValueError:
+            max_chars = 4500
+    root = Path(target) if target else Path(workdir)
+    out: list[tuple[str, str]] = []
+    for path, rel in _target_files(root):
+        try:
+            text = path.read_text(errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
+        if len(text) <= max_chars:
+            out.append((rel, text))
+            continue
+        parts = _merge_blocks(_split_blocks(text), max_chars)
+        if len(parts) == 1:
+            out.append((rel, parts[0]))
+            continue
+        for i, part in enumerate(parts, 1):
+            out.append((f"{rel}#part{i}", part))
+    return out
+
+
+def build_chunk_prompt(
+    state: HuntState,
+    known_titles: list[str] | None,
+    label: str,
+    code: str,
+    *,
+    index: int = 0,
+    total: int = 1,
+    nudge: bool = False,
+) -> str:
+    """A unit-sized HUNTER turn: exactly one chunk of the target source."""
+    known = [str(t) for t in (known_titles or []) if str(t).strip()]
+    left = time_left(state)
+    left_s = "unlimited" if left == float("inf") else f"{left:.0f}s"
+    lines = [
+        f"TARGET: {state.target or '(unspecified)'}",
+        f"UNIT {index}/{total}: {label}  (this is the ONLY code in scope for this turn)",
+        f"ROUND: {state.round}   TIME LEFT: {left_s}",
+        "PHASE: HUNTER — report NEW candidate findings for THIS UNIT only.",
+        "",
+    ]
+    if known:
+        lines.append(f"ALREADY RECORDED ({len(known)}) — do NOT repeat any of these:")
+        for i, title in enumerate(known, 1):
+            lines.append(f"  {i}. {title}")
+    else:
+        lines.append("ALREADY RECORDED: none — this is the first turn.")
+    lines += [
+        "",
+        "INSTRUCTIONS:",
+        "1. Audit the UNIT SOURCE below. It is the real code — do not describe code",
+        "   that is not in it. You have NO file-system tools; do not try to explore.",
+        "2. Report each distinct vulnerability with report_finding.",
+        "3. `file` must be exactly: " + label,
+        "   `line` must be a real line number in that file.",
+        "4. Placeholder titles like test/placeholder are never acceptable.",
+        "5. If this unit is clean, call report_finding with {\"findings\": []}.",
+        "",
+        "UNIT SOURCE:",
+        code,
+    ]
+    prompt = "\n".join(lines)
+    if nudge:
+        prompt += "\n" + _NUDGE
+    return prompt
 
 
 def build_hunter_prompt(
@@ -855,51 +1027,87 @@ class HuntLoop:
         return stats
 
     def _hunter_phase(self, state: HuntState) -> tuple[list[dict], int]:
-        """HUNTER turn(s): returns (candidates, tool_call_count)."""
+        """HUNTER turn(s): returns (candidates, tool_call_count).
+
+        The target is audited UNIT BY UNIT. A chunk small enough for the model's
+        reliable tool-call window is the only configuration we have measured
+        where ``report_finding`` is actually emitted on the default output
+        budget; a whole-target prompt gets truncated before the call.
+        """
         r = int(state.round)
         known = _known_titles(state)
-        user = build_hunter_prompt(state, known, workdir=self.workdir)
         calls_total = 0
         candidates: list[dict] = []
-        attempt = 0
 
-        while True:
+        try:
+            per_round = max(1, int(os.environ.get("HUNTEROS_CHUNKS_PER_ROUND", "3") or 3))
+        except ValueError:
+            per_round = 3
+
+        chunks = iter_target_chunks(state.target, self.workdir)
+        if chunks:
+            n = len(chunks)
+            start = int(getattr(state, "chunk_cursor", 0) or 0) % n
+            picks = [(start + i) % n for i in range(min(per_round, n))]
             try:
-                text, calls, cost = self._ask_hunter(user)
-            except Exception as exc:  # provider hiccup: end the phase, keep the round
-                self._log(
-                    f"[R{r}] hunter: llm error {type(exc).__name__}: "
-                    f"{_clip(str(exc))} — phase aborted"
-                )
-                break
+                state.chunk_cursor = (start + len(picks)) % n
+            except Exception:  # noqa: BLE001 - a frozen state must not stop the hunt
+                pass
+            units = [(i + 1, chunks[j][0], chunks[j][1]) for i, j in enumerate(picks)]
+            if n > per_round:
+                self._log(f"[R{r}] hunter: units {start + 1}..{start + len(picks)} of {n}")
+        else:
+            units = [(1, "", "")]
 
-            self._charge(state, cost)
-            calls_total += len(calls)
-            report_calls = [c for c in calls if _is_report_call(c.get("name"))]
-
-            batch: list[dict] = []
-            for call in report_calls:
-                batch.extend(_candidates_from_args(call.get("arguments") or {}))
-
-            if batch:
-                candidates.extend(batch)
-                break
-            if report_calls:
-                # The model DID call report_finding and had nothing to add.
-                self._log(f"[R{r}] hunter: reported an empty result (no new findings)")
-                break
-            if attempt >= MAX_HUNTER_RETRIES:
-                break
-            if not text.strip():
-                self._log(f"[R{r}] hunter: empty response — no retry possible")
-                break
-
-            attempt += 1
-            self._log(
-                f"[R{r}] hunter: returned text but 0 report_finding calls "
-                f"— retrying once with an explicit nudge"
+        for index, label, code in units:
+            user = (
+                build_chunk_prompt(state, known, label, code, index=index, total=len(units))
+                if code else
+                build_hunter_prompt(state, known, workdir=self.workdir)
             )
-            user = build_hunter_prompt(state, known, workdir=self.workdir, nudge=True)
+            attempt = 0
+            while True:
+                try:
+                    text, calls, cost = self._ask_hunter(user)
+                except Exception as exc:  # provider hiccup: keep the round
+                    self._log(
+                        f"[R{r}] hunter: llm error {type(exc).__name__}: "
+                        f"{_clip(str(exc))} — unit skipped"
+                    )
+                    break
+
+                self._charge(state, cost)
+                calls_total += len(calls)
+                report_calls = [c for c in calls if _is_report_call(c.get("name"))]
+
+                batch: list[dict] = []
+                for call in report_calls:
+                    batch.extend(_candidates_from_args(call.get("arguments") or {}))
+
+                if batch:
+                    candidates.extend(batch)
+                    break
+                if report_calls:
+                    # The model DID call report_finding and had nothing to add.
+                    self._log(f"[R{r}] hunter: unit {index} clean (no new findings)")
+                    break
+                if attempt >= MAX_HUNTER_RETRIES:
+                    break
+                if not text.strip():
+                    self._log(f"[R{r}] hunter: unit {index} empty response — no retry")
+                    break
+
+                attempt += 1
+                self._log(
+                    f"[R{r}] hunter: unit {index} returned text but 0 report_finding "
+                    f"calls — retrying once with an explicit nudge"
+                )
+                user = (
+                    build_chunk_prompt(state, known, label, code, index=index,
+                                       total=len(units), nudge=True)
+                    if code else
+                    build_hunter_prompt(state, known, workdir=self.workdir, nudge=True)
+                )
 
         return candidates, calls_total
 

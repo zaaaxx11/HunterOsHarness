@@ -215,6 +215,8 @@ class HuntState:
     # --- optional extras (defaulted, so old files and old callers still load)
     spent_usd: float = 0.0
     chains: list[dict] = field(default_factory=list)
+    #: round-robin cursor over the target's audit units (chunked hunting)
+    chunk_cursor: int = 0
 
     # -- serialisation ---------------------------------------------------- #
     def to_dict(self) -> dict[str, Any]:
@@ -230,6 +232,7 @@ class HuntState:
             "round": int(self.round or 0),
             "findings": [dict(f) for f in self.findings if isinstance(f, dict)],
             "chains": [dict(c) for c in self.chains if isinstance(c, dict)],
+            "chunk_cursor": int(self.chunk_cursor or 0),
             "completion_reason": self.completion_reason,
             "model_tiers": dict(self.model_tiers or {}),
         }
@@ -267,6 +270,7 @@ class HuntState:
             schema_version=_as_int(data.get("schema_version"), SCHEMA_VERSION),
             spent_usd=_as_float(data.get("spent_usd"), 0.0),
             chains=[dict(c) for c in (data.get("chains") or []) if isinstance(c, dict)],
+            chunk_cursor=_as_int(data.get("chunk_cursor"), 0),
         )
 
 
