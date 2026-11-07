@@ -1309,7 +1309,7 @@ def _exec_hunt(ctx: CommandContext) -> CommandReply:
     if ctx.options.get("ask_fn") and candidate and not any(
         token == "--time" or token.startswith("--time=") for token in candidate
     ):
-        answer = ctx.options["ask_fn"]("Time — how long may the hunt run? [2h]:", "2h").strip() or "2h"
+        answer = ctx.options["ask_fn"]("Time — how long may the hunt run? [7200]:", "7200").strip() or "7200"
         candidate.extend(["--time", answer])
     if "--time" in candidate or "--budget" in candidate or any(
         token.startswith("--time=") or token.startswith("--budget=") for token in candidate

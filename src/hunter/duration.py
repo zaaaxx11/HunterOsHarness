@@ -20,14 +20,12 @@ from hunter.errors import HunterError
 
 __all__ = ["parse_duration"]
 
-# Pinned grammar: optional hours, optional minutes, optional seconds (the
-# ``s`` suffix itself is optional). Anchored both ends, so any other shape
-# (minus signs, bare units, prose) simply fails to match.
+# Grammar: optional hours, optional minutes, optional seconds.
 _DURATION_RE = re.compile(r"^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s?)?$")
 
 _DURATION_HINT = (
-    "durations use the grammar [Nh][Nm][Ns] — e.g. 90, 90s, 90m, 2h, 1h30m, 1.5h "
-    "(bare numbers are seconds; 0 or empty means off/unlimited)"
+    "durations use [Nh][Nm][Ns] or bare seconds — e.g. 90, 3600, 2h, 1h30m "
+    "(a bare number is seconds; 0 means unlimited)"
 )
 
 
@@ -43,15 +41,12 @@ def _duration_error(text: str) -> HunterError:
 def parse_duration(text: str | int | float | None) -> float:
     """Parse a human duration into seconds (float).
 
-    Accepts the pinned ``[Nh][Nm][Ns]`` grammar, bare numbers (seconds),
-    numeric seconds, ``None`` and empty strings (both 0.0). Garbage —
-    including negatives, which are not in the grammar — raises
-    :class:`hunter.errors.HunterError` (layer ``config``, code
-    ``config.value``) with the accepted grammar in the hint.
+    Accepts ``[Nh][Nm][Ns]``, bare numbers (seconds), ``None`` / empty (0).
+    Garbage raises :class:`hunter.errors.HunterError`.
     """
     if text is None:
         return 0.0
-    if isinstance(text, bool):  # bool is an int subclass — never a duration
+    if isinstance(text, bool):
         raise _duration_error(str(text))
     if isinstance(text, (int, float)):
         value = float(text)

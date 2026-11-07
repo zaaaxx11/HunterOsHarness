@@ -175,29 +175,36 @@ _DUR_HINT = "durations use [Nh][Nm][Ns] — 90, 90s, 90m, 2h, 1h30m, 1.5h (bare 
 
 
 def _parse_dur(text: str | int | float | None) -> float:
-    """Parse a human duration to seconds. Raises ValueError on garbage."""
+    """Parse a hunt duration: seconds only, no h/m/s suffixes.
+
+    ``0`` and empty mean unlimited. Everything else must be a positive integer
+    or float of seconds — ``21600``, ``3600``, ``900``. A trailing ``s`` is
+    tolerated (``3600s``).
+
+    Other paths (config CLI, TUI) use ``parse_duration`` which still accepts
+    ``1h30m``; this is deliberately stricter so ``/hunt`` has one unambiguous
+    unit.
+    """
     if text is None:
         return 0.0
     if isinstance(text, (int, float)) and not isinstance(text, bool):
         value = float(text)
         if value < 0 or value != value:
-            raise ValueError(f"invalid duration: {text!r}")
+            raise ValueError(f"duration must be a positive number, not {text!r}")
         return value
     token = str(text).strip()
     if not token:
         return 0.0
-    match = _DUR_RE.match(token)
-    if match is None:
-        raise ValueError(_DUR_HINT)
-    hours, minutes, seconds = match.groups()
-    total = 0.0
-    if hours:
-        total += float(hours) * 3600.0
-    if minutes:
-        total += float(minutes) * 60.0
-    if seconds:
-        total += float(seconds)
-    return total
+    clean = token.rstrip("sS")
+    try:
+        value = float(clean)
+    except ValueError:
+        raise ValueError(
+            f"time must be seconds, not {token!r} — e.g. 21600 (= 6h), 3600, 900"
+        )
+    if value < 0 or value != value:
+        raise ValueError(f"duration must be positive, not {token!r}")
+    return value
 
 
 def _fmt_dur(seconds: float) -> str:

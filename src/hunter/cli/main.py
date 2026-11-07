@@ -375,7 +375,7 @@ def hunt(
     # Interactive mode: no --time → ask the operator.
     # When --time was explicitly set to "0" (unlimited), skip the prompt.
     if not time_opt and daemon_target is None:
-        time_opt = typer.prompt("Time budget? (e.g. 30m, 2h, 6h)", default="2h")
+        time_opt = typer.prompt("Time budget? (seconds — 21600 = 6h)", default="21600")
     # Free-form description: if the single argument is not a URL/dir, ask the
     # LLM to extract concrete targets from it.
     if len(targets or []) == 1:
@@ -491,12 +491,12 @@ def hunt(
         # an EXPLICIT --time is therefore unlimited, not the 6h fallback.
         # Only a MISSING --time falls back to 6h.
         if time_opt is None:
-            budget_s = 6 * 3600
+            budget_s = 21600
         else:
             try:
                 budget_s = parse_duration(time_opt)
             except Exception:
-                budget_s = 6 * 3600
+                budget_s = 21600
         unlimited_wall = budget_s <= 0
         first_scope = None
         # The RAG queue validates each task's target with
