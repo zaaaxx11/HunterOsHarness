@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -314,9 +315,20 @@ class NativeProvider:
             "model": route.model,
             "messages": _to_wire_messages(messages),
         }
+        # Output ceiling. Reasoning models spend the whole default budget on
+        # reasoning_content and then get cut off (finish_reason=length) before
+        # they ever emit a tool call, so the ceiling is operator-tunable.
+        try:
+            _max_tokens = int(os.environ.get("HUNTEROS_MAX_TOKENS", "0") or 0)
+        except ValueError:
+            _max_tokens = 0
+        if _max_tokens > 0:
+            payload["max_tokens"] = _max_tokens
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = (
+                (os.environ.get("HUNTEROS_TOOL_CHOICE") or "auto").strip() or "auto"
+            )
         if route.reasoning_effort:
             payload["reasoning_effort"] = route.reasoning_effort
         if stream_cb is not None:

@@ -221,6 +221,41 @@ _HUNTER_EXTS = {
     ".java", ".rb", ".php", ".c", ".h", ".cpp", ".cs", ".sh", ".yaml", ".json",
 }
 
+#: Directories that are dependencies, build output, or test scaffolding —
+#: auditing these wastes the whole prompt budget on OpenZeppelin/Node modules
+#: instead of the target's own code.
+_SKIP_DIRS = {
+    "lib", "node_modules", ".git", "test", "tests", "script", "scripts",
+    "mock", "mocks", "vendor", "build", "out", "cache", "artifacts",
+    "dependencies", ".deps", "coverage", "typechain", "typechain-types",
+}
+
+#: Path fragments that mark the target's OWN code (ranked first).
+_OWN_HINTS = ("src/", "contracts/", "sources/", "programs/", "core/", "app/")
+
+
+def _source_rank(path: Path, base: Path) -> tuple[int, int, str]:
+    """Sort key: own code first, dependencies last, shallow before deep."""
+    try:
+        rel = path.relative_to(base).as_posix()
+    except Exception:  # noqa: BLE001
+        rel = path.name
+    parts = {p.lower() for p in path.parts}
+    rel_l = rel.lower()
+    score = 0
+    if parts & _SKIP_DIRS:
+        score -= 100
+    if "/node_modules/" in rel_l or rel_l.startswith("node_modules/"):
+        score -= 100
+    if any(h in rel_l for h in _OWN_HINTS):
+        score += 50
+    if rel_l.startswith("src/") or "/src/" in rel_l:
+        score += 30
+    if path.suffix.lower() == ".sol":
+        score += 10
+    depth = rel_l.count("/")
+    return (-score, depth, rel)
+
 
 def read_target_source(
     target: str,
@@ -244,10 +279,13 @@ def read_target_source(
             files = [root]
             base = root.parent
         elif root.is_dir():
-            files = sorted(
+            candidates = [
                 p for p in root.rglob("*")
-                if p.is_file() and p.suffix.lower() in _HUNTER_EXTS
-            )
+                if p.is_file()
+                and p.suffix.lower() in _HUNTER_EXTS
+                and not ({x.lower() for x in p.parts} & _SKIP_DIRS)
+            ]
+            files = sorted(candidates, key=lambda p: _source_rank(p, root))
             base = root
         else:
             return ""
