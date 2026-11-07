@@ -41,11 +41,19 @@ class LLMAdapter:
         self.provider = provider
         self.tier = tier
 
-    def _turn(self, system: str, user: str, tools: list | None = None):
+    def _turn(self, system: str, user: str, tools: list | None = None,
+              tool_choice: str | None = None):
         msgs = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
+        if tool_choice:
+            try:
+                return self.provider.complete(
+                    self.tier, msgs, tools=tools, tool_choice=tool_choice
+                )
+            except TypeError:
+                pass  # provider without the knob: fall back to the default
         return self.provider.complete(self.tier, msgs, tools=tools)
 
     def complete(self, system: str, user: str) -> str:
@@ -56,8 +64,9 @@ class LLMAdapter:
             or ""
         )
 
-    def complete_with_tools(self, system: str, user: str, tools: list) -> dict:
-        turn = self._turn(system, user, tools=tools)
+    def complete_with_tools(self, system: str, user: str, tools: list,
+                            tool_choice: str | None = None) -> dict:
+        turn = self._turn(system, user, tools=tools, tool_choice=tool_choice)
         calls: list[dict] = []
         for tc in (getattr(turn, "tool_calls", None) or []):
             args = getattr(tc, "arguments", {})

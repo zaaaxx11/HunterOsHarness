@@ -1063,7 +1063,15 @@ class HuntLoop:
             # to prompt size. One deterministic recovery: split the unit in half
             # and retry the halves, rather than guessing a smaller fixed size.
             if not found and not calls and code and len(code) > 700:
-                halves = [t for _s, t in _merge_blocks(_split_blocks(code), max(400, len(code) // 2))]
+                # keep absolute line numbers in the halves as well: `code` is
+                # already padded to the file's numbering, so re-pad by each
+                # half's start offset.
+                halves = [
+                    ("\n" * start) + text
+                    for start, text in _merge_blocks(
+                        _split_blocks(code), max(400, len(code) // 2)
+                    )
+                ]
                 if len(halves) > 1:
                     self._log(
                         f"[R{r}] hunter: unit {index} yielded nothing — retrying as "
@@ -1163,6 +1171,23 @@ class HuntLoop:
             text, calls, cost = _norm_response(resp)
             if not calls and text.strip():
                 calls = _json_calls_from_text(text)
+            if not calls:
+                # Deterministic enforcement: with tool_choice=required the API
+                # cannot return a text-only turn, so the model must call the tool.
+                # This is what makes tool-calling reliable on this provider.
+                try:
+                    resp2 = complete_with_tools(
+                        HUNTER_SYSTEM, user, [dict(t) for t in HUNTER_TOOLS],
+                        tool_choice="required",
+                    )
+                except TypeError:
+                    resp2 = None
+                if resp2 is not None:
+                    text2, calls2, cost2 = _norm_response(resp2)
+                    cost += cost2
+                    if calls2:
+                        calls = calls2
+                        text = text2 or text
             if not calls:
                 self._tools_work = False
 

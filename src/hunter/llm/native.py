@@ -144,6 +144,7 @@ class NativeProvider:
         *,
         stream_cb: StreamCb | None = None,
         budget: Any | None = None,
+        tool_choice: str | None = None,
     ) -> TurnResult:
         if budget is not None and budget.exhausted() is not None:
             raise HunterError(
@@ -161,7 +162,7 @@ class NativeProvider:
 
         last: ClassifiedError | None = None
         for route in routes:
-            result = self._attempt(route, messages, tools, stream_cb)
+            result = self._attempt(route, messages, tools, stream_cb, tool_choice)
             if isinstance(result, TurnResult):
                 self._last_outcome = f"ok:{route.provider}"
                 if budget is not None:
@@ -274,6 +275,7 @@ class NativeProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         stream_cb: StreamCb | None,
+        tool_choice: str | None = None,
     ) -> TurnResult | ClassifiedError:
         """Dial one route, retrying transient failures up to the configured cap."""
         max_retries = int(getattr(getattr(self.config, "agent", None), "api_max_retries", 3) or 3)
@@ -281,7 +283,7 @@ class NativeProvider:
 
         for attempt in range(max_retries + 1):
             try:
-                return self._request(route, messages, tools, stream_cb)
+                return self._request(route, messages, tools, stream_cb, tool_choice)
             except _ProviderHTTPError as exc:
                 verdict = exc.verdict
                 last = verdict
@@ -302,6 +304,7 @@ class NativeProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         stream_cb: StreamCb | None,
+        tool_choice: str | None = None,
     ) -> TurnResult:
         if not route.base_url:
             raise _ProviderHTTPError(
@@ -335,9 +338,8 @@ class NativeProvider:
             pass
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = (
-                (os.environ.get("HUNTEROS_TOOL_CHOICE") or "auto").strip() or "auto"
-            )
+            choice = tool_choice or os.environ.get("HUNTEROS_TOOL_CHOICE") or "auto"
+            payload["tool_choice"] = str(choice).strip() or "auto"
         if route.reasoning_effort:
             payload["reasoning_effort"] = route.reasoning_effort
         if stream_cb is not None:
