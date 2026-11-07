@@ -21,23 +21,27 @@ from typing import Any, Callable, Optional
 
 HUNT_HOME = Path(os.path.expanduser("~/.hunter"))
 SESSIONS  = HUNT_HOME / "sessions"
+STEPFUN   = "devora-01/stepfun/stepfun-5-preview"
+
 MODELS    = [
-    "devora-01/stepfun/stepfun-5-preview",
+    STEPFUN,
     "devora-01/deepseek/deepseek-v4-flash",
     "devora-01/deepseek/deepseek-v4-pro",
 ]
 
+#: Every tier defaults to StepFun: it is the model that reliably emits
+#: report_finding on the default output budget here.
 DEFAULT_TIERS = {
-    "hunter":       "devora-01/deepseek/deepseek-v4-flash",
-    "verifier":     "devora-01/stepfun/stepfun-5-preview",
-    "chainer":      "devora-01/deepseek/deepseek-v4-flash",
-    "orchestrator": "devora-01/deepseek/deepseek-v4-flash",
+    "hunter":       STEPFUN,
+    "verifier":     STEPFUN,
+    "chainer":      STEPFUN,
+    "orchestrator": STEPFUN,
 }
 
 PRESETS = {
-    "balanced":  DEFAULT_TIERS,
-    "aggressive": {**DEFAULT_TIERS, "hunter": MODELS[0], "verifier": MODELS[2]},
-    "cheap":     {k: MODELS[1] for k in DEFAULT_TIERS},
+    "balanced":  {k: STEPFUN for k in DEFAULT_TIERS},
+    "aggressive": {k: STEPFUN for k in DEFAULT_TIERS},
+    "cheap":     {k: STEPFUN for k in DEFAULT_TIERS},
 }
 
 
