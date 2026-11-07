@@ -86,7 +86,7 @@ class TelegramAdapter(ChatTransport):
             await initialize()
         self._closed = False
         self._poll_task = asyncio.create_task(
-            self._poll_loop(), name="hunter-telegram-poll"
+            self._supervise(), name="hunter-telegram-poll"
         )
         return True
 
@@ -129,6 +129,26 @@ class TelegramAdapter(ChatTransport):
 
     # -- polling ----------------------------------------------------------------
 
+    async def _supervise(self) -> None:
+        """Keep polling alive: a dead poll task means a permanently silent bot.
+
+        The loop used to die on the first handler exception (dispatch sat outside
+        the try), and because the task exception is never retrieved nothing was
+        logged — the bot simply stopped answering. Restart it instead.
+        """
+        while not self._closed:
+            try:
+                await self._poll_loop()
+                return  # closed cleanly
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - never let the bot go silent
+                logger.exception("telegram: poll loop died — restarting in 5s")
+                try:
+                    await asyncio.sleep(5.0)
+                except asyncio.CancelledError:
+                    raise
+
     async def _poll_loop(self) -> None:
         """Long-poll get_updates until closed; per-error backoff, no crash."""
         backoff = 1.0
@@ -145,7 +165,17 @@ class TelegramAdapter(ChatTransport):
             backoff = 1.0
             for update in updates or []:
                 self._offset = max(self._offset, int(getattr(update, "update_id", 0)) + 1)
-                await self._dispatch(update)
+                # One bad message must never take the transport down with it, and
+                # the failure has to be visible in the log.
+                try:
+                    await self._dispatch(update)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "telegram: dispatch failed for update %s",
+                        getattr(update, "update_id", "?"),
+                    )
 
     async def _dispatch(self, update: Any) -> None:
         message = getattr(update, "message", None) or getattr(update, "edited_message", None)
