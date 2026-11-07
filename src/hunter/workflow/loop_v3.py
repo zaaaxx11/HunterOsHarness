@@ -408,6 +408,19 @@ def _merge_blocks(blocks: list[tuple[int, str]], max_chars: int) -> list[tuple[i
     return out or [(0, "")]
 
 
+def _number_lines(lines: list[str], offset: int) -> str:
+    """Prefix every line with its real (1-based) line number in the source file.
+
+    Blank-line padding was ambiguous: a model counts the lines it can see, not the
+    leading newlines, so a cited "line 8" pointed at the wrong code. An explicit
+    gutter removes the guesswork — the number the model reads is the number the
+    verifier looks up.
+    """
+    return "\n".join(
+        f"{offset + i:>5} | {ln}" for i, ln in enumerate(lines, 1)
+    )
+
+
 def iter_target_chunks(
     target: str,
     workdir: str | os.PathLike = ".",
@@ -437,16 +450,14 @@ def iter_target_chunks(
         except Exception:  # noqa: BLE001
             continue
         if len(text) <= max_chars:
-            out.append((rel, text))
+            out.append((rel, _number_lines(text.splitlines(), 0)))
             continue
         parts = _merge_blocks(_split_blocks(text), max_chars)
         if len(parts) == 1:
-            out.append((rel, parts[0][1]))
+            out.append((rel, _number_lines(text.splitlines(), 0)))
             continue
         for i, (start_line, part) in enumerate(parts, 1):
-            # pad leading newlines so chunk line N == file line N
-            padded = ("\n" * start_line) + part
-            out.append((f"{rel}#part{i}", padded))
+            out.append((f"{rel}#part{i}", _number_lines(part.splitlines(), start_line)))
     return out
 
 
@@ -480,10 +491,12 @@ def build_chunk_prompt(
     lines += [
         "",
         f"Report each vulnerability in the code below with report_finding. "
-        f"Use file={label!r} and a real line number. "
-        'If it is clean, call report_finding with {"findings": []}.',
+        f"Use file={label!r} and the line number shown in the gutter "
+        f"(the `NNNN |` prefix of the offending line). "
+        'If the unit is clean, call report_finding with {"findings": []}. '
+        'Never report a finding titled "no vulnerabilities" or "clean".',
         "",
-        "UNIT SOURCE:",
+        "UNIT SOURCE (left gutter = real line numbers in the file):",
         code,
     ]
     prompt = "\n".join(lines)
@@ -696,23 +709,46 @@ def _json_calls_from_text(text: str) -> list[dict]:
     return calls
 
 
+_NON_FINDING_RE = re.compile(
+    r"\b(?:no\s+(?:new\s+)?(?:vulnerabilit\w*|issue\w*|finding\w*|bug\w*)"
+    r"|clean\b|nothing\s+(?:found|to\s+report)|none\s+found|no\s+problems?\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_non_finding(title: Any, description: Any = "") -> bool:
+    """A "we found nothing" note is a status, not a finding — never store it."""
+    text = f"{title or ''} {description or ''}".strip()
+    if not text:
+        return True
+    return bool(_NON_FINDING_RE.search(str(title or "")))
+
+
 def _is_report_call(name: Any) -> bool:
     key = re.sub(r"[\s-]+", "_", str(name or "").strip().lower())
     return key in {"report_finding", "report_findings", "add_finding", "reportfinding"}
 
 
 def _candidates_from_args(args: dict) -> list[dict]:
-    """One tool call may carry one finding or a ``{"findings": [...]}`` batch."""
+    """One tool call may carry one finding or a ``{"findings": [...]}`` batch.
+
+    "Nothing found" notes are dropped: a clean/empty report is a status signal,
+    not a finding, and storing it pollutes the ledger and the dedup keys.
+    """
     if not isinstance(args, dict):
         return []
+    raw: list[dict] = []
     batch = args.get("findings")
     if isinstance(batch, list):
-        return [dict(x) for x in batch if isinstance(x, dict)]
-    if isinstance(args.get("finding"), dict):
-        return [dict(args["finding"])]
-    if any(k in args for k in ("title", "description", "vuln_type")):
-        return [dict(args)]
-    return []
+        raw = [dict(x) for x in batch if isinstance(x, dict)]
+    elif isinstance(args.get("finding"), dict):
+        raw = [dict(args["finding"])]
+    elif any(k in args for k in ("title", "description", "vuln_type")):
+        raw = [dict(args)]
+    return [
+        c for c in raw
+        if not _is_non_finding(c.get("title"), c.get("description"))
+    ]
 
 
 def _claim_from_candidate(cand: dict, state: HuntState) -> dict:
@@ -1063,15 +1099,14 @@ class HuntLoop:
             # to prompt size. One deterministic recovery: split the unit in half
             # and retry the halves, rather than guessing a smaller fixed size.
             if not found and not calls and code and len(code) > 700:
-                # keep absolute line numbers in the halves as well: `code` is
-                # already padded to the file's numbering, so re-pad by each
-                # half's start offset.
-                halves = [
-                    ("\n" * start) + text
-                    for start, text in _merge_blocks(
-                        _split_blocks(code), max(400, len(code) // 2)
-                    )
-                ]
+                # The unit text already carries its line-number gutter, so split
+                # it by lines: every half keeps the original numbers verbatim.
+                _lines = code.splitlines()
+                if len(_lines) > 40:
+                    _mid = len(_lines) // 2
+                    halves = ["\n".join(_lines[:_mid]), "\n".join(_lines[_mid:])]
+                else:
+                    halves = []
                 if len(halves) > 1:
                     self._log(
                         f"[R{r}] hunter: unit {index} yielded nothing — retrying as "
