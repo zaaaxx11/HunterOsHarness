@@ -130,6 +130,15 @@ _LOG_LIMIT = 400
 HUNTER_SYSTEM = """\
 You are the HUNTER phase of HUNT-OS, an autonomous security hunt.
 
+CRITICAL — READ THIS FIRST:
+The complete target source code is ALREADY INCLUDED in this message, further down,
+after the "TARGET SOURCE" marker. You have exactly ONE tool: report_finding.
+You have NO file-system access. You CANNOT read files, list directories, open paths,
+or run commands — every tool except report_finding does not exist and will fail.
+Never write "let me explore", "let me read the directory", "let me start by looking
+at the files", or emit any path-probing call. The code is already in front of you.
+Analyse the text below and call report_finding.
+
 Your job is to find NEW, specific, verifiable vulnerabilities in the target.
 
 Hard rules:
@@ -147,6 +156,7 @@ Hard rules:
 - description states the mechanism (what the code does), the attacker's steps, and the
   impact. "Input is not validated" without naming the sink is not a finding.
 - Do not invent code that is not in the target. If you cannot point at it, do not report it.
+- Placeholder titles like "test", "placeholder", "exploring target" are never acceptable.
 
 When you have reported every new candidate, stop. Never write a summary in place of
 calling the tool.
@@ -285,7 +295,8 @@ def build_hunter_prompt(
 
     lines = [
         f"TARGET: {state.target or '(unspecified)'}",
-        f"WORKDIR: {workdir}",
+        "(the full source of this target is included at the END of this message —",
+        " you do NOT need to read, list or explore anything)",
         f"ROUND: {state.round}",
         f"TIME LEFT: {left_s}   BUDGET: {budget}",
         "PHASE: HUNTER — report NEW candidate findings only.",
