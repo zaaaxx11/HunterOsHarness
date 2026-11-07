@@ -1860,6 +1860,19 @@ def gateway_start(
             options=options,
         )
 
+    # Publish the slash-command menu so the client's "/" autocomplete matches
+    # what this bot actually dispatches (setMyCommands replaces any stale list).
+    try:
+        import os as _os
+
+        from hunter.gateway.commands_menu import sync_telegram_commands
+
+        _tg_token = (_os.environ.get("HUNTEROS_TELEGRAM_TOKEN") or "").strip()
+        if _tg_token:
+            sync_telegram_commands(_tg_token)
+    except Exception:  # noqa: BLE001 - a menu push must never block the gateway
+        pass
+
     gateway = GatewayApp(
         cfg,
         transports,
