@@ -59,10 +59,14 @@ class GatewayApp:
         transports: list[ChatTransport],
         *,
         state_dir: str | None = None,
+        engine_factory: Any = None,
     ) -> None:
         self.config = config
         self.transports = list(transports)
         self.state_dir = state_dir
+        #: builds a chat engine for one session key; None keeps the legacy
+        #: ChatEngine. Injection keeps the gateway decoupled from any one brain.
+        self.engine_factory = engine_factory
         self._store: ChatStore | None = None
         # Bounded LRU+TTL engine cache (R2-A): OrderedDict in LRU order
         # (most-recent at the end); unbounded dict behavior when cap/TTL
@@ -176,13 +180,16 @@ class GatewayApp:
             "state_dir": self.state_dir,
         }
         try:
-            engine = ChatEngine(
-                store=self.store,
-                session_id=None,
-                state_dir=self.state_dir,
-                config=self.config,
-                options=options,
-            )
+            if self.engine_factory is not None:
+                engine = self.engine_factory(session_key, options)
+            else:
+                engine = ChatEngine(
+                    store=self.store,
+                    session_id=None,
+                    state_dir=self.state_dir,
+                    config=self.config,
+                    options=options,
+                )
         except Exception as exc:
             # Test seam (object() config) and broken-config surfaces must
             # still yield an isolated, closeable engine — never crash the
@@ -321,6 +328,21 @@ class GatewayApp:
             return BUSY_MESSAGE
         try:
             engine = self.engine_for(session_key)
+            # Out-of-band progress: an engine that can push (the hunt engine)
+            # gets a thread-safe bridge back to this transport, so a multi-minute
+            # hunt reports as it goes instead of going silent.
+            try:
+                if getattr(engine, "notify", None) is None and hasattr(engine, "notify"):
+                    _loop = asyncio.get_running_loop()
+                    _chat_id = message.chat_id
+
+                    def _push(text: str, _t=transport, _c=_chat_id, _l=_loop) -> None:
+                        with contextlib.suppress(Exception):
+                            asyncio.run_coroutine_threadsafe(_t.send(_c, str(text)), _l)
+
+                    engine.notify = _push
+            except Exception:
+                logger.debug("engine notify wiring skipped", exc_info=True)
             out = await asyncio.to_thread(engine.handle_text, message.text)
             return out.text
         except Exception as exc:  # noqa: BLE001 — the platform gets an answer, always

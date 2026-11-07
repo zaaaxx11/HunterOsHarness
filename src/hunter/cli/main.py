@@ -1847,7 +1847,25 @@ def gateway_start(
             "💡 start the 24/7 engine instead: hunter start"
         )
         raise typer.Exit(8)
-    gateway = GatewayApp(cfg, transports, state_dir=str(state) if state is not None else None)
+    # The chat brains are the hunteros engine (chunked hunt loop + the 32-command
+    # registry), not the legacy audit path, so a Telegram /hunt runs the same
+    # pipeline as the `hunteros` shell.
+    def _engine_factory(session_key: str, options: dict):
+        from hunter.gateway.hunt_engine import HuntGatewayEngine
+
+        return HuntGatewayEngine(
+            session_key=session_key,
+            state_dir=str(state) if state is not None else None,
+            config=cfg,
+            options=options,
+        )
+
+    gateway = GatewayApp(
+        cfg,
+        transports,
+        state_dir=str(state) if state is not None else None,
+        engine_factory=_engine_factory,
+    )
     try:
         gateway.run()
     except HunterError as exc:
