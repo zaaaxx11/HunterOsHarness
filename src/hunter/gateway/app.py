@@ -343,7 +343,30 @@ class GatewayApp:
                     engine.notify = _push
             except Exception:
                 logger.debug("engine notify wiring skipped", exc_info=True)
-            out = await asyncio.to_thread(engine.handle_text, message.text)
+            # A chat action expires after a few seconds, so refresh it for as
+            # long as the turn runs; otherwise the client looks dead during a
+            # multi-minute hunt.
+            typing_task: Any = None
+            set_status = getattr(transport, "set_status", None)
+            if callable(set_status):
+                async def _keep_typing() -> None:
+                    try:
+                        while True:
+                            await set_status(message.chat_id, "typing")
+                            await asyncio.sleep(4.0)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - presence is best-effort
+                        return
+
+                typing_task = asyncio.create_task(_keep_typing())
+            try:
+                out = await asyncio.to_thread(engine.handle_text, message.text)
+            finally:
+                if typing_task is not None:
+                    typing_task.cancel()
+                    with contextlib.suppress(Exception):
+                        await typing_task
             return out.text
         except Exception as exc:  # noqa: BLE001 — the platform gets an answer, always
             surface = build_error_surface(exc)

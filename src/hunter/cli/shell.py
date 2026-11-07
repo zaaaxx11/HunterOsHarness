@@ -83,6 +83,40 @@ class LLMAdapter:
         }
 
 
+def apply_model_tiers(cfg: Any, tiers: dict | None) -> list[str]:
+    """Write tier->model overrides onto a loaded config; return what changed.
+
+    The config carries ``model_tiers`` as {tier: block}, where a block is an
+    object or a dict holding ``provider``/``model``/``timeout``. Setting only
+    ``session.model_tiers`` used to change nothing at all, because the provider
+    is built from the config — this is the bridge that makes /model real.
+    """
+    changed: list[str] = []
+    blocks = getattr(cfg, "model_tiers", None)
+    if blocks is None or not isinstance(blocks, dict) or not tiers:
+        return changed
+    for tier, model in dict(tiers).items():
+        model = str(model or "").strip()
+        if not model:
+            continue
+        block = blocks.get(tier)
+        if isinstance(block, dict):
+            if str(block.get("model") or "") != model:
+                block["model"] = model
+                changed.append(f"{tier}->{model}")
+        elif block is not None:
+            if str(getattr(block, "model", "") or "") != model:
+                try:
+                    setattr(block, "model", model)
+                    changed.append(f"{tier}->{model}")
+                except Exception:  # noqa: BLE001 - frozen block: skip, don't crash
+                    pass
+        else:
+            blocks[tier] = {"provider": "devora", "model": model, "timeout": 300}
+            changed.append(f"{tier}->{model}")
+    return changed
+
+
 def build_provider(model_tiers: dict | None = None) -> Any:
     """Build the repo provider. Returns None when no provider is configured."""
     try:
@@ -90,16 +124,7 @@ def build_provider(model_tiers: dict | None = None) -> Any:
         from hunter.llm.router import provider_from_config
 
         cfg = load_config()
-        # apply operator tier overrides when the config object allows it
-        tiers = model_tiers or {}
-        agent = getattr(cfg, "agent", None)
-        if agent is not None and tiers:
-            for tier, model in tiers.items():
-                if hasattr(agent, f"{tier}_model"):
-                    try:
-                        setattr(agent, f"{tier}_model", model)
-                    except Exception:
-                        pass
+        apply_model_tiers(cfg, model_tiers or {})
         return provider_from_config(cfg)
     except Exception as exc:  # noqa: BLE001 - the shell must survive a bad config
         print(f"[warn] no LLM provider: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -183,10 +208,27 @@ def main(argv: list[str] | None = None) -> int:
         if llm is None:
             print("(no LLM provider configured — chat unavailable)")
             return
+        # A live spinner on a TTY so a slow turn does not look frozen; piped or
+        # scripted output stays clean.
+        status = None
+        if sys.stdout.isatty():
+            try:
+                from rich.console import Console
+
+                status = Console().status("thinking…", spinner="dots")
+                status.start()
+            except Exception:  # noqa: BLE001 - no rich: run without the spinner
+                status = None
         try:
-            print(llm.complete(CHAT_SYSTEM, text))
+            answer = llm.complete(CHAT_SYSTEM, text)
         except Exception as exc:  # noqa: BLE001
+            if status is not None:
+                status.stop()
             print(f"[error] {type(exc).__name__}: {exc}")
+            return
+        if status is not None:
+            status.stop()
+        print(answer)
 
     session._engine = engine
     session._chat = chat

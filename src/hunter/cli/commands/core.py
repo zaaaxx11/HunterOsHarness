@@ -885,7 +885,16 @@ def _apply_assignments(session: Any, pairs: list[str]) -> str:
 def cmd_model(args: str, session: Any) -> str:
     toks = _tokens(args)
     if not toks:
-        return "\n".join(["model tiers:", *_model_map_lines(session), "", "  /set model for the multi-tier picker"])
+        lines = ["model tiers:", *_model_map_lines(session)]
+        models = _models(session)
+        if models:
+            lines += ["", f"available models ({len(models)}):"]
+            lines += [f"  {m}" for m in models[:20]]
+            if len(models) > 20:
+                lines.append(f"  ... +{len(models) - 20} more")
+        lines += ["", "  /model <tier> <model>   e.g. /model hunter devora-01/stepfun/stepfun-5-preview",
+                  "  /set model balanced|aggressive|cheap"]
+        return "\n".join(lines)
     if len(toks) == 1:
         tier = toks[0].lower()
         if tier not in TIERS:

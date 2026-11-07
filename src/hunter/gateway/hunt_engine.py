@@ -57,9 +57,26 @@ class HuntGatewayEngine:
         self.session = HuntSession(name=session_key)
         self.session._chat = self._chat
 
-        provider = build_provider(self.session.model_tiers)
-        self._llm = LLMAdapter(provider, tier="hunter") if provider is not None else None
+        self._llm = None
+        self._llm_tiers: dict = {}
+        self._ensure_llm()
         self.session._engine = self._run_hunt
+
+    def _ensure_llm(self) -> Any:
+        """(Re)build the model client whenever /model or /set changed the tiers.
+
+        Without this a mid-chat /model only edited session state: the provider
+        was built once at construction, so the change never reached the wire.
+        """
+        from hunter.cli.shell import LLMAdapter, build_provider
+
+        tiers = dict(self.session.model_tiers or {})
+        if self._llm is not None and tiers == self._llm_tiers:
+            return self._llm
+        provider = build_provider(tiers)
+        self._llm = LLMAdapter(provider, tier="hunter") if provider is not None else None
+        self._llm_tiers = tiers
+        return self._llm
 
     # -- helpers -----------------------------------------------------------
     @property
@@ -84,6 +101,7 @@ class HuntGatewayEngine:
                 pass
 
     def _chat(self, text: str) -> str:
+        self._ensure_llm()
         if self._llm is None:
             return ("(no model configured) set a provider with /model or "
                     "~/.hunter/config.yaml")
@@ -100,6 +118,7 @@ class HuntGatewayEngine:
 
         from hunter.workflow.loop_v3 import HuntLoop
 
+        self._ensure_llm()
         if self._llm is None:
             self._say("[hunt] no model configured — cannot hunt")
             return
@@ -154,11 +173,15 @@ class HuntGatewayEngine:
         if not raw:
             return TurnOutput(text="", kind="noop")
         if raw.startswith("/"):
+            _before = dict(self.session.model_tiers or {})
             try:
                 out = self._registry.dispatch(raw, self.session)
             except Exception as exc:  # noqa: BLE001 - a bad command never kills chat
                 out = f"[error] {type(exc).__name__}: {exc}"
-            # a /hunt turn kicks the worker and returns immediately
+            # a model change takes effect on the next call, not on restart
+            if dict(self.session.model_tiers or {}) != _before:
+                self._ensure_llm()
+                out = str(out) + f"\n(active: hunter={self.session.model_tiers.get('hunter')})"
             return TurnOutput(text=str(out or ""), kind="command")
         return TurnOutput(text=self._chat(raw), kind="text")
 

@@ -79,7 +79,28 @@ class HuntSession:
     # =====================================================================
     @property
     def available_models(self) -> list:
-        return list(MODELS)
+        """Models the loaded config names, plus the curated defaults.
+
+        The bare constant was misleading: /model offered two ids while the
+        provider was configured with others. Read the live config first.
+        """
+        out: list[str] = []
+        try:
+            from hunter.llm.config import load_config
+
+            blocks = getattr(load_config(), "model_tiers", None)
+            if isinstance(blocks, dict):
+                for _tier, block in blocks.items():
+                    model = (block.get("model") if isinstance(block, dict)
+                             else getattr(block, "model", None))
+                    if model and str(model) not in out:
+                        out.append(str(model))
+        except Exception:  # noqa: BLE001 - a broken config must not break /model
+            pass
+        for model in MODELS:
+            if model not in out:
+                out.append(model)
+        return out
 
     @property
     def skills(self) -> list:
