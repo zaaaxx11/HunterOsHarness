@@ -403,9 +403,59 @@ class GatewayApp:
                     connected.append(transport)
                     logger.info("gateway: %s connected", transport.name)
             stop = asyncio.Event()
+            if os.environ.get("HUNTEROS_GATEWAY_TRACE") == "1":
+                asyncio.create_task(self._trace_tasks(), name="hunter-trace")
             await stop.wait()  # serve until run() is interrupted / task cancelled
         finally:
             await self._shutdown(connected)
+
+    async def _trace_tasks(self) -> None:
+        """Log where every live task is parked. Diagnostic for a silent bot.
+
+        A stuck gateway is invisible from outside — the process is idle, no error
+        is raised, and checking the API from elsewhere terminates the long poll.
+        This prints each task's exact await point instead.
+        """
+        while True:
+            await asyncio.sleep(30.0)
+            try:
+                parts: list[str] = []
+                for task in asyncio.all_tasks():
+                    if task is asyncio.current_task():
+                        continue
+                    coro = task.get_coro()
+                    frame = getattr(coro, "cr_frame", None) or getattr(coro, "gi_frame", None)
+                    where = "?"
+                    if frame is not None:
+                        where = (
+                            f"{frame.f_code.co_filename.rsplit('/', 1)[-1]}"
+                            f":{frame.f_lineno}:{frame.f_code.co_name}"
+                        )
+                    # innermost frame: walk down to the deepest via cr_await chain
+                    seen = 0
+                    while frame is not None and seen < 40:
+                        nxt = getattr(coro, "cr_frame", None)
+                        inner = None
+                        # follow the awaitee, when there is one
+                        awaitee = getattr(coro, "cr_await", None)
+                        if awaitee is not None:
+                            iframe = getattr(awaitee, "cr_frame", None) or getattr(awaitee, "gi_frame", None)
+                            if iframe is not None:
+                                inner = (
+                                    f"{iframe.f_code.co_filename.rsplit('/', 1)[-1]}"
+                                    f":{iframe.f_lineno}:{iframe.f_code.co_name}"
+                                )
+                                coro = awaitee
+                                frame = iframe
+                                seen += 1
+                                continue
+                        break
+                    if inner:
+                        where = inner
+                    parts.append(f"{getattr(coro, '__qualname__', '?')}@{where}")
+                logger.info("gateway trace: %d task(s) | %s", len(parts), " | ".join(parts))
+            except Exception:  # noqa: BLE001 - a diagnostic must never break serving
+                logger.exception("gateway trace failed")
 
     async def _shutdown(self, connected: list[ChatTransport]) -> None:
         for engine in self._engines.values():
