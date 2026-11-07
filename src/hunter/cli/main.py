@@ -1883,15 +1883,21 @@ def gateway_start(
         _lock_dir = state if state is not None else (Path.home() / ".hunter" / "gateway")
         _lock_dir.mkdir(parents=True, exist_ok=True)
         _lock_path = _lock_dir / "gateway.lock"
-        _lock_handle = open(_lock_path, "w")  # noqa: SIM115 - held for process life
+        # "a+" never truncates, so a losing process cannot wipe the holder's pid
+        # before it reads it (that is why the refusal message printed "pid ?").
+        _lock_handle = open(_lock_path, "a+")  # noqa: SIM115 - held for process life
         try:
             _fcntl.flock(_lock_handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
         except OSError:
+            _lock_handle.seek(0)
+            holder = _lock_handle.read().strip() or "?"
             typer.echo(
-                f"another gateway already serves {_lock_dir} "
-                f"(pid {_lock_path.read_text().strip() or '?'}) — refusing to start a second poller"
+                f"another gateway already serves {_lock_dir} (pid {holder}) "
+                "— refusing to start a second poller"
             )
             raise typer.Exit(code=1)
+        _lock_handle.seek(0)
+        _lock_handle.truncate()
         _lock_handle.write(str(os.getpid()))
         _lock_handle.flush()
     except typer.Exit:
