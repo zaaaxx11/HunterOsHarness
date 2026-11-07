@@ -88,9 +88,7 @@ class TelegramAdapter(ChatTransport):
         if callable(initialize):
             await initialize()
         self._closed = False
-        self._poll_task = asyncio.create_task(
-            self._supervise(), name="hunter-telegram-poll"
-        )
+        self._start_poll_task()
         return True
 
     async def disconnect(self) -> None:
@@ -131,6 +129,33 @@ class TelegramAdapter(ChatTransport):
             return
 
     # -- polling ----------------------------------------------------------------
+
+    def _start_poll_task(self) -> None:
+        self._poll_task = asyncio.create_task(
+            self._supervise(), name="hunter-telegram-poll"
+        )
+        self._poll_task.add_done_callback(self._on_poll_done)
+
+    def _on_poll_done(self, task: "asyncio.Task") -> None:
+        """Restart polling if it ever stops, and say why.
+
+        Without this the bot simply goes quiet: the task ends (clean return or a
+        propagated cancellation), nothing observes it, and no log is written.
+        """
+        if self._closed:
+            return
+        if task.cancelled():
+            reason = "cancelled"
+        else:
+            exc = task.exception()
+            if exc is not None:
+                reason = f"{type(exc).__name__}: {exc}"
+                logger.error("telegram: poll task ended (%s)", reason, exc_info=exc)
+            else:
+                reason = "returned"
+        if not task.cancelled():
+            logger.warning("telegram: poll task stopped (%s) — restarting", reason)
+        self._start_poll_task()
 
     async def _supervise(self) -> None:
         """Keep polling alive: a dead poll task means a permanently silent bot.
