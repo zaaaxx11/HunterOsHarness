@@ -84,10 +84,23 @@ def _set(session: Any, name: str, value: Any) -> bool:
 
 
 def _tokens(args: str) -> list[str]:
-    """Split an argument string, tolerating quotes; never raises."""
+    """Split an argument string, tolerating quotes; never raises.
+
+    ``shlex`` treats ``<`` / ``>`` as shell redirections, so a bare URL
+    ``<https://x>`` was split into three tokens and read as a time value.
+    Fall back to a simple space-split first when the text looks like a
+    URL — it always starts with a scheme — and let quotes control grouping
+    for everything else.
+    """
     text = (args or "").strip()
     if not text:
         return []
+    # A URL is a single token. Guard it before it reaches a shell tokeniser.
+    if text.startswith(("http://", "https://", "git://", "ssh://")):
+        idx = text.index(" ") if " " in text else len(text)
+        url = text[:idx]
+        rest = text[idx:].strip()
+        return [url] + _tokens(rest) if rest else [url]
     try:
         return shlex.split(text)
     except ValueError:
