@@ -880,6 +880,7 @@ class HuntLoop:
         #: set False after the first tool turn that yields no call, so later rounds
         #: go straight to the JSON turn instead of re-paying for a dead path
         self._tools_work = True
+        self._verifier_llm_failed = False
 
     # -- public ----------------------------------------------------------- #
     def run(self, state: HuntState | None = None) -> HuntState:
@@ -1361,11 +1362,39 @@ class HuntLoop:
         return budget > 0 and _num(state.spent_usd, 0.0) >= budget
 
     # -- helpers ---------------------------------------------------------- #
+    def _verifier_call(self, system: str, user: str) -> str:
+        """LLM access for the adversarial (L2) reviewer.
+
+        L2 is the layer that turns an anchored claim into a verified one. If the
+        loop never supplies an LLM here, L2 degrades to UNREVIEWED and nothing can
+        ever reach "verified" — which is exactly what happened before this hook.
+        The verifier tier is preferred when the client exposes a provider.
+        """
+        provider = getattr(self.llm, "provider", None)
+        if provider is not None and not self._verifier_llm_failed:
+            try:
+                sibling = type(self.llm)(provider, tier="verifier")
+                return sibling.complete(system, user)
+            except Exception as exc:  # noqa: BLE001
+                self._verifier_llm_failed = True
+                self._log(f"verifier tier unavailable ({type(exc).__name__}) — "
+                          f"falling back to the hunter model")
+        return self.llm.complete(system, user)
+
     def _ctx(self, state: HuntState, tier: str) -> dict[str, Any]:
+        # ``target_root`` is what the deterministic layer reads to resolve a cited
+        # file:line. Without it L1 has no tree to search and every finding is
+        # refuted no matter how well anchored it is.
+        root = state.target or str(self.workdir)
         return {
             "target": state.target,
+            "target_root": root,
             "round": int(state.round),
             "workdir": str(self.workdir),
+            "evidence_root": str(
+                Path(str(self.state_path)).parent / "evidence"
+            ),
+            "call_llm": self._verifier_call,
             "state": state,
             "state_path": str(self.state_path),
             "llm": self.llm,
