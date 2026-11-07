@@ -157,14 +157,7 @@ class TelegramAdapter(ChatTransport):
         backoff = 1.0
         while not self._closed:
             try:
-                # Hard ceiling. A half-open socket can leave the HTTP read
-                # waiting indefinitely (observed: 11 minutes idle with four
-                # messages queued and pending_update_count stuck), which looks
-                # exactly like a dead bot. wait_for guarantees the loop advances.
-                updates = await asyncio.wait_for(
-                    self._api.get_updates(offset=self._offset, timeout=POLL_HOLD_SECONDS),
-                    timeout=POLL_HOLD_SECONDS + 20.0,
-                )
+                updates = await asyncio.to_thread(self._blocking_get_updates, self._offset)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — network hiccups must not kill polling
@@ -175,6 +168,7 @@ class TelegramAdapter(ChatTransport):
                 await asyncio.sleep(backoff)
                 backoff = min(30.0, backoff * 2)
                 continue
+            logger.info("telegram: poll -> %d update(s) (offset=%s)", len(updates or []), self._offset)
             backoff = 1.0
             for update in updates or []:
                 self._offset = max(self._offset, int(getattr(update, "update_id", 0)) + 1)
@@ -189,6 +183,33 @@ class TelegramAdapter(ChatTransport):
                         "telegram: dispatch failed for update %s",
                         getattr(update, "update_id", "?"),
                     )
+
+    def _blocking_get_updates(self, offset: int) -> list:
+        """Long-poll Telegram with a socket timeout the OS enforces.
+
+        The async PTB long poll could sit on a half-open socket indefinitely:
+        monitored live, the gateway stayed idle in the event loop for 11+ minutes
+        while getWebhookInfo reported four queued messages and nothing was
+        consumed. Neither PTB's read timeout nor asyncio.wait_for recovered it —
+        wait_for still waits on a coroutine that swallows CancelledError. A
+        blocking call with ``timeout`` always raises, so the loop always advances.
+        """
+        import json as _json
+        import urllib.parse as _urlparse
+        import urllib.request as _urlrequest
+
+        url = (
+            f"https://api.telegram.org/bot{self._token}/getUpdates?"
+            + _urlparse.urlencode({"offset": int(offset), "timeout": POLL_HOLD_SECONDS})
+        )
+        request = _urlrequest.Request(url, method="GET")
+        with _urlrequest.urlopen(request, timeout=POLL_HOLD_SECONDS + 10) as response:
+            payload = _json.loads(response.read().decode("utf-8"))
+        if not payload.get("ok"):
+            raise RuntimeError(f"getUpdates failed: {str(payload)[:200]}")
+        from telegram import Update
+
+        return [Update.de_json(item, self._api) for item in (payload.get("result") or [])]
 
     async def _dispatch(self, update: Any) -> None:
         message = getattr(update, "message", None) or getattr(update, "edited_message", None)
