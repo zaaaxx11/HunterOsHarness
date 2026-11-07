@@ -134,7 +134,10 @@ def _find_file(target_root, ref_path):
     """Locate *ref_path* under *target_root* by exact relative path then basename."""
     if not target_root or not os.path.isdir(target_root):
         return None
-    rel = ref_path.replace("\\", "/").lstrip("./")
+    # chunked hunts cite a unit label such as "src/Vault.sol#part2"; the suffix
+    # names the audit unit, not a path, so it is stripped before lookup.
+    ref_path = str(ref_path or "").split("#", 1)[0]
+    rel = str(ref_path).replace("\\", "/").lstrip("./")
     direct = os.path.join(target_root, rel)
     if os.path.isfile(direct):
         return direct

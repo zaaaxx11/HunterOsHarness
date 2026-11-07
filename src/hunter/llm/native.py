@@ -324,6 +324,15 @@ class NativeProvider:
             _max_tokens = 0
         if _max_tokens > 0:
             payload["max_tokens"] = _max_tokens
+        # Sampling temperature. Left at the provider default the model
+        # alternates between calling the tool and answering in prose on the
+        # same prompt; a greedy decode makes the tool-first path repeatable.
+        try:
+            _temp = os.environ.get("HUNTEROS_TEMPERATURE")
+            if _temp is not None and str(_temp).strip() != "":
+                payload["temperature"] = float(_temp)
+        except ValueError:
+            pass
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = (

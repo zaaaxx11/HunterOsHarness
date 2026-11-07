@@ -369,35 +369,43 @@ _BLOCK_START = re.compile(
 )
 
 
-def _split_blocks(text: str) -> list[str]:
-    """Split source into unit-sized blocks (contracts, then functions)."""
+def _split_blocks(text: str) -> list[tuple[int, str]]:
+    """Split source into blocks, keeping each block's 0-based start line.
+
+    The start line is kept so a chunk can be padded back to its original line
+    numbering: a finding that cites ``line 42`` of part 2 must resolve to line 42
+    of the file, not line 42 of the excerpt.
+    """
     lines = text.splitlines(keepends=True)
     starts = [i for i, ln in enumerate(lines) if _BLOCK_START.match(ln)]
     if not starts:
-        return [text]
+        return [(0, text)]
     if starts[0] != 0:
         starts.insert(0, 0)
-    blocks: list[str] = []
+    blocks: list[tuple[int, str]] = []
     for a, b in zip(starts, starts[1:] + [len(lines)]):
         chunk = "".join(lines[a:b])
         if chunk.strip():
-            blocks.append(chunk)
-    return blocks or [text]
+            blocks.append((a, chunk))
+    return blocks or [(0, text)]
 
 
-def _merge_blocks(blocks: list[str], max_chars: int) -> list[str]:
-    """Greedily pack blocks up to ``max_chars`` so small units share a chunk."""
-    out: list[str] = []
+def _merge_blocks(blocks: list[tuple[int, str]], max_chars: int) -> list[tuple[int, str]]:
+    """Greedily pack blocks up to ``max_chars``, preserving the first start line."""
+    out: list[tuple[int, str]] = []
+    cur_start = 0
     cur = ""
-    for b in blocks:
+    for start, b in blocks:
         if cur and len(cur) + len(b) > max_chars:
-            out.append(cur)
-            cur = b
+            out.append((cur_start, cur))
+            cur_start, cur = start, b
         else:
+            if not cur:
+                cur_start = start
             cur += b
     if cur:
-        out.append(cur)
-    return out or [""]
+        out.append((cur_start, cur))
+    return out or [(0, "")]
 
 
 def iter_target_chunks(
@@ -433,10 +441,12 @@ def iter_target_chunks(
             continue
         parts = _merge_blocks(_split_blocks(text), max_chars)
         if len(parts) == 1:
-            out.append((rel, parts[0]))
+            out.append((rel, parts[0][1]))
             continue
-        for i, part in enumerate(parts, 1):
-            out.append((f"{rel}#part{i}", part))
+        for i, (start_line, part) in enumerate(parts, 1):
+            # pad leading newlines so chunk line N == file line N
+            padded = ("\n" * start_line) + part
+            out.append((f"{rel}#part{i}", padded))
     return out
 
 
@@ -1036,6 +1046,14 @@ class HuntLoop:
             units = [(1, "", "")]
 
         for index, label, code in units:
+            # A round cannot be interrupted, and unit-by-unit auditing can take
+            # much longer than one whole-target turn. Stop mid-round once the wall
+            # budget is gone, as long as this round already did some work (so a
+            # zero-budget hunt still runs its single mandatory turn).
+            has_wall = state.wall_seconds is not None and float(state.wall_seconds) > 0
+            if calls_total and has_wall and self._time_exhausted(state):
+                self._log(f"[R{r}] hunter: wall budget reached — stopping unit loop")
+                break
             found, calls = self._audit_unit(state, known, label, code, index, len(units), r)
             candidates.extend(found)
             calls_total += calls
@@ -1045,7 +1063,7 @@ class HuntLoop:
             # to prompt size. One deterministic recovery: split the unit in half
             # and retry the halves, rather than guessing a smaller fixed size.
             if not found and not calls and code and len(code) > 700:
-                halves = _merge_blocks(_split_blocks(code), max(400, len(code) // 2))
+                halves = [t for _s, t in _merge_blocks(_split_blocks(code), max(400, len(code) // 2))]
                 if len(halves) > 1:
                     self._log(
                         f"[R{r}] hunter: unit {index} yielded nothing — retrying as "
