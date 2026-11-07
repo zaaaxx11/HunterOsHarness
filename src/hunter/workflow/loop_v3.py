@@ -206,6 +206,66 @@ _JSON_FALLBACK_INSTRUCTION = (
 )
 
 
+_HUNTER_EXTS = {
+    ".sol", ".vy", ".cairo", ".move", ".rs", ".go", ".py", ".js", ".ts",
+    ".java", ".rb", ".php", ".c", ".h", ".cpp", ".cs", ".sh", ".yaml", ".json",
+}
+
+
+def read_target_source(
+    target: str,
+    workdir: str | os.PathLike = ".",
+    *,
+    max_files: int = 10,
+    max_chars_per_file: int = 8000,
+    max_total: int = 48000,
+) -> str:
+    """Inline the target's source so the hunter is not blind.
+
+    The HUNTER turn has no file-reading tool (by design — fewer tools, fewer
+    ways to stall). Without this the model is asked to audit code it cannot
+    see, which is the single largest source of invented findings. Paths are
+    emitted relative to the target root so a cited ``file:line`` matches what
+    the deterministic verifier will look up on disk.
+    """
+    root = Path(target) if target else Path(workdir)
+    try:
+        if root.is_file():
+            files = [root]
+            base = root.parent
+        elif root.is_dir():
+            files = sorted(
+                p for p in root.rglob("*")
+                if p.is_file() and p.suffix.lower() in _HUNTER_EXTS
+            )
+            base = root
+        else:
+            return ""
+    except Exception:  # noqa: BLE001 - an unreadable target is not a crash
+        return ""
+
+    chunks: list[str] = []
+    total = 0
+    for f in files[:max_files]:
+        try:
+            text = f.read_text(errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
+        room = max_total - total
+        if room <= 0:
+            break
+        text = text[: min(max_chars_per_file, room)]
+        try:
+            rel = f.relative_to(base)
+        except Exception:  # noqa: BLE001
+            rel = f.name
+        chunks.append(f"--- {rel} ---\n{text}")
+        total += len(text)
+        if total >= max_total:
+            break
+    return "\n\n".join(chunks)
+
+
 def build_hunter_prompt(
     state: HuntState,
     known_titles: list[str] | None,
@@ -242,12 +302,25 @@ def build_hunter_prompt(
     lines += [
         "",
         "INSTRUCTIONS:",
-        "1. Read the target: the source tree under WORKDIR, or the live URL/contract.",
+        "1. Audit the TARGET SOURCE included below. It is the real code — do not",
+        "   describe code that is not in it.",
         "2. Find vulnerabilities that are NOT in the list above.",
         "3. For each one call report_finding with title, severity, description, file,",
         "   line and the concrete evidence you saw.",
-        "4. When there are no more new candidates, stop.",
+        "4. `file` must be the exact path shown in the --- <path> --- headers, and",
+        "   `line` the real line number in that file. A claim without a true",
+        "   file:line is rejected by the verifier.",
+        "5. When there are no more new candidates, stop.",
     ]
+    source = read_target_source(state.target, workdir)
+    if source:
+        lines += ["", "TARGET SOURCE:", source]
+    else:
+        lines += [
+            "",
+            "TARGET SOURCE: (not readable from the shell — report only what you can",
+            "cite concretely; an uncited claim will be rejected).",
+        ]
     prompt = "\n".join(lines)
     if nudge:
         prompt += "\n" + _NUDGE
