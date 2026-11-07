@@ -406,6 +406,16 @@ class GatewayApp:
                 if await transport.connect(self._callback(transport)):
                     connected.append(transport)
                     logger.info("gateway: %s connected", transport.name)
+                    # The operator sees a restart notification before this, so
+                    # confirm it arrived — a second ping proves both the
+                    # transport and the polling are live.
+                    try:
+                        await transport.send(
+                            getattr(transport, "_allowed", {"0"}) or {"0"},
+                            "\U0001f7e2 **Gateway online** — ready for use.",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             stop = asyncio.Event()
             if os.environ.get("HUNTEROS_GATEWAY_TRACE") == "1":
                 asyncio.create_task(self._trace_tasks(), name="hunter-trace")

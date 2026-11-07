@@ -1923,6 +1923,41 @@ def gateway_start(
     except Exception:  # noqa: BLE001 - logging must never block start
         pass
 
+    # Signal every configured Telegram chat that the gateway is restarting.
+    # The old process is already dead by this point, so the message goes
+    # through a raw HTTP call — no adapter, no polling, no race.
+    try:
+        import json as _json
+        from urllib import request as _urllib
+
+        _token = (os.environ.get("HUNTEROS_TELEGRAM_TOKEN") or "").strip()
+        _ids = (os.environ.get("HUNTEROS_TELEGRAM_ALLOWED_USERS") or "").strip()
+        if _token and _ids:
+            for _cid in _ids.replace(",", " ").split():
+                _cid = _cid.strip()
+                if not _cid:
+                    continue
+                _body = _json.dumps({
+                    "chat_id": _cid,
+                    "text": (
+                        "\xe2\x9a\xa0\xef\xb8\x8f "
+                        "Gateway restarting\u2026 back online in a moment."
+                    ),
+                }).encode()
+                _req = _urllib.Request(
+                    f"https://api.telegram.org/bot{_token}/sendMessage",
+                    data=_body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with _urllib.urlopen(_req, timeout=10) as _resp:
+                        _resp.read()
+                except Exception:  # noqa: BLE001 - a restart ping must not block startup
+                    pass
+    except Exception:  # noqa: BLE001
+        pass
+
     gateway = GatewayApp(
         cfg,
         transports,
