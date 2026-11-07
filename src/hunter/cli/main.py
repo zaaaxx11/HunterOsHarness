@@ -1873,6 +1873,32 @@ def gateway_start(
     except Exception:  # noqa: BLE001 - a menu push must never block the gateway
         pass
 
+    # One poller per state dir. Two gateways on one bot token make Telegram
+    # answer 409 Conflict to both, which presents exactly as "the bot went
+    # silent" — no error the user can see, just no replies. Hold an exclusive
+    # lock for the process lifetime and refuse a second instance.
+    try:
+        import fcntl as _fcntl
+
+        _lock_dir = state if state is not None else (Path.home() / ".hunter" / "gateway")
+        _lock_dir.mkdir(parents=True, exist_ok=True)
+        _lock_path = _lock_dir / "gateway.lock"
+        _lock_handle = open(_lock_path, "w")  # noqa: SIM115 - held for process life
+        try:
+            _fcntl.flock(_lock_handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except OSError:
+            typer.echo(
+                f"another gateway already serves {_lock_dir} "
+                f"(pid {_lock_path.read_text().strip() or '?'}) — refusing to start a second poller"
+            )
+            raise typer.Exit(code=1)
+        _lock_handle.write(str(os.getpid()))
+        _lock_handle.flush()
+    except typer.Exit:
+        raise
+    except Exception:  # noqa: BLE001 - locking must never block startup outright
+        pass
+
     # Log to a file. Diagnosing "the bot went quiet" used to require calling
     # getUpdates from outside, which TERMINATES this gateway's long-poll —
     # the observer broke the thing it measured. A log removes that need.
