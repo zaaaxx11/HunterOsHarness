@@ -128,38 +128,19 @@ _LOG_LIMIT = 400
 # prompts / tools
 # --------------------------------------------------------------------------- #
 HUNTER_SYSTEM = """\
-You are the HUNTER phase of HUNT-OS, an autonomous security hunt.
+You are a security auditor. Audit the code in this message and report every
+vulnerability you find by calling the report_finding tool — one call per finding.
 
-CRITICAL — READ THIS FIRST:
-The complete target source code is ALREADY INCLUDED in this message, further down,
-after the "TARGET SOURCE" marker. You have exactly ONE tool: report_finding.
-You have NO file-system access. You CANNOT read files, list directories, open paths,
-or run commands — every tool except report_finding does not exist and will fail.
-Never write "let me explore", "let me read the directory", "let me start by looking
-at the files", or emit any path-probing call. The code is already in front of you.
-Analyse the text below and call report_finding.
+Do not explain, summarise or think out loud in text: the only acceptable reply is
+one or more report_finding calls.
 
-Your job is to find NEW, specific, verifiable vulnerabilities in the target.
-
-Hard rules:
-- Report through the report_finding tool. A finding that is not reported does not exist.
-- Report only NEW findings. The prompt lists every title already recorded — never repeat one.
-- Every finding must cite file:line for the code that is wrong. The verifier rejects
-  any claim without a concrete location.
-- One finding per distinct root cause. Do not split one bug into five symptoms and do
-  not merge five bugs into one claim.
-- severity is one of: critical, high, medium, low, info.
-  critical = direct loss of funds or unauthenticated code execution;
-  high = exploitable behind a reachable precondition;
-  medium = needs a privileged actor or unusual configuration;
-  low / info = hardening or defence in depth.
-- description states the mechanism (what the code does), the attacker's steps, and the
-  impact. "Input is not validated" without naming the sink is not a finding.
-- Do not invent code that is not in the target. If you cannot point at it, do not report it.
-- Placeholder titles like "test", "placeholder", "exploring target" are never acceptable.
-
-When you have reported every new candidate, stop. Never write a summary in place of
-calling the tool.
+- file: the path shown after "FILE:" / in the UNIT header. line: a real line number in it.
+- severity: critical | high | medium | low | info.
+  critical = direct loss of funds or unauthenticated code execution.
+- description: the mechanism, the attacker's steps, the impact. Under 400 characters.
+- Report one finding per distinct root cause. Never repeat a title already recorded.
+- Only report code that is actually present above. If the code is clean, call
+  report_finding with {"findings": []}.
 """
 
 #: Tool schema for the HUNTER turn (OpenAI function-calling shape).
@@ -437,9 +418,9 @@ def iter_target_chunks(
     """
     if max_chars is None:
         try:
-            max_chars = int(os.environ.get("HUNTEROS_CHUNK_CHARS", "4500") or 4500)
+            max_chars = int(os.environ.get("HUNTEROS_CHUNK_CHARS", "2000") or 2000)
         except ValueError:
-            max_chars = 4500
+            max_chars = 2000
     root = Path(target) if target else Path(workdir)
     out: list[tuple[str, str]] = []
     for path, rel in _target_files(root):
@@ -488,14 +469,9 @@ def build_chunk_prompt(
         lines.append("ALREADY RECORDED: none — this is the first turn.")
     lines += [
         "",
-        "INSTRUCTIONS:",
-        "1. Audit the UNIT SOURCE below. It is the real code — do not describe code",
-        "   that is not in it. You have NO file-system tools; do not try to explore.",
-        "2. Report each distinct vulnerability with report_finding.",
-        "3. `file` must be exactly: " + label,
-        "   `line` must be a real line number in that file.",
-        "4. Placeholder titles like test/placeholder are never acceptable.",
-        "5. If this unit is clean, call report_finding with {\"findings\": []}.",
+        f"Report each vulnerability in the code below with report_finding. "
+        f"Use file={label!r} and a real line number. "
+        'If it is clean, call report_finding with {"findings": []}.',
         "",
         "UNIT SOURCE:",
         code,
@@ -1060,54 +1036,91 @@ class HuntLoop:
             units = [(1, "", "")]
 
         for index, label, code in units:
-            user = (
-                build_chunk_prompt(state, known, label, code, index=index, total=len(units))
-                if code else
-                build_hunter_prompt(state, known, workdir=self.workdir)
-            )
-            attempt = 0
-            while True:
-                try:
-                    text, calls, cost = self._ask_hunter(user)
-                except Exception as exc:  # provider hiccup: keep the round
+            found, calls = self._audit_unit(state, known, label, code, index, len(units), r)
+            candidates.extend(found)
+            calls_total += calls
+
+            # A unit can still be truncated (finish_reason=length) when the model
+            # reasons unusually long for it — reasoning length is not proportional
+            # to prompt size. One deterministic recovery: split the unit in half
+            # and retry the halves, rather than guessing a smaller fixed size.
+            if not found and not calls and code and len(code) > 700:
+                halves = _merge_blocks(_split_blocks(code), max(400, len(code) // 2))
+                if len(halves) > 1:
                     self._log(
-                        f"[R{r}] hunter: llm error {type(exc).__name__}: "
-                        f"{_clip(str(exc))} — unit skipped"
+                        f"[R{r}] hunter: unit {index} yielded nothing — retrying as "
+                        f"{len(halves)} smaller halves"
                     )
-                    break
+                    for h_i, half in enumerate(halves, 1):
+                        f2, c2 = self._audit_unit(
+                            state, known, f"{label}#h{h_i}", half, index, len(units), r
+                        )
+                        candidates.extend(f2)
+                        calls_total += c2
 
-                self._charge(state, cost)
-                calls_total += len(calls)
-                report_calls = [c for c in calls if _is_report_call(c.get("name"))]
+        return candidates, calls_total
 
-                batch: list[dict] = []
-                for call in report_calls:
-                    batch.extend(_candidates_from_args(call.get("arguments") or {}))
-
-                if batch:
-                    candidates.extend(batch)
-                    break
-                if report_calls:
-                    # The model DID call report_finding and had nothing to add.
-                    self._log(f"[R{r}] hunter: unit {index} clean (no new findings)")
-                    break
-                if attempt >= MAX_HUNTER_RETRIES:
-                    break
-                if not text.strip():
-                    self._log(f"[R{r}] hunter: unit {index} empty response — no retry")
-                    break
-
-                attempt += 1
+    def _audit_unit(
+        self,
+        state: HuntState,
+        known: list[str],
+        label: str,
+        code: str,
+        index: int,
+        total: int,
+        r: int,
+    ) -> tuple[list[dict], int]:
+        """One unit's HUNTER turn(s): returns (candidates, tool_call_count)."""
+        calls_total = 0
+        candidates: list[dict] = []
+        user = (
+            build_chunk_prompt(state, known, label, code, index=index, total=total)
+            if code else
+            build_hunter_prompt(state, known, workdir=self.workdir)
+        )
+        attempt = 0
+        while True:
+            try:
+                text, calls, cost = self._ask_hunter(user)
+            except Exception as exc:  # provider hiccup: keep the round
                 self._log(
-                    f"[R{r}] hunter: unit {index} returned text but 0 report_finding "
-                    f"calls — retrying once with an explicit nudge"
+                    f"[R{r}] hunter: llm error {type(exc).__name__}: "
+                    f"{_clip(str(exc))} — unit skipped"
                 )
-                user = (
-                    build_chunk_prompt(state, known, label, code, index=index,
-                                       total=len(units), nudge=True)
-                    if code else
-                    build_hunter_prompt(state, known, workdir=self.workdir, nudge=True)
-                )
+                break
+
+            self._charge(state, cost)
+            calls_total += len(calls)
+            report_calls = [c for c in calls if _is_report_call(c.get("name"))]
+
+            batch: list[dict] = []
+            for call in report_calls:
+                batch.extend(_candidates_from_args(call.get("arguments") or {}))
+
+            if batch:
+                candidates.extend(batch)
+                break
+            if report_calls:
+                # The model DID call report_finding and had nothing to add.
+                self._log(f"[R{r}] hunter: unit {index} clean (no new findings)")
+                break
+            if attempt >= MAX_HUNTER_RETRIES:
+                break
+            if not text.strip():
+                self._log(f"[R{r}] hunter: unit {index} empty response — no retry")
+                break
+
+            attempt += 1
+            self._log(
+                f"[R{r}] hunter: unit {index} returned text but 0 report_finding "
+                f"calls — retrying once with an explicit nudge"
+            )
+            user = (
+                build_chunk_prompt(state, known, label, code, index=index,
+                                   total=total, nudge=True)
+                if code else
+                build_hunter_prompt(state, known, workdir=self.workdir, nudge=True)
+            )
 
         return candidates, calls_total
 
