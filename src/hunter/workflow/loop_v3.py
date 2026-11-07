@@ -215,6 +215,26 @@ _JSON_FALLBACK_INSTRUCTION = (
     'An empty list means "nothing new".'
 )
 
+#: Stronger variant used when the tool call never arrives (reasoning models burn
+#: the whole output budget on reasoning_content and stop before the tool call).
+_JSON_STRICT = """
+
+OUTPUT FORMAT — OVERRIDE (your tool call did not arrive):
+You have NO tools in this turn. Your ENTIRE reply must be exactly one JSON object,
+with no prose before or after it:
+
+{"findings": [{"title": "...", "severity": "critical|high|medium|low|info",
+  "description": "...", "file": "exact path from the --- header ---", "line": 123,
+  "vuln_type": "..."}]}
+
+Rules:
+- Keep every description under 400 characters.
+- file MUST be one of the paths shown in the --- <path> --- headers, and line the
+  real line number inside it.
+- If you found nothing new, reply exactly {"findings": []}.
+- Do NOT write an introduction, an analysis, a summary, or any thinking out loud —
+  only the JSON object."""
+
 
 _HUNTER_EXTS = {
     ".sol", ".vy", ".cairo", ".move", ".rs", ".go", ".py", ".js", ".ts",
@@ -881,19 +901,30 @@ class HuntLoop:
         return candidates, calls_total
 
     def _ask_hunter(self, user: str) -> tuple[str, list[dict], float]:
-        """One hunter turn, via tool-calling when available, else JSON text."""
+        """One hunter turn: tool-calling when it works, JSON text when it does not.
+
+        Reasoning models on this provider spend the entire output budget on
+        ``reasoning_content`` and finish with ``finish_reason=length`` before the
+        tool call is emitted, so a tools-only path silently yields nothing. When
+        the tool turn produces no call we make ONE more attempt asking for a bare
+        JSON object; the deterministic verifier gates whatever comes back.
+        """
+        mode = (os.environ.get("HUNTEROS_HUNTER_MODE") or "auto").strip().lower()
         complete_with_tools = getattr(self.llm, "complete_with_tools", None)
-        if callable(complete_with_tools):
+
+        text, calls, cost = "", [], 0.0
+        if mode in ("auto", "tools") and callable(complete_with_tools):
             resp = complete_with_tools(HUNTER_SYSTEM, user, [dict(t) for t in HUNTER_TOOLS])
             text, calls, cost = _norm_response(resp)
-        else:
-            text = str(
-                self.llm.complete(HUNTER_SYSTEM, user + _JSON_FALLBACK_INSTRUCTION) or ""
-            )
-            calls, cost = [], 0.0
-        if not calls and text.strip():
-            # A provider (or a tool-less fallback) may answer with JSON text.
-            calls = _json_calls_from_text(text)
+            if not calls and text.strip():
+                # the provider answered with JSON text instead of a tool call
+                calls = _json_calls_from_text(text)
+
+        if not calls and mode in ("auto", "json"):
+            raw = str(self.llm.complete(HUNTER_SYSTEM + _JSON_STRICT, user) or "")
+            if raw.strip():
+                text = text or raw
+                calls = _json_calls_from_text(raw)
         return (text, calls, cost)
 
     def _verifier_phase(self, state: HuntState, candidates: list[dict]) -> dict[str, int]:
