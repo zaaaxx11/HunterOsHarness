@@ -153,8 +153,7 @@ class TelegramAdapter(ChatTransport):
                 logger.error("telegram: poll task ended (%s)", reason, exc_info=exc)
             else:
                 reason = "returned"
-        if not task.cancelled():
-            logger.warning("telegram: poll task stopped (%s) — restarting", reason)
+        logger.warning("telegram: poll task stopped (%s) — restarting", reason)
         self._start_poll_task()
 
     async def _supervise(self) -> None:
@@ -202,7 +201,14 @@ class TelegramAdapter(ChatTransport):
                 try:
                     await self._dispatch(update)
                 except asyncio.CancelledError:
-                    raise
+                    if self._closed:
+                        raise
+                    # An unrelated cancellation (a helper task's, say) must not
+                    # end polling; only closing the transport may.
+                    logger.warning(
+                        "telegram: dispatch cancelled (update %s) — continuing",
+                        getattr(update, "update_id", "?"),
+                    )
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "telegram: dispatch failed for update %s",

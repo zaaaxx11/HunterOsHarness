@@ -365,7 +365,11 @@ class GatewayApp:
             finally:
                 if typing_task is not None:
                     typing_task.cancel()
-                    with contextlib.suppress(Exception):
+                    # Awaiting a cancelled task raises CancelledError, which is a
+                    # BaseException and slips through suppress(Exception). Letting
+                    # it escape cancelled the caller — the poll loop — so the bot
+                    # died after the first message, once per message.
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await typing_task
             return out.text
         except Exception as exc:  # noqa: BLE001 — the platform gets an answer, always
