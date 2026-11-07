@@ -103,6 +103,12 @@ def build_provider(model_tiers: dict | None = None) -> Any:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
+    # Sane defaults for the provider quirks this project was built against:
+    # reasoning models burn the default output budget on reasoning_content and
+    # stop before the tool call, so the hunter needs real headroom.
+    os.environ.setdefault("HUNTEROS_HUNTER_MODE", "auto")
+    os.environ.setdefault("HUNTEROS_MAX_TOKENS", "16000")
+
     # import here so `--help`/selftest stay fast and dependency-light
     from hunter.cli.banner import render_banner
     from hunter.cli.repl import run_repl

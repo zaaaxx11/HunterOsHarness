@@ -13,6 +13,7 @@ unexpected error becomes a failing check with ``anchored=False``.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -49,13 +50,33 @@ _HTTP_STATUS_RE = re.compile(
 )
 
 
+def as_text(val):
+    """Coerce any claim field to searchable text.
+
+    ``evidence`` is not always a string: the hunter/loop layer may hand over a
+    structured object such as ``{"file": "src/X.sol", "line": 44}``. Calling
+    ``.lower()`` on that used to crash the whole deterministic pass and turn a
+    genuinely anchored finding into a refuted one.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, (dict, list, tuple)):
+        try:
+            return json.dumps(val, ensure_ascii=False, default=str)
+        except Exception:  # noqa: BLE001
+            return str(val)
+    return str(val)
+
+
 def claim_text(claim):
     """Concatenate the free-text fields a claim is allowed to carry evidence in."""
     parts = []
-    for key in ("title", "description", "evidence"):
-        val = claim.get(key)
-        if isinstance(val, str) and val:
-            parts.append(val)
+    for key in ("title", "description", "evidence", "file", "vuln_type", "notes"):
+        text = as_text(claim.get(key))
+        if text:
+            parts.append(text)
     return "\n".join(parts)
 
 
@@ -90,7 +111,7 @@ def extract_http_pair(evidence):
     Trigger: the text carries both a request marker (``GET /`` / ``POST /`` /
     ``request:``) and a response marker (``response:`` / ``HTTP/1``).
     """
-    text = evidence or ""
+    text = as_text(evidence)
     low = text.lower()
     has_req = ("get /" in low) or ("post /" in low) or ("request:" in low)
     has_resp = ("response:" in low) or ("http/1" in low)

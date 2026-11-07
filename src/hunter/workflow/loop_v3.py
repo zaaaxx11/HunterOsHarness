@@ -683,6 +683,9 @@ class HuntLoop:
         self._ran = 0
         self._round_errors = 0
         self._idle_streak = 0
+        #: set False after the first tool turn that yields no call, so later rounds
+        #: go straight to the JSON turn instead of re-paying for a dead path
+        self._tools_work = True
 
     # -- public ----------------------------------------------------------- #
     def run(self, state: HuntState | None = None) -> HuntState:
@@ -913,12 +916,16 @@ class HuntLoop:
         complete_with_tools = getattr(self.llm, "complete_with_tools", None)
 
         text, calls, cost = "", [], 0.0
-        if mode in ("auto", "tools") and callable(complete_with_tools):
+        # Adaptive: once a tool turn comes back empty we stop paying for it. Some
+        # providers/reasoning models never reach the tool call and only answer in
+        # JSON text, so round 2 onward goes straight to the JSON turn.
+        if mode in ("auto", "tools") and callable(complete_with_tools) and self._tools_work:
             resp = complete_with_tools(HUNTER_SYSTEM, user, [dict(t) for t in HUNTER_TOOLS])
             text, calls, cost = _norm_response(resp)
             if not calls and text.strip():
-                # the provider answered with JSON text instead of a tool call
                 calls = _json_calls_from_text(text)
+            if not calls:
+                self._tools_work = False
 
         if not calls and mode in ("auto", "json"):
             raw = str(self.llm.complete(HUNTER_SYSTEM + _JSON_STRICT, user) or "")
