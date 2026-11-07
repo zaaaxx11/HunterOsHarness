@@ -26,6 +26,8 @@ as a single escape run.
 
 from __future__ import annotations
 
+from typing import Any
+
 import os
 
 try:  # pragma: no cover - import shim for script / sys.path usage
@@ -167,3 +169,36 @@ def render_banner(*, color: bool | None = None, path: str | None = None) -> str:
         lines.pop()
     rendered = [line.rstrip("\r") for line in lines]
     return "\n".join(_render_line(line, color) for line in rendered)
+
+def animate_banner(
+    *,
+    stream: Any = None,
+    color: bool | None = None,
+    delay: float = 0.012,
+    path: str | None = None,
+) -> str:
+    """Reveal the banner top-to-bottom, then return the rendered text.
+
+    A static dump reads as "here is some text"; a fast wipe reads as "loading
+    something". Only on a TTY — piped output gets the whole banner at once so
+    logs and ``| head`` stay clean.
+    """
+    import sys as _sys
+    import time as _time
+
+    out = stream if stream is not None else _sys.stdout
+    text = render_banner(color=color, path=path)
+    try:
+        animate = bool(out.isatty()) and delay > 0
+    except Exception:  # noqa: BLE001 - a dumb stream simply cannot animate
+        animate = False
+    if not animate:
+        out.write(text + "\n")
+        out.flush()
+        return text
+    lines = text.split("\n")
+    for line in lines:
+        out.write(line + "\n")
+        out.flush()
+        _time.sleep(delay)
+    return text

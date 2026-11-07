@@ -179,3 +179,76 @@ def tool_result(text: str, stream: TextIO | None = None, limit: int = 160) -> No
 def banner_wordmark(text: str = "HUNTER", stream: TextIO | None = None) -> str:
     """Return ``text`` styled as the banner wordmark (tosca, bold)."""
     return f"{PRIMARY}\x1b[1m{text}{RESET}"
+
+class ProgressLine:
+    """A live hunt status line: round, findings, verified, budget, time left.
+
+    Redrawn in place between rounds so a long hunt shows movement instead of a
+    wall of log lines. Silent when stdout is not a TTY.
+    """
+
+    def __init__(self, total_rounds: int | None = None, stream: TextIO | None = None,
+                 width: int = 12) -> None:
+        self.stream = stream if stream is not None else sys.stdout
+        self.total_rounds = total_rounds
+        self.width = max(4, width)
+        self.round: int | None = None
+        self.findings = 0
+        self.verified = 0
+        self.chains = 0
+        self.elapsed = 0.0
+        self.remaining: float | None = None
+        self.spent: float | None = None
+        self.budget: float | None = None
+        self.enabled = _supports_color(self.stream)
+        self._lock = threading.Lock()
+
+    def update(self, **fields: Any) -> None:
+        with self._lock:
+            for key, value in fields.items():
+                if value is not None and hasattr(self, key):
+                    setattr(self, key, value)
+
+    def _bar(self) -> str:
+        with self._lock:
+            done, total = self.round or 0, self.total_rounds
+        if not total:
+            return ""
+        filled = min(self.width, max(0, round(self.width * done / total)))
+        return "[" + "\u2588" * filled + "\u2591" * (self.width - filled) + "]"
+
+    def render(self) -> str:
+        with self._lock:
+            parts: list[str] = []
+            if self.round:
+                parts.append(f"round {self.round}/{self.total_rounds}" if self.total_rounds
+                             else f"round {self.round}")
+            bar = self._bar()
+            parts.append(f"{self.findings} findings")
+            if self.verified:
+                parts.append(f"{PRIMARY}{self.verified} verified{RESET}{DIM}")
+            if self.chains:
+                parts.append(f"{self.chains} chains")
+            if self.remaining is not None:
+                mins, secs = divmod(int(max(0.0, self.remaining)), 60)
+                parts.append(f"{mins:02d}:{secs:02d} left")
+            if self.spent is not None and self.budget:
+                parts.append(f"${self.spent:.2f}/${self.budget:.0f}")
+            body = " \u00b7 ".join(parts)
+        bar = f"{PRIMARY}{bar}{RESET}{DIM} " if bar else ""
+        return f"\r\x1b[K{bar}{DIM}{body}{RESET}"
+
+    def draw(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.stream.write(self.render())
+            self.stream.flush()
+        except Exception:  # noqa: BLE001
+            self.enabled = False
+
+    def clear(self) -> None:
+        if not self.enabled:
+            return
+        self.stream.write("\r\x1b[K")
+        self.stream.flush()

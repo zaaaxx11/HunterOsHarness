@@ -15,9 +15,12 @@ long hunt is not a single silent reply.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Any
+
+from hunter.cli.spinner import ProgressLine
 
 
 @dataclass
@@ -127,9 +130,42 @@ class HuntGatewayEngine:
             os.path.expanduser(f"~/.hunter/sessions/{active.name}/hunt_state.json")
         )
 
+        # A live status line redrawn each round. HuntLoop._log is called
+        # after every cycle with the round stats; we parse that line into
+        # the progress bar so Telegram sees "round 2/10 · 3 findings" instead
+        # of a stack of log lines.
+        prog = ProgressLine(total_rounds=None)
+        walls = active.wall_seconds
+
         def _log(message: str) -> None:
             active.log(message)
             self._say(message)
+            text_line = str(message)
+            _R = None
+            try:
+                # Round status from the loop: "[R4] round: findings=5 verified=1 ..."
+                if text_line.startswith("[R"):
+                    import re as _re
+
+                    _m = _re.search(r"\[(R\d+)].*?findings=(\d+).*?verified=(\d+)",
+                                    text_line)
+                    if _m:
+                        _R = int(_m.group(1)[1:])
+                        prog.update(round=_R, findings=int(_m.group(2)),
+                                    verified=int(_m.group(3)))
+                    if walls:
+                        _rem = _re.search(r"(?:left|remaining)[= ]*([\d.]+)s?", text_line)
+                        if _rem:
+                            prog.update(remaining=float(_rem.group(1)))
+                if "tool call" in text_line.lower():
+                    tool_call = getattr(sys.modules.get("hunter.cli.spinner", None),
+                                        "tool_call", None)
+                    if tool_call:
+                        tool_call("hunt", text_line.strip())
+                elif _R:
+                    prog.draw()
+            except Exception:  # noqa: BLE001 - a cosmetic line must not break the hunt
+                pass
 
         try:
             loop = HuntLoop(

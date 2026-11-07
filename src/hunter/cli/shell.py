@@ -144,14 +144,14 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("HUNTEROS_MAX_TOKENS", "16000")
 
     # import here so `--help`/selftest stay fast and dependency-light
-    from hunter.cli.banner import render_banner
+    from hunter.cli.banner import animate_banner
     from hunter.cli.repl import run_repl
     from hunter.cli.commands import registry as cmdreg
     from hunter.cli.commands import core as _core  # noqa: F401 - registers commands
     from hunter.session import HuntSession
     import hunter.verify as verify_pkg
 
-    print(render_banner())
+    print(animate_banner())
     print(HINT)
     print()
 
