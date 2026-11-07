@@ -35,3 +35,19 @@ backup/
 # local source image for the ASCII emblem (the derived art ships in _data/branding)
 moriarty.jpg
 poc/
+
+# --- secrets: never commit credentials ---
+.env
+.env.*
+*.env
+!.env.example
+keys.env
+.git-credentials
+.netrc
+*.pem
+*.key
+*.p12
+secrets.*
+*_secret*
+*_token*
+!.github/workflows/*.yml
