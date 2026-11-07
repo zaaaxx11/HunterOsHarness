@@ -223,9 +223,6 @@ def main(argv: list[str] | None = None) -> int:
             return
         from hunter.cli.spinner import Spinner
 
-        # One redrawn line while the model works: a starburst glyph, a rotating
-        # verb and a live timer, so a slow turn reads as progress rather than a
-        # hang. Silent when stdout is not a TTY.
         spin = Spinner()
         spin.start()
         try:
@@ -233,6 +230,16 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             spin.stop()
             print(f"[error] {type(exc).__name__}: {exc}")
+            # Self-repair: the LLM can fix its own harness. Feed the traceback
+            # back to the model so a follow-up "fix it" prompt can patch the
+            # broken file and the next turn succeeds.
+            import traceback as _tb
+            tb = _tb.format_exc()
+            try:
+                session.log(f"[crash] chat turn — {type(exc).__name__}: {exc}")
+                session._last_crash = tb[-2000:]
+            except Exception:  # noqa: BLE001
+                pass
             return
         spin.stop()
         print(answer)

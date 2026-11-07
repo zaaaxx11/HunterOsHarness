@@ -113,7 +113,22 @@ class HuntGatewayEngine:
         try:
             return str(self._llm.complete(CHAT_SYSTEM, text) or "")
         except Exception as exc:  # noqa: BLE001
-            return f"[model error] {type(exc).__name__}: {exc}"
+            # Self-repair: a broken shell.py (malformed CHAT_SYSTEM) kills
+            # every chat turn. Feed the traceback back so a follow-up message
+            # can trigger a patch through the model and the next turn works.
+            import traceback as _tb
+            tb = _tb.format_exc()[-1200:]
+            try:
+                self.session.log(f"[crash] chat — {type(exc).__name__}: {str(exc)[:80]}")
+                self.session._last_crash = tb
+            except Exception:  # noqa: BLE001
+                pass
+            return (
+                f"[crash] {type(exc).__name__}: {str(exc)[:120]}\\n\\n"
+                "The harness broke — the LLM can self-repair. Reply with "
+                "'fix it' to attempt an automatic patch.\\n\\n"
+                f"```\\n{tb[:600]}\\n```"
+            )
 
     def _run_hunt(self, active: Any) -> None:
         """Body of a hunt, executed on a worker thread."""
