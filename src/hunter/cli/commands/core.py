@@ -224,26 +224,50 @@ def _fmt_dur(seconds: float) -> str:
 
 
 def _goal_spec(text: str) -> dict:
-    """Parse ``"findings-min:5,rce-min:1"`` into ``{"findings-min": 5, ...}``.
+    """Parse a goal spec: ``kind:count,...`` or free-form description.
 
-    Raises ValueError with a hint on a malformed item.
+    ``"findings-min:5,rce-min:1"`` -> counts.
+    ``"find all critical vulns"`` -> default target with the raw text
+    stored under ``_description`` so every output scanner can see it.
     """
     out: dict[str, int] = {}
-    for item in (text or "").split(","):
-        item = item.strip()
-        if not item:
-            continue
-        if ":" not in item:
-            raise ValueError("goals look like kind:count — e.g. findings-min:5,rce-min:1")
-        kind, _, count = item.partition(":")
-        kind = kind.strip()
-        try:
-            out[kind] = int(count.strip())
-        except ValueError as exc:
-            raise ValueError(f"goal '{kind}' needs a whole number, got {count.strip()!r}") from exc
+    desc: str | None = None
+    token = (text or "").strip()
+    if not token:
+        raise ValueError("no goals given — e.g. findings-min:5,rce-min:2")
+    if not any(ch in token for ch in (":", "=")):
+        desc = token
+    else:
+        for item in token.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            sep = ":" if ":" in item else "="
+            if sep not in item:
+                desc = token
+                break
+            kind, _, count = item.partition(sep)
+            kind = kind.strip()
+            try:
+                out[kind] = int(count.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"goal '{kind}' needs a whole number, got {count.strip()!r}"
+                ) from exc
+    if desc and not out:
+        out["findings-min"] = 5
+        out["_description"] = desc
     if not out:
-        raise ValueError("no goals given — e.g. findings-min:5")
+        raise ValueError("no goals given — e.g. findings-min:5,rce-min:2")
     return out
+
+
+def _goal_summary_text(session: Any) -> str | None:
+    """Return the goal's free-form description if one was stored."""
+    goals = _g(session, "goals", None)
+    if isinstance(goals, dict):
+        return goals.get("_description")
+    return None
 
 
 def _goal_have(session: Any, kind: str) -> int:

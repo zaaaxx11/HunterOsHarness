@@ -238,3 +238,15 @@ def make_verify_hook(verify_pkg: Any, target: str) -> Callable[[dict, dict], dic
             claim["l4"] = {"error": f"{type(e).__name__}: {e}"}
             return claim
     return _hook
+# ---------------------------------------------------------------------------
+# Session teardown — files that are discarded vs kept across a close event.
+# These are manifest constants the tests assert so a future change is loud.
+# ---------------------------------------------------------------------------
+
+KEEP_ON_CLOSE: frozenset[str] = frozenset(
+    ("ledger.db", "chat.db", "chat.db-shm", "chat.db-wal")
+)
+
+DISCARD_ON_CLOSE: frozenset[str] = frozenset(
+    ("daemon", "daemon.pid", "daemon_health", "daemon_shutdown")
+)
