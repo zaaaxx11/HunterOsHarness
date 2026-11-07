@@ -245,32 +245,48 @@ def _grouped() -> list[tuple[str, list[Command]]]:
     return ordered
 
 
+def _list_signature(cmd: Command) -> str:
+    """The list-view signature: the name plus a short argument hint.
+
+    The full usage made the description start at a different offset on every row
+    (long hints overflowed the padded column), which is what made /help a ragged
+    wall. The complete signature still lives in /help <command>.
+    """
+    hint = (cmd.arg_hint or "").strip()
+    if not hint:
+        return f"/{cmd.name}"
+    candidate = f"/{cmd.name} {hint.split()[0]}"
+    return candidate if len(candidate) <= 20 else f"/{cmd.name} <args>"
+
+
 def help_text(prefix: str = "") -> str:
     """Render grouped help, optionally filtered to commands starting with ``prefix``.
 
-    Layout is Claude-Code-like: a ``/name <args>`` column, then the one-line
-    description. Categories are separated by a blank line and headed by their
-    name, so the output scans by intent rather than alphabetically.
+    One line per command: a monospace name, then a one-line description. Aligned
+    in a padded code block, descriptions wrap on narrow clients instead of being
+    truncated, so the layout survives a phone screen.
     """
     ensure_core()
     want = prefix.strip().lstrip("/").lower()
-    lines: list[str] = ["HUNT commands — /help <command> for detail", ""]
+    lines: list[str] = [
+        f"**HUNT commands** — {len(REGISTRY)} total · `/help <name>` explains one",
+        "",
+    ]
     shown = 0
     for category, commands in _grouped():
         rows = [c for c in commands if not want or c.name.startswith(want)]
         if not rows:
             continue
-        lines.append(category)
-        width = max(len(c.usage) for c in rows)
-        width = min(max(width, 18), 44)
+        lines.append(f"**{category}**")
+        width = max(len(_list_signature(c)) for c in rows)
         for cmd in rows:
-            alias = f" ({', '.join('/' + a for a in cmd.aliases)})" if cmd.aliases else ""
-            lines.append(f"  {cmd.usage:<{width}}  {cmd.description}{alias}")
+            alias = f"  ({', '.join('/' + a for a in cmd.aliases)})" if cmd.aliases else ""
+            lines.append(f"`{_list_signature(cmd):<{width}}` — {cmd.description}{alias}")
         lines.append("")
         shown += len(rows)
     if shown == 0:
         return f"no commands match '{want}' — /help lists all {len(REGISTRY)} commands"
-    lines.append(f"{shown} command(s). Tab completes; /help <name> explains one.")
+    lines.append(f"**{shown}** shown · Tab completes · `/help <name>` explains one.")
     return "\n".join(lines).rstrip()
 
 

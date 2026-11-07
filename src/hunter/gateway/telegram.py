@@ -16,7 +16,8 @@ import logging
 from typing import Any
 
 from hunter.errors import HunterError
-from hunter.gateway.transport import ChatTransport, InboundMessage, chunk_text
+from hunter.gateway.render import chunk_text, render, strip_mdv2
+from hunter.gateway.transport import ChatTransport, InboundMessage
 
 __all__ = ["TELEGRAM_MESSAGE_LIMIT", "TelegramAdapter", "_chunk_text", "_is_authorized"]
 
@@ -108,14 +109,28 @@ class TelegramAdapter(ChatTransport):
                 await shutdown()
 
     async def send(self, chat_id: str, content: str, *, reply_to: str | None = None) -> str:
-        """Send ``content`` chunked at Telegram's 4096 UTF-16-unit limit."""
+        """Render as MarkdownV2 and send, chunked at Telegram's 4096-unit limit.
+
+        Ordinary markdown in, Telegram markdown out: bold, headings, inline and
+        fenced code and links all render as themselves instead of arriving as
+        literal punctuation. Telegram rejects a message whose MarkdownV2 is
+        malformed, so a rejected part is resent as plain text rather than lost —
+        a bot that answers in unreadable markup is barely better than a silent one.
+        """
         last = ""
-        for part in _chunk_text(content or "", TELEGRAM_MESSAGE_LIMIT):
+        if not (content or "").strip():
+            return last  # nothing to say: an empty message is not a reply
+        for part in chunk_text(render(content or ""), TELEGRAM_MESSAGE_LIMIT):
             kwargs: dict[str, Any] = {"chat_id": chat_id, "text": part}
             if reply_to:
                 with contextlib.suppress(TypeError, ValueError):
                     kwargs["reply_to_message_id"] = int(reply_to)
-            await self._api.send_message(**kwargs)
+            try:
+                await self._api.send_message(parse_mode="MarkdownV2", **kwargs)
+            except Exception:  # noqa: BLE001 - formatting must never lose a reply
+                logger.warning("telegram: MarkdownV2 rejected — resending as plain text")
+                kwargs["text"] = strip_mdv2(part)
+                await self._api.send_message(**kwargs)
             last = part
         return last
 
