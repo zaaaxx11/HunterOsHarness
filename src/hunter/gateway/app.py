@@ -364,8 +364,19 @@ class GatewayApp:
             # knows the target is a local file with a name and an extension.
             text = message.text
             if message.attachment_path:
+                # Read the file so the model can act on its contents immediately
+                # instead of needing a second prompt to fetch it. Cap at 8000
+                # chars: a huge scope dump still fits in a single turn.
+                try:
+                    raw = open(message.attachment_path).read()
+                    if len(raw) > 8000:
+                        raw = raw[:7800] + "\n... (truncated)"
+                except Exception:  # noqa: BLE001
+                    raw = f"(could not read: {message.attachment_path})"
                 prefix = (
-                    f"[📎 {message.attachment_name or 'file'}] saved to {message.attachment_path}"
+                    f"[📎 {message.attachment_name or 'file'}] "
+                    f"at {message.attachment_path}\n"
+                    f"```\n{raw}\n```"
                 )
                 if text.strip():
                     text = f"{prefix}\n{text}"
