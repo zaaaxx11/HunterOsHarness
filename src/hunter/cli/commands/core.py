@@ -530,14 +530,7 @@ def cmd_hunt(args: str, session: Any) -> str:
     try:
         # Bypass the chat tone (CHAT_SYSTEM sensual) — the model must return
         # JSON, not flirt. Use the raw LLM adapter when the session carries one.
-        raw_llm = _g(session, "_llm", None)
-        if raw_llm is not None and hasattr(raw_llm, "complete"):
-            try:
-                reply = raw_llm.complete(system, prompt)
-            except Exception:
-                reply = chat(system + "\n\n" + prompt)
-        else:
-            reply = chat(system + "\n\n" + prompt)
+        reply = chat(system + "\n\n" + prompt)
     except Exception as exc:
         return "model unreachable: " + type(exc).__name__ + " — " + raw[:120]
 
