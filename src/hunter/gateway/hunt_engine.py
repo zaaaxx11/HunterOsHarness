@@ -233,6 +233,18 @@ class HuntGatewayEngine:
             if dict(self.session.model_tiers or {}) != _before:
                 self._ensure_llm()
                 out = str(out) + f"\n(active: hunter={self.session.model_tiers.get('hunter')})"
+            # /hunt (and /run) set session.running = True in _start_hunt.
+            # Start the hunt loop on a background thread so the gateway
+            # returns its confirmation immediately and the hunt reports
+            # through the notify bridge.
+            if raw.startswith(("/hunt", "/run")) and getattr(self.session, "running", False):
+                import threading as _thr
+                _thr.Thread(
+                    target=self._run_hunt,
+                    args=(self.session,),
+                    daemon=True,
+                    name="hunt-worker",
+                ).start()
             return TurnOutput(text=str(out or ""), kind="command")
         return TurnOutput(text=self._chat(raw), kind="text")
 
