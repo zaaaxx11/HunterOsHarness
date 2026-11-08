@@ -365,8 +365,7 @@ class GatewayApp:
             text = message.text
             if message.attachment_path:
                 prefix = (
-                    f"/hint attachment {message.attachment_name or 'target'} "
-                    f"at {message.attachment_path}"
+                    f"[📎 {message.attachment_name or 'file'}] saved to {message.attachment_path}"
                 )
                 if text.strip():
                     text = f"{prefix}\n{text}"
