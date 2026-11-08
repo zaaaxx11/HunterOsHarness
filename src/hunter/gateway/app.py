@@ -360,8 +360,20 @@ class GatewayApp:
                         return
 
                 typing_task = asyncio.create_task(_keep_typing())
+            # Attachments become a synthetic /hunt preamble so the engine
+            # knows the target is a local file with a name and an extension.
+            text = message.text
+            if message.attachment_path:
+                prefix = (
+                    f"/hint attachment {message.attachment_name or 'target'} "
+                    f"at {message.attachment_path}"
+                )
+                if text.strip():
+                    text = f"{prefix}\n{text}"
+                else:
+                    text = prefix
             try:
-                out = await asyncio.to_thread(engine.handle_text, message.text)
+                out = await asyncio.to_thread(engine.handle_text, text)
             finally:
                 if typing_task is not None:
                     typing_task.cancel()

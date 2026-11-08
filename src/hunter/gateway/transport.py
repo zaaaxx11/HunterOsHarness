@@ -28,6 +28,10 @@ class InboundMessage:
     user_name: str | None = None
     chat_type: str = "dm"  # "dm" | "group" | "channel"
     message_id: str | None = None
+    # File attachment: a local path the transport saved the file to, plus the
+    # original filename so the engine can use the correct name/extension.
+    attachment_path: str | None = None
+    attachment_name: str | None = None
 
 
 class ChatTransport(ABC):

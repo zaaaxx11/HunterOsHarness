@@ -17,6 +17,37 @@ from typing import Any
 
 from hunter.errors import HunterError
 from hunter.gateway.render import chunk_text, render, strip_mdv2
+
+def _download_telegram_file(token: str, file_obj: Any) -> str | None:
+    """Download a Telegram document/photo to a temp file; return the path."""
+    import json as _json
+    import os as _os
+    import tempfile as _tempfile
+    import urllib.request as _urlrequest
+
+    file_id = getattr(file_obj, "file_id", None)
+    if not file_id:
+        return None
+    # 1) get file path
+    url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
+    with _urlrequest.urlopen(_urlrequest.Request(url, method="GET"), timeout=30) as resp:
+        info = _json.loads(resp.read().decode())
+    raw = info.get("result", {})
+    file_path = raw.get("file_path")
+    if not file_path:
+        return None
+    # 2) download the file content
+    dl_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+    with _urlrequest.urlopen(_urlrequest.Request(dl_url, method="GET"), timeout=120) as resp:
+        data = resp.read()
+    # 3) save to a persistent spot (not in /tmp — gateway restarts lose it)
+    dest_dir = _os.path.expanduser("~/.hunter/uploads")
+    _os.makedirs(dest_dir, exist_ok=True)
+    ext = (_os.path.splitext(file_path)[1] or ".bin")
+    fd, dest = _tempfile.mkstemp(suffix=ext, prefix="tg_", dir=dest_dir)
+    with _os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    return dest
 from hunter.gateway.transport import ChatTransport, InboundMessage
 
 __all__ = ["TELEGRAM_MESSAGE_LIMIT", "TelegramAdapter", "_chunk_text", "_is_authorized"]
@@ -262,7 +293,30 @@ class TelegramAdapter(ChatTransport):
         if message is None:
             return
         text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
-        if not text.strip():
+        # Download any file the user attached. Use the Telegram bot API
+        # synchronously in a thread so it never blocks the poll loop.
+        attachment_path: str | None = None
+        attachment_name: str | None = None
+        document = getattr(message, "document", None)
+        if document is not None:
+            attachment_name = getattr(document, "file_name", None) or "target.txt"
+            attachment_path = await asyncio.to_thread(
+                _download_telegram_file, self._token, document
+            )
+        if attachment_path is None:
+            for size in (None, 0, 1):
+                photo = max(
+                    getattr(message, "photo", []) or [],
+                    key=lambda p: getattr(p, "file_size", 0) or 0,
+                    default=None,
+                )
+                if photo is not None:
+                    attachment_name = "target.png"
+                    attachment_path = await asyncio.to_thread(
+                        _download_telegram_file, self._token, photo
+                    )
+                    break
+        if not text.strip() and attachment_path is None:
             return
         sender = getattr(message, "from_user", None)
         user_id = str(sender.id) if sender is not None and sender.id is not None else None
@@ -279,6 +333,8 @@ class TelegramAdapter(ChatTransport):
         inbound = InboundMessage(
             text=text,
             transport=self.name,
+            attachment_path=attachment_path,
+            attachment_name=attachment_name,
             chat_id=str(getattr(chat, "id", "") or ""),
             user_id=user_id,
             user_name=(getattr(sender, "full_name", None) or getattr(sender, "username", None)),
