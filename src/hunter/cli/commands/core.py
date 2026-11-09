@@ -471,6 +471,8 @@ def cmd_exit(args: str, session: Any) -> str:
     "Start a goal-driven hunt of a target",
     "<target> [goal] [time] [loop] [budget]",
     "Hunt",
+    # was empty
+    manual="Start a hunt from natural language. Describe the target and what to find in plain text — the model extracts the URL, goals, time, loop interval and budget. Example: /hunt https://falcon.finance find critical vulns in 3 hours"
 )
 
 def cmd_hunt(args: str, session: Any) -> str:

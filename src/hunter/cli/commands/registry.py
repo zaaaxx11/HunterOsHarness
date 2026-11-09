@@ -66,6 +66,7 @@ class Command:
     category: str = "Chat"
     handler: Callable[[str, Any], str] | None = None
     aliases: tuple[str, ...] = ()
+    manual: str = ""
 
     @property
     def usage(self) -> str:
@@ -83,6 +84,7 @@ def command(
     arg_hint: str = "",
     category: str = "Chat",
     aliases: tuple[str, ...] = (),
+    manual: str = "",
 ) -> Callable[[Callable[[str, Any], str]], Callable[[str, Any], str]]:
     """Register a handler.
 
@@ -102,6 +104,7 @@ def command(
             arg_hint=arg_hint.strip(),
             category=category,
             handler=fn,
+            manual=manual,
             aliases=clean_aliases,
         )
         REGISTRY[canonical] = cmd
@@ -259,7 +262,7 @@ def _list_signature(cmd: Command) -> str:
     return candidate if len(candidate) <= 20 else f"/{cmd.name} <args>"
 
 
-def help_text(prefix: str = "") -> str:
+def help_text(prefix: str = "", name: str = "") -> str:
     """Render grouped help, optionally filtered to commands starting with ``prefix``.
 
     One line per command: a monospace name, then a one-line description. Aligned
@@ -267,6 +270,9 @@ def help_text(prefix: str = "") -> str:
     truncated, so the layout survives a phone screen.
     """
     ensure_core()
+    name = (name or prefix).strip().lstrip("/")
+    if name and "/" not in name and " " not in name:
+        return help_detail(name)
     want = prefix.strip().lstrip("/").lower()
     lines: list[str] = [
         f"**HUNT commands** — {len(REGISTRY)} total · `/help <name>` explains one",
@@ -290,6 +296,25 @@ def help_text(prefix: str = "") -> str:
     return "\n".join(lines).rstrip()
 
 
+def help_detail(name: str) -> str:
+    """Detailed help for one command, including its manual."""
+    ensure_core()
+    cmd = REGISTRY.get(name.lstrip("/").lower())
+    if cmd is None:
+        return f"no command '{name}' — /help lists all commands"
+    lines = [f"/{cmd.name} — {cmd.description}"]
+    if cmd.manual:
+        lines.append("")
+        lines.append(cmd.manual)
+    lines.append("")
+    lines.append(f"usage: {cmd.usage}")
+    lines.append(f"category: {cmd.category}")
+    if cmd.aliases:
+        lines.append("aliases: " + ", ".join("/" + a for a in cmd.aliases))
+    return "\n".join(lines)
+
+
+
 def suggest(prefix: str) -> list[str]:
     """Command names matching ``prefix``, for tab-completion.
 
@@ -297,6 +322,9 @@ def suggest(prefix: str) -> list[str]:
     first sorted, then aliases, so a completion menu is deterministic.
     """
     ensure_core()
+    name = (name or prefix).strip().lstrip("/")
+    if name and "/" not in name and " " not in name:
+        return help_detail(name)
     want = prefix.strip().lstrip("/").lower()
     canonical = sorted(name for name in REGISTRY if name.startswith(want))
     aliases = sorted(alias for alias in _ALIASES if alias.startswith(want))
