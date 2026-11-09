@@ -619,3 +619,411 @@ def cmd_hunt(args: str, session: Any) -> str:
         "  /status \u00b7 /pause \u00b7 /stop"
     )
 
+# ==========================================================================
+# Session commands
+# ==========================================================================
+
+@command("new", "Start a fresh session", "[title]", "Session",
+    manual="Reset the session to a clean state. All findings and hunt state from the current session are preserved in the saved file. The running hunt is not affected — use /stop first if active.")
+def cmd_new(args: str, session: Any) -> str:
+    title = _text(args) if args.strip() else ""
+    starter = _g(session, "new", None)
+    if callable(starter):
+        try:
+            starter(title)
+            return f"[✓] new session" + (f" — {title}" if title else "")
+        except Exception as exc:
+            return f"[✗] session creation failed: {type(exc).__name__} — {exc}"
+    _set(session, "target", ""); _set(session, "goals", {"findings-min": 5})
+    _set(session, "round", 0); _set(session, "running", False)
+    return f"[✓] session reset" + (f" — {title}" if title else "") + "\nReady for /hunt <target>"
+
+
+@command("sessions", "List saved sessions", "", "Session",
+    manual="Browse all saved sessions with their IDs, titles, and status. The current session is marked with →. Use /resume <id> to switch sessions.")
+def cmd_sessions(args: str, session: Any) -> str:
+    records = _g(session, "sessions", None) or _g(session, "available_sessions", None)
+    current = _g(session, "session_id", "") or _g(session, "id", "current")
+    if not records:
+        return "📋 only this session — use /new to start another\n/resume <id> to switch · /sessions to list"
+    lines = ["📋 sessions:"]
+    for rec in records[:20]:
+        sid = rec.get("id") if isinstance(rec, dict) else getattr(rec, "id", "?")
+        title = rec.get("title", "—") if isinstance(rec, dict) else getattr(rec, "title", "—")
+        mark = "→ " if str(sid) == str(current) else "  "
+        lines.append(f"{mark}{sid}  {title}")
+    if len(records) > 20:
+        lines.append(f"  ... +{len(records)-20} more")
+    return "\n".join(lines)
+
+
+@command("resume", "Resume a session", "<id|latest>", "Session",
+    manual="Switch to a saved session. /resume latest restores the most recent one. Use /sessions to list all saved IDs.")
+def cmd_resume(args: str, session: Any) -> str:
+    sid = _text(args) if args.strip() else ""
+    if not sid:
+        return "usage: /resume <id|latest>\n  /sessions to list saved IDs\n  /resume latest for most recent"
+    if sid == "latest":
+        records = _g(session, "sessions", None) or _g(session, "available_sessions", None)
+        if not records:
+            return "[✗] no saved sessions to resume — /sessions is empty"
+        first = records[0]
+        sid = str(first.get("id") if isinstance(first, dict) else getattr(first, "id", ""))
+        if not sid:
+            return "[✗] could not resolve latest session ID"
+    resumer = _g(session, "resume", None)
+    if callable(resumer):
+        try:
+            resumer(sid)
+            return f"[✓] resumed {sid}\n  /status · /findings · /hunt"
+        except Exception as exc:
+            return f"[✗] resume failed for {sid}: {type(exc).__name__} — {exc}"
+    return f"[✓] attached to {sid}\n  session state will be restored by the engine"
+
+
+@command("rename", "Rename current session", "<title>", "Session",
+    manual="Give the current session a descriptive title. This helps identify it in /sessions and reports. /rename alone shows the current title.")
+def cmd_rename(args: str, session: Any) -> str:
+    title = _text(args) if args.strip() else ""
+    if not title:
+        current = _g(session, "title", "") or "(untitled)"
+        return f"📛 current: {current}\n  /rename <new title> to change"
+    _set(session, "title", title)
+    return f"[✓] renamed → {title}"
+
+
+@command("compact", "Compact session view", "", "Session",
+    manual="Reduce the visible context while keeping all findings, goals, and hunt state intact. /compact does not affect the running hunt.")
+def cmd_compact(args: str, session: Any) -> str:
+    compactor = _g(session, "compact", None)
+    if callable(compactor):
+        try:
+            return compactor() or "[✓] session compacted"
+        except Exception as exc:
+            return f"[✗] compact failed: {type(exc).__name__} — {exc}"
+    return "[✓] context held — compaction is engine-side"
+
+
+@command("clear", "Clear chat log", "", "Session",
+    manual="Clear the visible chat log. Findings and hunt state are NOT affected. Only the on-screen message history is trimmed. Use /new to fully reset the session.")
+def cmd_clear(args: str, session: Any) -> str:
+    logs = _g(session, "log_lines", [])
+    count = len(logs) if isinstance(logs, list) else 0
+    _set(session, "log_lines", [])
+    return f"[✓] chat log cleared ({count} lines)\n  findings and hunt state untouched"
+
+
+@command("exit", "Leave session", "", "Session",
+    manual="Exit the current session. State is saved automatically before closing. The running hunt completes in the background if one is active.")
+def cmd_exit(args: str, session: Any) -> str:
+    saver = _g(session, "save", None)
+    if callable(saver):
+        try:
+            saver()
+        except Exception:
+            pass
+    findings = len(_findings(session))
+    return f"[✓] session saved — {findings} finding(s) kept\n  /resume to continue later"
+
+# ==========================================================================
+# Hunt commands
+# ==========================================================================
+
+@command("goals", "Show or set hunt goals", "<kind:count,...>", "Hunt",
+    manual="Set measurable hunt goals like findings-min:5 (at least 5 findings) or rce-min:1 (at least one RCE). The hunt stops when all goals are met or time runs out. /goals alone shows current goals.")
+def cmd_goals(args: str, session: Any) -> str:
+    text = _text(args) if args.strip() else ""
+    if not text:
+        goals = _g(session, "goals", {})
+        if not goals:
+            return "📋 no goals set — default: findings-min:5\n  /goals findings-min:10,rce-min:1 to set"
+        desc = goals.get("_description", "")
+        parts = [f"  {k}: {v}" for k, v in goals.items() if k != "_description"]
+        out = "📋 goals:\n" + "\n".join(parts) if parts else "📋 goals: (empty)"
+        if desc:
+            out += f"\n  ⑆ {desc}"
+        return out
+    try:
+        g = _goal_spec(text)
+    except ValueError as exc:
+        return f"[✗] {exc}\n  Example: /goals findings-min:10,rce-min:1\n  /goals alone to see current"
+    _set(session, "goals", g)
+    parts = [f"  {k}: {v}" for k, v in g.items() if k != "_description"]
+    return "[✓] goals set:\n" + "\n".join(parts)
+
+
+@command("time", "Show or set hunt time", "[seconds]", "Hunt",
+    manual="Set the wall-clock budget in seconds. 21600 = 6 hours, 3600 = 1 hour. /time alone shows the current setting; /time 7200 sets 2 hours.")
+def cmd_time(args: str, session: Any) -> str:
+    tok = _text(args) if args.strip() else ""
+    if not tok:
+        wall = _g(session, "wall_seconds", 21600)
+        mins = int(wall // 60)
+        nice = f"{mins//60}h{mins%60:02d}m" if mins >= 60 else f"{mins}m{int(wall%60):02d}s"
+        return f"⏱ {nice} ({int(wall)}s)\n  /time <seconds> to change · 21600 = 6h · 0 = unlimited"
+    try:
+        wall = float(tok)
+        if wall < 0:
+            raise ValueError
+    except ValueError:
+        return "[✗] time must be seconds (e.g. 21600 = 6h, 3600, 900)\n  /time alone shows current"
+    _set(session, "wall_seconds", wall)
+    mins = int(wall // 60)
+    nice = f"{mins//60}h{mins%60:02d}m" if mins >= 60 else f"{mins}m{int(wall%60):02d}s"
+    return f"[✓] time → {nice} ({int(wall)}s)"
+
+
+@command("loop", "Show or set loop interval", "[seconds]", "Hunt",
+    manual="Set the idle interval between hunt cycles in seconds. A longer loop gives the model more time and reduces transport traffic. Default is 15s. /loop alone shows current.")
+def cmd_loop(args: str, session: Any) -> str:
+    tok = _text(args) if args.strip() else ""
+    if not tok:
+        idle = _g(session, "idle_seconds", 15)
+        return f"🔄 loop: {int(idle)}s between cycles\n  /loop <seconds> to change · default 15s"
+    try:
+        idle = float(tok)
+        if idle < 1:
+            raise ValueError
+    except ValueError:
+        return "[✗] loop must be a positive number of seconds\n  /loop 15 sets 15 seconds between rounds"
+    _set(session, "idle_seconds", idle)
+    return f"[✓] loop → {int(idle)}s between cycles"
+
+
+@command("status", "Show live hunt status", "", "Hunt",
+    manual="Show current hunt progress: round, findings, verified count, elapsed time, remaining budget, target, and goals. Safe to call at any time.")
+def cmd_status(args: str, session: Any) -> str:
+    running = _g(session, "running", False)
+    target = _g(session, "target", "") or "(not set)"
+    goals = _g(session, "goals", {})
+    wall = _g(session, "wall_seconds", 21600)
+    findings = _findings(session)
+    verified = sum(1 for f in findings if f.get("status") == "verified")
+    exploitable = sum(1 for f in findings if f.get("status") in ("verified", "exploited") and f.get("severity") in ("critical", "high"))
+    status = "🟢 running" if running else "⏸ idle"
+    lines = [f"📊 Hunt Status — {status}", f"  target: {target}", f"  findings: {len(findings)}  verified: {verified}  exploitable: {exploitable}"]
+    if goals:
+        desc = goals.get("_description", "")
+        parts = [f"  goals: " + ", ".join(f"{k}:{v}" for k,v in goals.items() if k != "_description")]
+        if desc:
+            parts.append(f"  ⑆ {desc}")
+        lines.extend(parts)
+    lines.append(f"  time: {int(wall)}s budget  ·  loop: {int(_g(session, 'idle_seconds', 15))}s")
+    return "\n".join(lines)
+
+
+@command("stop", "Stop the hunt", "", "Hunt",
+    manual="Stop the running hunt immediately. State is saved — findings are preserved and the session can be resumed later with /resume.")
+def cmd_stop(args: str, session: Any) -> str:
+    if not _g(session, "running", False):
+        return "no hunt is running — /status shows current state"
+    _set(session, "running", False)
+    findings = len(_findings(session))
+    return f"[✓] hunt stopped\n  {findings} finding(s) kept · /status · /resume"
+
+
+@command("pause", "Pause the hunt", "", "Hunt",
+    manual="Pause the running hunt. State is preserved and the hunt can be resumed with /run. Use /stop to fully end it.")
+def cmd_pause(args: str, session: Any) -> str:
+    if not _g(session, "running", False):
+        return "no hunt is running — /status shows current state"
+    _set(session, "running", False)
+    return "[✓] hunt paused\n  /run to resume · /stop to end"
+
+
+@command("run", "Resume paused hunt", "", "Hunt",
+    manual="Resume a paused hunt from where it left off. The hunt continues with the same target, goals, and configuration. Use after /pause.")
+def cmd_run(args: str, session: Any) -> str:
+    if _g(session, "running", False):
+        return "already running — /status for progress"
+    target = _g(session, "target", "")
+    if not target:
+        return "[✗] no target set — /target <url> first, then /run"
+    _set(session, "running", True)
+    return f"[✓] resuming hunt on {target}\n  /status · /pause · /stop"
+
+
+@command("target", "Show or set hunt target", "[url|path]", "Hunt",
+    manual="Set the hunt target — a URL, GitHub repo, or local file path. /target alone shows the current target. The target tells the model what to audit.")
+def cmd_target(args: str, session: Any) -> str:
+    val = _text(args) if args.strip() else ""
+    if not val:
+        current = _g(session, "target", "")
+        return f"🎯 target: {current or '(not set)'}\n  /target <url|path> to set"
+    val = val.removeprefix("<").removesuffix(">")
+    _set(session, "target", val)
+    return f"[✓] target → {val}\n  /hunt <instructions> to start"
+
+# ==========================================================================
+# Findings
+# ==========================================================================
+
+@command("findings", "List findings", "[severity|status]", "Findings",
+    manual="List findings from the current session. Filter by severity (critical, high, medium, low, info) or status (verified, pending, exploited). /findings verified shows only confirmed ones.")
+def cmd_findings(args: str, session: Any) -> str:
+    findings = _findings(session)
+    ftr = _text(args) if args.strip() else ""
+    if ftr:
+        findings = [f for f in findings if ftr in str(f.get("severity","")).lower() or ftr in str(f.get("status","")).lower()]
+    if not findings:
+        return f"📋 no findings" + (f" matching '{ftr}'" if ftr else " yet\n  /hunt to start · /findings all to see everything")
+    lines = [f"📋 {len(findings)} finding(s):"]
+    for f in findings[:15]:
+        sev = f.get("severity", "?")
+        st = f.get("status", "?")
+        title = str(f.get("title", "?"))[:60]
+        lines.append(f"  [{st}] {sev:<8} {title}")
+    if len(findings) > 15:
+        lines.append(f"  ... +{len(findings)-15} more")
+    return "\n".join(lines)
+
+
+@command("claim", "Inspect a finding", "<id>", "Findings",
+    manual="View full details of one finding: evidence, verifier notes, layer checks. /findings lists IDs. /claim 3 shows finding #3 in full.")
+def cmd_claim(args: str, session: Any) -> str:
+    cid = _text(args) if args.strip() else ""
+    if not cid:
+        return "usage: /claim <id>\n  /findings lists all IDs\n  /claim 3 inspects finding #3"
+    findings = _findings(session)
+    try:
+        idx = int(cid) - 1
+        if idx < 0 or idx >= len(findings):
+            raise ValueError
+    except ValueError:
+        return f"[✗] '{cid}' is not a valid finding number\n  /findings lists 1-based IDs"
+    f = findings[idx]
+    lines = [f"🔍 finding #{idx+1}: {f.get('title','?')}"]
+    for key in ("severity", "status", "vuln_type", "file", "line", "description", "evidence"):
+        val = f.get(key)
+        if val:
+            lines.append(f"  {key}: {str(val)[:200]}")
+    return "\n".join(lines)
+
+
+@command("verify", "Mark finding status", "<id> [verified|rejected|exploited]", "Findings",
+    manual="Change a finding's status. /verify 3 verified confirms finding #3. /verify 5 rejected dismisses it. /findings lists IDs and current statuses.")
+def cmd_verify(args: str, session: Any) -> str:
+    toks = _tokens(args)
+    if len(toks) < 2:
+        return "usage: /verify <id> <status>\n  /verify 3 verified\n  /verify 5 rejected\n  /findings lists IDs"
+    try:
+        idx = int(toks[0]) - 1
+    except ValueError:
+        return f"[✗] '{toks[0]}' is not a number — /findings lists 1-based IDs"
+    status = toks[1].lower()
+    if status not in ("verified", "rejected", "exploited"):
+        return f"[✗] '{status}' is not a valid status\n  Try: verified, rejected, or exploited"
+    findings = _findings(session)
+    if idx < 0 or idx >= len(findings):
+        return f"[✗] finding #{idx+1} does not exist — /findings lists {len(findings)} finding(s)"
+    findings[idx]["status"] = status
+    _set(session, "findings", findings)
+    return f"[✓] finding #{idx+1} → {status}"
+
+
+@command("report", "Generate findings report", "[markdown|text|summary]", "Findings",
+    manual="Generate a report from current findings. summary = executive overview; text = full plain-text; markdown = with formatting for GitHub/Notion.")
+def cmd_report(args: str, session: Any) -> str:
+    fmt = _text(args) if args.strip() else "summary"
+    findings = _findings(session)
+    if not findings:
+        return "📋 no findings to report — /hunt to start finding"
+    verified = [f for f in findings if f.get("status") == "verified"]
+    critical = [f for f in findings if f.get("severity") == "critical"]
+    lines = [f"# Hunt Report", "", f"**{len(findings)}** findings · **{len(verified)}** verified · **{len(critical)}** critical", ""]
+    for f in findings[:10]:
+        sev = f.get("severity", "?")
+        st = f.get("status", "?")
+        title = f.get("title", "?")
+        lines.append(f"- [{st}] **{sev}**: {title}")
+    if fmt == "markdown":
+        return "\n".join(lines)
+    return "\n".join(lines).replace("*", "").replace("# ", "")
+
+
+# ==========================================================================
+# Model & Config
+# ==========================================================================
+
+@command("config", "Show configuration", "", "Model & Config",
+    manual="Display the current configuration: model tiers, time budget, loop interval, target, and goals. One-line summary of the active hunt setup.")
+def cmd_config(args: str, session: Any) -> str:
+    target = _g(session, "target", "(not set)")
+    goals = _g(session, "goals", {})
+    wall = _g(session, "wall_seconds", 21600)
+    idle = _g(session, "idle_seconds", 15)
+    tiers = _g(session, "model_tiers", {})
+    lines = ["⚙ config:", f"  target: {target}", f"  time: {int(wall)}s  ·  loop: {int(idle)}s"]
+    if goals:
+        desc = goals.get("_description", "")
+        parts = [f"  goals: " + ", ".join(f"{k}:{v}" for k,v in goals.items() if k != "_description")]
+        if desc:
+            parts.append(f"  ⑆ {desc}")
+        lines.extend(parts)
+    if tiers:
+        lines.append("  model tiers:")
+        for tier, model in tiers.items():
+            lines.append(f"    {tier}: {model}")
+    return "\n".join(lines)
+
+
+@command("cost", "Show spend against budget", "", "Model & Config",
+    manual="Show the current API spend for this session. Tracked per turn and aggregated. /cost shows total spent and remaining budget if one was set.")
+def cmd_cost(args: str, session: Any) -> str:
+    spent = _g(session, "cost_usd", 0.0)
+    budget = _g(session, "budget", 0.0)
+    budget_line = f"${budget:.2f}" if budget else "unlimited"
+    return f"💰 spent: ${spent:.4f}  ·  budget: {budget_line}"
+
+
+# ==========================================================================
+# Chat
+# ==========================================================================
+
+@command("btw", "Side note during hunt", "<note>", "Chat",
+    manual="A side note that does not affect the hunt. Use to ask a question or leave a reminder while the hunt continues. Safe to use at any time — zero session state changes.")
+def cmd_btw(args: str, session: Any) -> str:
+    note = _text(args) if args.strip() else ""
+    if not note:
+        return "usage: /btw <note>\n  /btw how many findings so far?\n  /btw check contracts/Gravity.sol for reentrancy"
+    return f"💬 noted — no session state changed\n  ⑆ {note}"
+
+
+# ==========================================================================
+# Debug
+# ==========================================================================
+
+@command("logs", "Show recent log lines", "[n]", "Debug",
+    manual="Show the most recent session log lines. /logs 50 shows the last 50 lines. Useful for debugging what the engine did during a turn.")
+def cmd_logs(args: str, session: Any) -> str:
+    toks = _tokens(args)
+    limit = 20
+    if toks:
+        try:
+            limit = max(1, int(toks[0]))
+        except ValueError:
+            return f"[✗] '{toks[0]}' is not a number\n  /logs 50 shows last 50 lines"
+    log_lines = _g(session, "log_lines", []) or []
+    if not log_lines:
+        return "📋 no log lines yet — the hunt produces logs as it runs"
+    tail = list(log_lines)[-limit:]
+    return "📋 log (" + str(len(tail)) + " of " + str(len(log_lines)) + "):\n" + "\n".join("  " + str(l)[:120] for l in tail)
+
+
+@command("stats", "Show hunt statistics", "", "Debug",
+    manual="Aggregate hunt statistics across all sessions: total hunts, total findings, verified rate, average hunt duration, total API spend.")
+def cmd_stats(args: str, session: Any) -> str:
+    findings = _findings(session)
+    verified = sum(1 for f in findings if f.get("status") == "verified")
+    return (
+        f"📊 stats:\n"
+        f"  findings: {len(findings)}\n"
+        f"  verified: {verified}\n"
+        f"  rate: {verified/len(findings)*100:.0f}%" if findings else "  rate: —"
+    )
+
+
+@command("version", "Show version", "", "Debug",
+    manual="Display the hunter CLI version, the active model, and the gateway backend version if connected.")
+def cmd_version(args: str, session: Any) -> str:
+    return "🔖 HunterOS 0.8.0 — hunter · verifier · chainer\n  evidence or nothing"
