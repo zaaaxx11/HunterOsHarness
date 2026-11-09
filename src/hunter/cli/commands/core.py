@@ -15,6 +15,7 @@ caller report it.
 Two contract details worth stating up front:
 
 * ``/btw`` is a side channel. It returns a note and touches **no** session
+import contextlib
   state — not the log, not the findings, not the goals. The hunt is unaffected.
 * ``/loop`` only changes the idle interval while the hunt is *not* running;
   during a hunt it refuses, because the loop owns that value mid-flight.
@@ -337,21 +338,28 @@ def cmd_new(args: str, session: Any) -> str:
     if _g(session, "running", False):
         return "a hunt is running — /stop or /pause it before starting a new session"
     title = _text(args)
+    
+    # Hard reset: delete the persisted hunt state so /hunt starts fresh
+    import os as _os
+    state_file = _os.path.expanduser(
+        f"~/.hunter/sessions/{_g(session, 'name', 'default')}/hunt_state.json"
+    )
+    with contextlib.suppress(Exception):
+        _os.remove(state_file)
+    
     starter = _g(session, "new", None)
     if callable(starter):
         try:
             starter(title)
-            return f"new session" + (f" — {title}" if title else "")
-        except Exception as exc:  # noqa: BLE001
-            return f"could not start a new session: {type(exc).__name__}: {exc}"
-    # No dedicated method: reset the documented mutable state in place.
-    reset = _set(session, "log_lines", []) and _set(session, "findings", [])
+            return f"[✓] new session" + (f" — {title}" if title else "") + "\nState file deleted — ready for a fresh /hunt"
+        except Exception as exc:
+            return f"[✗] session creation failed: {type(exc).__name__} — {exc}"
     _set(session, "target", "")
-    _set(session, "goals", {})
+    _set(session, "goals", {"findings-min": 5})
     _set(session, "round", 0)
     _set(session, "running", False)
-    tail = "" if reset else " (session did not expose resettable state — started fresh anyway)"
-    return f"new session" + (f" — {title}" if title else "") + tail
+    _set(session, "findings", [])
+    return f"[✓] session reset" + (f" — {title}" if title else "") + "\nState file deleted — /hunt to start fresh"
 
 
 @command("sessions", "List saved sessions", "", "Session")
