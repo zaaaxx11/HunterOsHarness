@@ -14,6 +14,7 @@ long hunt is not a single silent reply.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import threading
@@ -144,6 +145,11 @@ class HuntGatewayEngine:
         state_path = Path(
             os.path.expanduser(f"~/.hunter/sessions/{active.name}/hunt_state.json")
         )
+        # Delete stale state from any previous hunt in this session.
+        # Otherwise the loop resumes old findings/rounds and immediately
+        # hits the "no-progress" guard.
+        with contextlib.suppress(Exception):
+            state_path.unlink(missing_ok=True)
 
         # A live status line redrawn each round. HuntLoop._log is called
         # after every cycle with the round stats; we parse that line into
