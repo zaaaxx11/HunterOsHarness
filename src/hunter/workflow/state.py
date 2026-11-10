@@ -217,6 +217,10 @@ class HuntState:
     chains: list[dict] = field(default_factory=list)
     #: round-robin cursor over the target's audit units (chunked hunting)
     chunk_cursor: int = 0
+    #: Whether Phase 0 RECON has already completed (loop_v4+).
+    phase0_done: bool = False
+    #: Path to the recon-produced target.json (loop_v4+).
+    target_json_path: str = ""
 
     # -- serialisation ---------------------------------------------------- #
     def to_dict(self) -> dict[str, Any]:
