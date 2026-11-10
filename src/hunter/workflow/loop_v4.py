@@ -325,7 +325,7 @@ class HuntLoopV4:
         self.log = log or print
         self.max_cycles = max_cycles
         self.force = force
-        self.state_path = state_path_for(state_path, target, self.workdir)
+        self.state_path = Path(state_path) if state_path else state_path_for(target, self.workdir)
 
         existing = self.state_path.exists()
         if existing:
@@ -452,7 +452,7 @@ class HuntLoopV4:
                         return {"l1": {"status": "anchored", "detail": actual[:120], "file": str(fp), "line": r["line"]}}
                 return {"l1": {"status": "refuted", "detail": f"file {r['file']} not found under {root}"}}
         except Exception as exc:
-            self._log(f"[L1] verify layer error: {exc} — using built-in", flush=True)
+            self._log(f"[L1] verify layer error: {exc} — using built-in")
 
         # Built-in fallback
         return self._l1_builtin(finding)
@@ -478,7 +478,7 @@ class HuntLoopV4:
 
     def _deep_dive(self, finding: dict):
         """L2 adversarial + PoC — triggered on L1 anchored + high severity."""
-        self._log(f"[DEEP-DIVE] {finding.get('title','')[:80]} severity={finding.get('severity')}", flush=True)
+        self._log(f"[DEEP-DIVE] {finding.get('title','')[:80]} severity={finding.get('severity')}")
 
         # L2 adversarial (LLM sceptic)
         soul = _load_soul("verifier")
@@ -511,12 +511,12 @@ class HuntLoopV4:
     def run(self) -> HuntState:
         # ---- Phase 0: RECON (once, before the loop) -----------------------
         if not self.state.phase0_done and self.target:
-            self._log(f"[phase0] RECON: {self.target}", flush=True)
+            self._log(f"[phase0] RECON: {self.target}")
             if run_recon is not None and callable(getattr(self.llm, "complete", None)):
                 try:
                     run_recon(self.target, self.llm.complete, self.workdir)
                 except Exception as exc:
-                    self._log(f"[phase0] RECON error: {exc} — continuing", flush=True)
+                    self._log(f"[phase0] RECON error: {exc} — continuing")
             self.state.phase0_done = True
             save(self.state, self.state_path)
 
@@ -526,7 +526,7 @@ class HuntLoopV4:
             self.state.round = self._cycle
             c = self._cycle
             self._log(f"\n{'='*60}\n[CYCLE {c}] elapsed={int(elapsed_seconds(self.state,self.clock()))}s "
-                      f"remaining={int(time_left(self.state,self.clock()))}s\n{'='*60}", flush=True)
+                      f"remaining={int(time_left(self.state,self.clock()))}s\n{'='*60}")
 
             source = self._source_for_lane("architect")  # same source for all 3
 
@@ -546,7 +546,7 @@ class HuntLoopV4:
             # Phase 4: CHAINER (only if new findings)
             has_new = bool(all_findings)
             if has_new:
-                self._log(f"[C{c}] [chainer] starting with {len(all_findings)} new lane finding(s)", flush=True)
+                self._log(f"[C{c}] [chainer] starting with {len(all_findings)} new lane finding(s)")
                 chain_prompt = (
                     f"{_load_soul('chainer')}\n\n"
                     f"TARGET: {self.state.target}\n"
@@ -564,9 +564,9 @@ class HuntLoopV4:
                     ch.setdefault("cycle", c)
                     ch.setdefault("status", "unverified")
                     all_findings.append(ch)
-                self._log(f"[C{c}] [chainer] {len(chains)} chain(s)", flush=True)
+                self._log(f"[C{c}] [chainer] {len(chains)} chain(s)")
             else:
-                self._log(f"[C{c}] [chainer] skipped (0 new findings)", flush=True)
+                self._log(f"[C{c}] [chainer] skipped (0 new findings)")
 
             # Register all new findings
             new_ids: list[str] = []
@@ -580,7 +580,7 @@ class HuntLoopV4:
             pending = [f for f in self.state.findings
                        if isinstance(f, dict) and f.get("status") == "unverified" and f.get("id") in new_ids]
             if pending:
-                self._log(f"[C{c}] [L1] verifying {len(pending)} new finding(s) (deterministic, no LLM)", flush=True)
+                self._log(f"[C{c}] [L1] verifying {len(pending)} new finding(s) (deterministic, no LLM)")
                 for f in pending:
                     res = self._l1_verify_finding(f)
                     if "l1" in res:
@@ -592,9 +592,9 @@ class HuntLoopV4:
                     elif f.get("l1", {}).get("status") == "refuted":
                         f["status"] = "refuted"
                     self._log(f"  {f.get('id')}: {f.get('l1',{}).get('status','?')} — "
-                              f"{_clip(f.get('l1',{}).get('detail',''), 80)}", flush=True)
+                              f"{_clip(f.get('l1',{}).get('detail',''), 80)}")
             else:
-                self._log(f"[C{c}] [L1] skipped (0 new unverified)", flush=True)
+                self._log(f"[C{c}] [L1] skipped (0 new unverified)")
 
             # Deep-dive: L2 adversarial + PoC (trigger: L1 anchored + severity high)
             for f in self.state.findings:
@@ -629,11 +629,11 @@ class HuntLoopV4:
                 self.state.completion_reason = "max-cycles"
                 break
             if self._idle_streak >= 3:
-                self._log(f"[C{c}] 3 empty cycles — surface likely hardened (still continuing)", flush=True)
+                self._log(f"[C{c}] 3 empty cycles — surface likely hardened (still continuing)")
 
             # Idle between cycles
             idle = max(1, min(self.state.idle_seconds or 15, time_left(self.state, self.clock())))
-            self._log(f"[IDLE] {int(idle)}s ...", flush=True)
+            self._log(f"[IDLE] {int(idle)}s ...")
             time.sleep(idle)
 
         self._print_stop()
