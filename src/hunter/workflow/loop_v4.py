@@ -419,6 +419,39 @@ def _norm_response(resp: Any) -> tuple[str, list[dict], float]:
     return text, norm_calls, cost
 
 
+def _parse_verdict(raw: str) -> dict:
+    """Turn an L2 reply into {"verdict","reason"} — JSON first, prose second.
+
+    Models frequently ignore a JSON instruction and answer in prose. Look for a
+    terminal ``VERDICT: VERIFIED|REFUTED`` line, then fall back to keyword
+    scanning. A reply with no usable verdict is ``unreviewed``, never invented.
+    """
+    text = str(raw or "")
+    # 1) strict JSON
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            d = json.loads(text[start:end + 1])
+            if isinstance(d, dict) and d.get("verdict"):
+                return {"verdict": str(d["verdict"]).lower(),
+                        "reason": str(d.get("reason") or d.get("counter_evidence") or "")[:400]}
+        except Exception:
+            pass
+    # 2) terminal VERDICT line (case/space tolerant)
+    m = re.search(r"VERDICT\s*[:\-]\s*(VERIFIED|REFUTED)", text, re.I)
+    if m:
+        return {"verdict": m.group(1).lower(), "reason": text[-400:]}
+    # 3) keyword scan on the tail (the conclusion lives there). Negation must
+    #    be tested FIRST: "not exploitable" also contains "exploitable".
+    tail = text[-1200:].lower()
+    if re.search(r"\b(not|isn'?t|is not|cannot be|can'?t be)\s+(exploitable|reproducible)", tail) \
+            or "refuted" in tail:
+        return {"verdict": "refuted", "reason": text[-400:]}
+    if ("exploitable" in tail or "verified" in tail) and "refut" not in tail:
+        return {"verdict": "verified", "reason": text[-400:]}
+    return {"verdict": "unreviewed", "reason": "no parseable verdict in the reply"}
+
+
 # ========================================================================
 
 class HuntLoopV4:
@@ -646,31 +679,36 @@ class HuntLoopV4:
         return self._l1_verify_finding(finding)
 
     def _deep_dive(self, finding: dict):
-        """L2 adversarial + PoC — triggered on L1 anchored + high severity."""
+        """L2 adversarial + PoC — triggered on L1 anchored + severity ≥ high."""
         self._log(f"[DEEP-DIVE] {finding.get('title','')[:80]} severity={finding.get('severity')}")
 
-        # L2 adversarial (LLM sceptic)
+        # L2 adversarial (LLM sceptic). Ask for a terminal verdict line so a
+        # prose answer is still parseable — models routinely ignore the JSON
+        # instruction and reply with an analysis paragraph.
         soul = _load_soul("verifier")
         prompt = (
             f"{soul}\n\n"
             f"FINDING: {json.dumps(finding, default=str)[:3000]}\n\n"
-            "Prove this is NOT exploitable or confirm it is. Return JSON: "
-            '{"verdict":"verified"|"refuted","reason":"..."}'
+            "Prove this is NOT exploitable, or confirm it is. Work through the\n"
+            "preconditions, then END your reply with EXACTLY one of these lines:\n"
+            "VERDICT: VERIFIED\n"
+            "VERDICT: REFUTED\n"
+            "Nothing after that line."
         )
         try:
             raw = self.llm.complete(soul, prompt)
-            try:
-                verdict = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
-                finding["l2"] = verdict
-                finding["deep_dived"] = True
-                if verdict.get("verdict") == "verified":
-                    finding["status"] = "verified"
-                    self._log(f"  L2: VERIFIED — {verdict.get('reason','')[:120]}")
-                else:
-                    self._log(f"  L2: REFUTED — {verdict.get('reason','')[:120]}")
-            except Exception:
-                finding["l2"] = {"verdict": "unreviewed", "reason": "could not parse LLM output"}
-                self._log("  L2: UNREVIEWED")
+            verdict = _parse_verdict(raw)
+            finding["l2"] = verdict
+            finding["deep_dived"] = True
+            v = verdict.get("verdict")
+            if v == "verified":
+                finding["status"] = "verified"
+                self._log(f"  L2: VERIFIED — {verdict.get('reason','')[:120]}")
+            elif v == "refuted":
+                finding["status"] = "refuted"
+                self._log(f"  L2: REFUTED — {verdict.get('reason','')[:120]}")
+            else:
+                self._log(f"  L2: {str(v or 'unreviewed').upper()} — {verdict.get('reason','')[:120]}")
         except Exception as exc:
             finding["l2"] = {"verdict": "error", "reason": str(exc)[:200]}
             self._log(f"  L2: ERROR — {exc}")
