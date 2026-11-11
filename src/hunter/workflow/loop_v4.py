@@ -284,15 +284,113 @@ def _candidates_from_args(args: dict) -> list[dict]:
     return []
 
 
+#: Appended when the tool call never arrives (reasoning models burn the whole
+#: output budget on reasoning_content and stop before the call).
+_JSON_STRICT = """
+
+OUTPUT FORMAT — OVERRIDE (your tool call did not arrive):
+You have NO tools in this turn.
+Reply with EXACTLY ONE JSON object and nothing else:
+
+{"findings": [{"title": "...", "severity": "critical|high|medium|low|info",
+  "description": "...", "file": "exact path from the --- header ---",
+  "line": 123, "code": "the offending line"}]}
+
+Rules:
+- Keep every description under 400 characters.
+- ``file`` MUST be one of the paths shown in the --- <path> --- headers.
+- If you found nothing new, reply exactly {"findings": []}.
+- No prose, no analysis, no thinking out loud — only the JSON object.
+"""
+
+
+def _calls_from_text(text: str) -> list[dict]:
+    """Extract report calls from a text turn, surviving truncation.
+
+    Tries a whole-object parse first; on failure (a reply cut mid-array by the
+    token budget) it salvages every complete ``{...}`` finding object it can.
+    """
+    if not text or "{" not in text:
+        return []
+    start, end = text.find("{"), text.rfind("}")
+    # 1) whole object
+    if start != -1 and end > start:
+        try:
+            data = json.loads(text[start:end + 1])
+            if isinstance(data, dict) and isinstance(data.get("findings"), list):
+                return [{"name": "report_finding", "arguments": data}]
+        except Exception:
+            pass
+    # 2) salvage: balanced-brace scan for individual finding objects that carry
+    #    both a title and a severity (the minimum shape).
+    salvaged: list[dict] = []
+    depth = 0
+    obj_start = -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and obj_start != -1:
+                frag = text[obj_start:i + 1]
+                try:
+                    obj = json.loads(frag)
+                except Exception:
+                    obj = None
+                if isinstance(obj, dict) and obj.get("title") and obj.get("severity"):
+                    salvaged.append(obj)
+                obj_start = -1
+    if salvaged:
+        return [{"name": "report_finding", "arguments": {"findings": salvaged}}]
+    return []
+
+
 def _norm_response(resp: Any) -> tuple[str, list[dict], float]:
-    text = getattr(resp, "text", None) or getattr(resp, "content", None) or ""
+    """Normalise an LLM turn to (text, tool_calls, cost).
+
+    Accepts both an object (attributes) and a dict (the shape injected
+    adapters commonly return), so a dict-returning ``complete_with_tools``
+    is not silently read as "no tool calls".
+    """
+    def _get(obj, *names):
+        for n in names:
+            if isinstance(obj, dict):
+                if n in obj and obj[n] is not None:
+                    return obj[n]
+            else:
+                v = getattr(obj, n, None)
+                if v is not None:
+                    return v
+        return None
+
+    text = _get(resp, "text", "content") or ""
     if not isinstance(text, str):
-        text = ""
-    calls = getattr(resp, "tool_calls", None) or getattr(resp, "calls", None) or []
-    if not isinstance(calls, list):
+        text = str(text)
+    calls = _get(resp, "tool_calls", "calls") or []
+    if not isinstance(calls, (list, tuple)):
         calls = []
-    cost = _num(getattr(resp, "cost", 0), 0)
-    return text, calls, cost
+    norm_calls = []
+    for c in calls:
+        if isinstance(c, dict):
+            args = c.get("arguments") or c.get("args") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            norm_calls.append({"name": c.get("name", ""), "arguments": args or {}})
+        else:
+            args = getattr(c, "arguments", {}) or getattr(c, "args", {}) or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            norm_calls.append({"name": getattr(c, "name", ""), "arguments": args or {}})
+    cost = _num(_get(resp, "cost", "cost_usd"), 0.0)
+    return text, norm_calls, cost
 
 
 # ========================================================================
@@ -371,6 +469,12 @@ class HuntLoopV4:
     # ----- one lane turn ---------------------------------------------------
 
     def _ask_lane(self, lane: str, user: str, tools: list[dict]) -> tuple[str, list[dict], float]:
+        """One lane turn: tool-calling, with a required-tool retry and a JSON fallback.
+
+        Reasoning models on this provider often spend the whole output budget on
+        reasoning and stop before the tool call; ``tool_choice="required"``
+        forces it. If tools still yield nothing we ask for a bare JSON object.
+        """
         soul = LANE_SOULS.get(lane, f"You are {lane}.")
         cwt = getattr(self.llm, "complete_with_tools", None)
 
@@ -378,24 +482,29 @@ class HuntLoopV4:
         if callable(cwt) and self._tools_work:
             resp = cwt(soul, user, tools)
             text, calls, cost = _norm_response(resp)
-            if not calls and text.strip():
-                # maybe JSON embedded in text
+            if not calls:
+                # Deterministic enforcement — the API cannot return a text-only
+                # turn when tool_choice is required.
                 try:
-                    data = json.loads(text[text.find("{"):text.rfind("}")+1])
-                    if "findings" in data:
-                        calls = [{"name": "report_finding", "arguments": data}]
+                    resp2 = cwt(soul, user, tools, "required")
+                except TypeError:
+                    resp2 = None
                 except Exception:
-                    pass
+                    resp2 = None
+                if resp2 is not None:
+                    t2, c2, cost2 = _norm_response(resp2)
+                    cost += cost2
+                    if c2:
+                        calls, text = c2, (t2 or text)
+            if not calls:
+                self._tools_work = False
+            if not calls and text.strip():
+                calls = _calls_from_text(text)
         if not calls:
-            raw = str(self.llm.complete(soul, user) or "")
+            raw = str(self.llm.complete(soul + _JSON_STRICT, user) or "")
             if raw.strip():
                 text = text or raw
-                try:
-                    data = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
-                    if "findings" in data:
-                        calls = [{"name": "report_finding", "arguments": data}]
-                except Exception:
-                    pass
+                calls = _calls_from_text(raw)
         return text, calls, cost
 
     # ----- one lane phase --------------------------------------------------
@@ -407,9 +516,15 @@ class HuntLoopV4:
             f"CYCLE: {self._cycle}\n"
             f"TIME LEFT: {int(time_left(state, self.clock()))}s\n"
             f"LANE: {lane.upper()}\n"
-            f"ALREADY RECORDED ({len(known)}):\n" +
-            "\n".join(f"  {i}. {t}" for i, t in enumerate(known, 1)) +
-            "\n\nTARGET SOURCE:\n" + (source or "(source not readable)")
+            + (f"ALREADY RECORDED ({len(known)}) — do NOT report these again:\n" +
+               "\n".join(f"  {i}. {t}" for i, t in enumerate(known, 1)) + "\n"
+               if known else "ALREADY RECORDED: none — this is the first cycle.\n")
+            + "\nTARGET SOURCE — each block is headed `--- <path> ---`; the gutter on\n"
+              "each line is the REAL line number. Set `file` to the EXACT path from\n"
+              "the nearest `--- <path> ---` header above the line you cite, and\n"
+              "`line` to the number shown in the gutter. A claim with a wrong\n"
+              "file:line is rejected by the verifier.\n\n"
+            + (source or "(source not readable)")
         )
 
         text, calls, cost = self._ask_lane(lane, user, tools)
