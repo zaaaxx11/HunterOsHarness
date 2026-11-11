@@ -589,53 +589,61 @@ class HuntLoopV4:
 
     # ----- verification ----------------------------------------------------
 
+    def _resolve_anchor_path(self, path: str) -> Path | None:
+        """Resolve a cited path to a real file.
+
+        Chunk labels carry a batch suffix (``server.py#p4``, ``foo.sol#h2``) so a
+        finding under a later part still names its real source file. Strip that
+        suffix before touching the filesystem, otherwise every citation from a
+        split file is wrongly refuted.
+        """
+        clean = re.sub(r"#(p|h)\d+$", "", str(path or "")).strip()
+        if not clean:
+            return None
+        root = self.state.target or str(self.workdir)
+        cands = []
+        c = Path(clean)
+        if c.is_absolute():
+            cands.append(c)
+        else:
+            cands += [Path(root) / clean, Path(root) / Path(clean).name, Path(clean)]
+        for cand in cands:
+            try:
+                if cand.exists() and cand.is_file():
+                    return cand
+            except OSError:
+                continue
+        return None
+
     def _l1_verify_finding(self, finding: dict) -> dict:
-        """Deterministic L1 (NO LLM). Uses existing verify layer if available."""
-        file_line = finding.get("file_line") or (
-            f"{finding.get('file','')}:{finding.get('line','')}"
-            if finding.get("file") else None
-        )
-        if not file_line:
+        """Deterministic L1 (NO LLM). file exists? line in range? code matches?"""
+        ref = finding.get("file_line")
+        if not ref and finding.get("file"):
+            ref = f"{finding.get('file')}:{finding.get('line', 0)}"
+        if not ref:
             return {"l1": {"status": "unverifiable", "detail": "no file:line anchor"}}
 
-        # Try the repo's own L1 layer first
-        try:
-            from hunter.verify.l1_deterministic import extract_file_line_refs, claim_text
-            refs = extract_file_line_refs(claim_text(finding))
-            if refs:
-                r = refs[0]
-                root = self.state.target or str(self.workdir)
-                fp = Path(root) / r["file"] if not os.path.isabs(r["file"]) else Path(r["file"])
-                if fp.exists():
-                    lines = fp.read_text(errors="replace").splitlines()
-                    if 1 <= r["line"] <= len(lines):
-                        actual = lines[r["line"] - 1].strip()
-                        return {"l1": {"status": "anchored", "detail": actual[:120], "file": str(fp), "line": r["line"]}}
-                return {"l1": {"status": "refuted", "detail": f"file {r['file']} not found under {root}"}}
-        except Exception as exc:
-            self._log(f"[L1] verify layer error: {exc} — using built-in")
-
-        # Built-in fallback
-        return self._l1_builtin(finding)
-
-    def _l1_builtin(self, finding: dict) -> dict:
-        parts = str(finding.get("file_line") or f"{finding.get('file','')}:{finding.get('line','')}")
-        m = re.match(r"^(?P<path>[^:]+):(?P<line>\d+)", parts)
+        m = re.match(r"^(?P<path>.+?):(?P<line>\d+)", str(ref))
         if not m:
-            return {"l1": {"status": "unverifiable", "detail": f"not file:line: {parts[:80]}"}}
+            return {"l1": {"status": "unverifiable", "detail": f"not file:line: {str(ref)[:80]}"}}
         path, line = m.group("path"), int(m.group("line"))
-        root = self.state.target or str(self.workdir)
-        candidates = [Path(root) / path, Path(path)]
-        real = next((c for c in candidates if c.exists() and c.is_file()), None)
+
+        real = self._resolve_anchor_path(path)
         if real is None:
             return {"l1": {"status": "refuted", "detail": f"file not found: {path}"}}
         try:
-            lines = real.read_text(errors="replace").splitlines()
-        except Exception:
-            return {"l1": {"status": "unverifiable", "detail": f"unreadable: {real}"}}
+            lines = real.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception as exc:
+            return {"l1": {"status": "unverifiable", "detail": f"unreadable {real}: {exc}"}}
         if line < 1 or line > len(lines):
-            return {"l1": {"status": "refuted", "detail": f"line {line} out of range ({len(lines)} lines)"}}
-        return {"l1": {"status": "anchored", "detail": lines[line - 1].strip()[:120]}}
+            return {"l1": {"status": "refuted",
+                           "detail": f"line {line} out of range ({len(lines)} lines in {real.name})"}}
+        return {"l1": {"status": "anchored",
+                       "detail": lines[line - 1].strip()[:120],
+                       "file": str(real), "line": line}}
+
+    def _l1_builtin(self, finding: dict) -> dict:
+        return self._l1_verify_finding(finding)
 
     def _deep_dive(self, finding: dict):
         """L2 adversarial + PoC — triggered on L1 anchored + high severity."""
