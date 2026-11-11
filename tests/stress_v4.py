@@ -126,7 +126,7 @@ def main():
         llm=llm,
         verify_claim=fake_verify,
         target=target_dir,
-        wall_seconds=900,      # 15 minutes
+        wall_seconds=float(os.environ.get('WALL_SECONDS', 900)),
         idle_seconds=2,
         budget_usd=0.0,
         workdir=state_dir,

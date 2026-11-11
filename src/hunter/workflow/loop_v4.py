@@ -354,7 +354,7 @@ class HuntLoopV4:
     # ----- clock -----------------------------------------------------------
 
     def clock(self) -> float:
-        return self._t_start + elapsed_seconds(self.state, 0.0)
+        return time.time()
 
     def _time_exhausted(self) -> bool:
         return time_left(self.state, self.clock()) <= 0.0
@@ -569,16 +569,20 @@ class HuntLoopV4:
                 self._log(f"[C{c}] [chainer] skipped (0 new findings)")
 
             # Register all new findings
-            new_ids: list[str] = []
+            new_titles: set[str] = set()
             for i, f in enumerate(all_findings):
                 fid = f"C{c}-L{f.get('source_lane','x')[:1].upper()}{i+1:02d}"
                 f["id"] = fid
+                title = (f.get("title") or "").strip()
+                if title:
+                    new_titles.add(title.lower())
                 add_finding(self.state, f)
-                new_ids.append(fid)
 
             # Phase 5: L1 VERIFY (conditional — only if new findings)
+            # Use title matching to survive dict copies from add_finding
             pending = [f for f in self.state.findings
-                       if isinstance(f, dict) and f.get("status") == "unverified" and f.get("id") in new_ids]
+                       if isinstance(f, dict) and f.get("status") == "unverified"
+                       and str(f.get("title","")).strip().lower() in new_titles]
             if pending:
                 self._log(f"[C{c}] [L1] verifying {len(pending)} new finding(s) (deterministic, no LLM)")
                 for f in pending:
