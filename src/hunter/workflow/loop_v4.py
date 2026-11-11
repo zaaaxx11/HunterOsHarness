@@ -277,10 +277,36 @@ def _num(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _candidates_from_args(args: dict) -> list[dict]:
-    findings = args.get("findings")
-    if isinstance(findings, list):
-        return [dict(f) for f in findings if isinstance(f, dict)]
+def _candidates_from_args(args: Any) -> list[dict]:
+    """Pull finding dicts out of a tool-call arguments payload.
+
+    Models are inconsistent about the wrapper key (``findings`` vs ``mappings``
+    vs a bare list) and sometimes emit a single finding object instead of a
+    list. Accept all of those so a real finding is never dropped on shape.
+    """
+    if args is None:
+        return []
+    # a bare list of findings
+    if isinstance(args, list):
+        return [dict(f) for f in args if isinstance(f, dict) and f.get("title")]
+    if not isinstance(args, dict):
+        return []
+    for key in ("findings", "mappings", "results", "items", "vulnerabilities",
+                "issues", "observations"):
+        v = args.get(key)
+        if isinstance(v, list):
+            return [dict(f) for f in v if isinstance(f, dict) and f.get("title")]
+        if isinstance(v, dict) and v.get("title"):
+            return [dict(v)]
+    # the dict itself is one finding
+    if args.get("title"):
+        return [dict(args)]
+    # nested: {"result": {"findings": [...]}}
+    for v in args.values():
+        if isinstance(v, dict):
+            inner = _candidates_from_args(v)
+            if inner:
+                return inner
     return []
 
 
@@ -534,6 +560,26 @@ class HuntLoopV4:
         for call in calls:
             args = call.get("arguments", {}) if isinstance(call, dict) else {}
             findings.extend(_candidates_from_args(args))
+
+        # A tool call that carries an EMPTY list is often the model "thinking
+        # out loud" (it plans, calls the tool, then reasons) — not a real
+        # "clean" verdict. Retry ONCE with a hard nudge before believing it.
+        if not findings:
+            nudge = (
+                user
+                + "\n\nYOUR PREVIOUS TOOL CALL CARRIED NO FINDINGS. That is only\n"
+                  "correct if the code is genuinely clean. Re-read the source and\n"
+                  "call the reporting tool NOW with every real issue you can cite.\n"
+                  "Use the EXACT `--- <path> ---` label as `file` and the gutter\n"
+                  "number as `line`. If it really is clean, return an empty list."
+            )
+            t2, c2, cost2 = self._ask_lane(lane, nudge, tools)
+            self._charge(state, cost2)
+            for call in c2:
+                args = call.get("arguments", {}) if isinstance(call, dict) else {}
+                findings.extend(_candidates_from_args(args))
+            cost += cost2
+            calls = calls + c2 if c2 else calls
 
         self._log(
             f"[C{self._cycle}] [{lane}] {len(findings)} finding(s) "
