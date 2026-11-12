@@ -555,10 +555,16 @@ def normalize_goals(goals: Any) -> dict[str, int]:
                 if key:
                     pairs.append((key, val))
             elif isinstance(item, str):
-                pairs.append((item, 1))
+                # "findings-min:5" is the documented CLI form
+                # (--goals 'rce-proven-live:1,findings-min:100'). Without this
+                # the colon form parsed to a bogus key, was dropped, and the
+                # operator's goal was silently ignored for the whole run.
+                key, sep, val = item.partition(":")
+                pairs.append((key if sep else item, val if sep else 1))
         items = pairs
     elif isinstance(goals, str):
-        items = [(goals, 1)]
+        key, sep, val = goals.partition(":")
+        items = [(key, val)] if sep else [(goals, 1)]
     else:
         return out
 
