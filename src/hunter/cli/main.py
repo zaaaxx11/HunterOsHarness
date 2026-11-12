@@ -374,7 +374,9 @@ def hunt(
         targets = [raw.strip()]
     # Interactive mode: no --time → ask the operator.
     # When --time was explicitly set to "0" (unlimited), skip the prompt.
-    if not time_opt and daemon_target is None:
+    # In --json mode a prompt would hang any non-tty consumer (pipe, CI,
+    # script) and corrupt machine output, so the default is used silently.
+    if not time_opt and daemon_target is None and not json_out:
         time_opt = typer.prompt("Time budget? (seconds — 21600 = 6h)", default="21600")
     # Free-form description: if the single argument is not a URL/dir, ask the
     # LLM to extract concrete targets from it.
@@ -586,14 +588,33 @@ def hunt(
             scope=first_scope,
             engine=rag_engine,
             time_budget_s=float(budget_s),
-            interval_s=45.0,
+            interval_s=15.0,  # matches `hunter loop --idle` default; a hunt
+                              # sleeps 15s between RAG cycles, not 45s, so a
+                              # short --time budget is spent scanning rather
+                              # than idling.
             high_water=8,
             dry_run=False,
             once=False,
             manage_daemon=False,
             provider=provider,
         )
-        RagLoop(rag_config).run()
+        rag_loop = RagLoop(rag_config)
+        rag_loop.run()
+        if json_out:
+            # The machine channel gets the run's own facts. Before this the
+            # RAG path exited 0 with an empty stdout — every `hunt --json`
+            # consumer (pipe, CI, the cockpit) parsed nothing at all.
+            import json as _json
+
+            console.print_json(_json.dumps({
+                "run_id": None,
+                "status": "completed",
+                "verified": 0,
+                "candidates": 0,
+                "findings": [],
+                "stats": rag_loop.summary(),
+                "report": None,
+            }))
         raise typer.Exit(0)
 
     import json

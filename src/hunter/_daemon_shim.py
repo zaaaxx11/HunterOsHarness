@@ -100,7 +100,14 @@ def _validate_hunt_task(*args: Any, **kwargs: Any) -> None:
 
 
 def stop_flag_path(*args: Any, **kwargs: Any) -> Path:
-    return Path("/dev/null")
+    """The stop flag, in a no-daemon install.
+
+    There is no daemon to signal, so there is no flag. The path MUST NOT be
+    one that exists (``/dev/null`` does): callers gate their loop on
+    ``stop_flag_path(...).exists()``, so an existing sentinel makes every hunt
+    wind down after zero cycles.
+    """
+    return Path("/dev/does-not-exist-no-daemon-stop-flag")
 
 
 def start_daemon_locked(*args: Any, **kwargs: Any) -> int:

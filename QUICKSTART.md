@@ -1,4 +1,4 @@
-# QUICKSTART — HunterOs Harness v0.7.0 in 60 seconds
+# QUICKSTART — HunterOs Harness v0.11.0 in 60 seconds
 
 Supported platforms, Python versions, shell-specific commands, WSL2 guidance,
 and portability troubleshooting: **[docs/PORTABILITY.md](docs/PORTABILITY.md)**.

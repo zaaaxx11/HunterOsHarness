@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/zaaaxx11/HunterOsHarness/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zaaaxx11/HunterOsHarness/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="version" src="https://img.shields.io/badge/version-0.7.0-16b8b0">
+  <img alt="version" src="https://img.shields.io/badge/version-0.11.0-16b8b0">
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-16b8b0">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-16b8b0">
   <img alt="offline core" src="https://img.shields.io/badge/deterministic%20core-offline-16b8b0">
@@ -467,7 +467,7 @@ ledger-only against `answer_key.json`.
 
 ## Status
 
-**v0.7.0** — bug-class taxonomy and evidence ladder, in-place ledger migration
+**v0.11.0** — bug-class taxonomy and evidence ladder, in-place ledger migration
 (`user_version = 2`), signal classification, coverage matrix, lane fan-out,
 learning loop, challenger wiring, ledger-as-context, an honest eval harness,
 and a tosca-gradient TUI with the HunterOS emblem.

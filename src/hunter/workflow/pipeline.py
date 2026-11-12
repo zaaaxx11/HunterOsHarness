@@ -23,6 +23,8 @@ failure (engine crash, ledger failure) marks the run ``failed``.
 from __future__ import annotations
 
 import contextlib
+import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -387,6 +389,12 @@ def _execute_scan(
             ledger.add_evidence(run_id, evidence.kind, {**evidence.data, "finding_key": candidate.key})
             for evidence in candidate.evidence
         )
+        # The claim gate demands poc_path at INSERT time (poc_path is an
+        # append-only protected column: set_finding_status can never add it,
+        # see the findings_protected_columns trigger). A candidate's first
+        # evidence carries the probe's own request, which IS a runnable
+        # reproduction — so materialise it now, before the claim exists.
+        poc_path = _write_candidate_poc(ledger, run_id, candidate, evidence_ids)
         claim = Finding(
             id="",
             run_id=run_id,
@@ -402,6 +410,7 @@ def _execute_scan(
             impact=candidate.impact,
             remediation=candidate.remediation,
             evidence_ids=evidence_ids,
+            poc_path=poc_path or None,
         )
         try:
             stored = ledger.create_finding(claim)
@@ -468,8 +477,12 @@ def _execute_scan(
         replay_data["finding_id"] = finding.id
         try:
             ledger.add_evidence(run_id, "http_exchange", replay_data)
+            # poc_path was bound at claim time (collect phase) — it is an
+            # append-only protected column, so promotion here is evidence-only.
             ledger.set_finding_status(
-                finding.id, FindingStatus.VERIFIED, "independent replay succeeded"
+                finding.id,
+                FindingStatus.VERIFIED,
+                "independent replay succeeded",
             )
             verified += 1
         except ClaimGateBlocked as blocked:
@@ -574,6 +587,149 @@ def replay_contract_read(args: dict[str, Any]) -> dict[str, Any]:
     return {"byte_equal": False, "verdict": "needs_follow_up",
             "second_host": bool(args.get("second_host", False)),
             "result_for_model": "replay divergence: needs_follow_up (never ruled_out)."}
+
+
+def _first_note(ledger: Any, evidence_ids: tuple[str, ...]) -> str:
+    """The first ``note``-kind evidence payload as text (``""`` when none)."""
+    try:
+        with getattr(ledger, "_lock", __import__("contextlib").nullcontext()):
+            for eid in evidence_ids:
+                row = ledger._conn.execute(  # noqa: SLF001 — same-package read
+                    "SELECT kind, data FROM evidence WHERE id = ?", (eid,)
+                ).fetchone()
+                if row and row[0] == "note":
+                    data = json.loads(row[1])
+                    return (
+                        data.get("text")
+                        or data.get("note")
+                        or json.dumps(data, indent=2, default=str)
+                    )
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+def _write_candidate_poc(
+    ledger: Any,
+    run_id: str,
+    candidate: CandidateFinding,
+    evidence_ids: tuple[str, ...],
+) -> str:
+    """Materialise a candidate's own probe evidence as an on-disk PoC artifact.
+
+    ``poc_path`` is an append-only protected column (the
+    ``findings_protected_columns`` trigger rejects any UPDATE of it), so the
+    claim gate's "CANDIDATE -> VERIFIED requires poc_path" can ONLY be
+    satisfied by passing the path to ``create_finding`` — the artifact has to
+    exist before the claim does. A candidate's first http_exchange evidence
+    carries the probe's real request; that exchange replayed is the PoC.
+
+    Never raises: a failed write must not kill the collect phase (the claim
+    is simply filed without a poc_path and stays a candidate, which is the
+    honest outcome).
+    """
+    try:
+        exchange: dict[str, Any] | None = None
+        with getattr(ledger, "_lock", __import__("contextlib").nullcontext()):
+            for eid in evidence_ids:
+                row = ledger._conn.execute(  # noqa: SLF001 — same-package read
+                    "SELECT kind, data FROM evidence WHERE id = ?", (eid,)
+                ).fetchone()
+                if row and row[0] == "http_exchange":
+                    exchange = json.loads(row[1])
+                    break
+        if exchange is None:
+            # Non-HTTP candidate (contract audit, mock engine): the evidence is
+            # a note, so the PoC artifact IS that note — written verbatim so
+            # the claim still carries a reviewable artifact on disk.
+            note = _first_note(ledger, evidence_ids)
+            if not note:
+                return ""
+            db_path = getattr(ledger, "_path", None)
+            base = Path(db_path).parent if db_path else Path.cwd()
+            out_dir = base / "pocs" / run_id
+            out_dir.mkdir(parents=True, exist_ok=True)
+            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate.key)[:80] or "finding"
+            poc = out_dir / f"{safe}.md"
+            poc.write_text(
+                "\n".join([
+                    f"# PoC record — {candidate.title}",
+                    "",
+                    f"- finding: {candidate.key}",
+                    f"- run: {run_id}",
+                    "- evidence class: note (no HTTP exchange — the claim is not a web replay)",
+                    "",
+                    "## Recorded evidence",
+                    "",
+                    "```",
+                    note,
+                    "```",
+                    "",
+                    "Promotion to VERIFIED requires the independent replay above to",
+                    "reproduce this signal on a fresh run.",
+                    "",
+                ]),
+                encoding="utf-8",
+            )
+            return str(poc)
+
+        db_path = getattr(ledger, "_path", None)
+        base = Path(db_path).parent if db_path else Path.cwd()
+        out_dir = base / "pocs" / run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate.key)[:80] or "finding"
+        poc = out_dir / f"{safe}.py"
+
+        method = str(exchange.get("method") or "GET").upper()
+        url = str(exchange.get("url") or "")
+        req_headers = {k: v for k, v in (exchange.get("request_headers") or {}).items()
+                       if k.lower() not in {"content-length", "host", "connection"}}
+        body = exchange.get("request_body") or ""
+        status = exchange.get("status") or exchange.get("status_code")
+        script = "\n".join([
+            "#!/usr/bin/env python3",
+            '"""Independent replay PoC — reproduces the signal that justified this claim.',
+            "",
+            f"finding : {candidate.key}",
+            f"title   : {candidate.title}",
+            f"run     : {run_id}",
+            '"""',
+            "",
+            "import sys",
+            "import urllib.request",
+            "",
+            f"URL = {url!r}",
+            f"METHOD = {method!r}",
+            f"HEADERS = {req_headers!r}",
+            f"PAYLOAD = {body!r}",
+            "EXPECT_STATUS = " + repr(status),
+            "",
+            "",
+            "def replay() -> int:",
+            "    req = urllib.request.Request(",
+            "        URL,",
+            "        data=(PAYLOAD.encode() if PAYLOAD else None),",
+            "        headers={**HEADERS, 'Content-Type': 'application/x-www-form-urlencoded'},",
+            "        method=METHOD,",
+            "    )",
+            "    with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310",
+            "        print(f'status: {resp.status}')",
+            "        print(resp.read().decode('utf-8', 'replace')[:2000])",
+            "        return resp.status",
+            "",
+            "",
+            "if __name__ == '__main__':",
+            "    code = replay()",
+            "    sys.exit(0 if code == EXPECT_STATUS else 1)",
+            "",
+        ])
+        poc.write_text(script, encoding="utf-8")
+        (out_dir / f"{safe}.exchange.json").write_text(
+            json.dumps(exchange, indent=2, default=str), encoding="utf-8"
+        )
+        return str(poc)
+    except Exception:  # noqa: BLE001 — a failed PoC write must not kill collect
+        return ""
 
 
 def _replay_candidate(

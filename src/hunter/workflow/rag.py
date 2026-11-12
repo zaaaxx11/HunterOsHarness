@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -440,16 +441,14 @@ class RagLoop:
                     )
                     running, detail = daemon_running(self.state_dir)
                     if not running:
-                        print(
+                        _rag_log(
                             f"[rag] BLOCKED: daemon did not start ({detail}) — "
                             f"tasks will be queued but nothing will run them. "
-                            f"check: hunt status --state {self.state_dir}",
-                            flush=True,
+                            f"check: hunt status --state {self.state_dir}"
                         )
                         return 3
             except Exception as exc:  # noqa: BLE001
-                print(f"[rag] BLOCKED: daemon start raised {type(exc).__name__}: {exc}",
-                      flush=True)
+                _rag_log(f"[rag] BLOCKED: daemon start raised {type(exc).__name__}: {exc}")
                 return 3
 
         # time_budget_s == 0 means unlimited — no deadline.
@@ -457,10 +456,11 @@ class RagLoop:
         last_finding_count = 0
         cycles = 0
         total_enqueued = 0
+        self.cycles = 0            # mirrored for summary() — run() may exit early
+        self.total_enqueued = 0
         while True:
             if stop_flag_path(self.state_dir).exists():
-                print(f"[rag] stop flag present — winding down after {cycles} cycle(s)",
-                      flush=True)
+                _rag_log(f"[rag] stop flag present — winding down after {cycles} cycle(s)")
                 break
             if time.monotonic() >= deadline:
                 break
@@ -476,6 +476,8 @@ class RagLoop:
                 current_count = last_finding_count
             delta = current_count - last_finding_count
             last_finding_count = current_count
+            self.cycles = cycles
+            self.total_enqueued = total_enqueued
 
             # Every cycle reports itself. A silent loop is indistinguishable
             # from a dead one, and the operator cannot tell "nothing found"
@@ -485,7 +487,7 @@ class RagLoop:
                     f"pending={pending} findings={current_count}")
             if delta > 0:
                 line += f" (+{delta} new)"
-            print(line, flush=True)
+            _rag_log(line)
 
             if self.config.once:
                 break
@@ -509,10 +511,9 @@ class RagLoop:
             ledger.close()
         except Exception:  # noqa: BLE001
             final_findings = last_finding_count
-        print(
+        _rag_log(
             f"[rag] done: cycles={cycles} enqueued={total_enqueued} "
-            f"findings={final_findings} state={self.state_dir}",
-            flush=True,
+            f"findings={final_findings} state={self.state_dir}"
         )
 
         # Deadline reached. Report honestly rather than prompting for an
@@ -529,12 +530,43 @@ class RagLoop:
             except Exception:  # noqa: BLE001
                 current_count = 0
             if current_count > 0:
-                print(
+                _rag_log(
                     f"waktu habis — {current_count} finding tercatat. "
                     f"daemon dibiarkan berjalan; jalankan `hunter hunt` lagi "
                     f"dengan --time lebih besar untuk melanjutkan."
                 )
         return 0
+
+
+    def summary(self) -> dict[str, Any]:
+        """Facts about the last ``run()``: cycles, enqueued, findings.
+
+        Returned rather than printed so ``hunt --json`` can emit it as the
+        machine payload on stdout — the RAG path used to print nothing, which
+        made every piped/CI consumer of ``hunt --json`` parse an empty stream.
+        """
+        try:
+            ledger = self._ledger()
+            findings = len(ledger.findings())
+            ledger.close()
+        except Exception:  # noqa: BLE001 — a read failure must not break output
+            findings = 0
+        return {
+            "state_dir": str(self.state_dir),
+            "cycles": getattr(self, "cycles", 0),
+            "enqueued": getattr(self, "total_enqueued", 0),
+            "findings": findings,
+        }
+
+
+def _rag_log(message: str) -> None:
+    """Operator-facing RAG telemetry.
+
+    Goes to stderr ALWAYS: stdout is the machine channel (``hunt --json``
+    writes its payload there), and a progress line mixed into it makes the
+    payload unparseable for every pipe/CI consumer.
+    """
+    print(message, file=sys.stderr, flush=True)
 
 
 def run_rag(config: RagConfig) -> int:
