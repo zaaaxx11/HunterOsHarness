@@ -63,6 +63,15 @@ except ImportError:
         Phase0Recon = None  # type: ignore
         run_recon = None    # type: ignore
 
+# ---- lenient JSON repair (truncated provider tool args) ---------------------
+try:
+    from .json_repair import repair_json_fragment
+except ImportError:
+    try:
+        from hunter.workflow.json_repair import repair_json_fragment  # type: ignore
+    except ImportError:
+        repair_json_fragment = None  # type: ignore
+
 # ---- LLM helper (deferred — import only when used) -------------------------
 
 __all__ = ["HuntLoop", "LANE_SOULS", "run_v4"]
@@ -397,26 +406,73 @@ def _norm_response(resp: Any) -> tuple[str, list[dict], float]:
     calls = _get(resp, "tool_calls", "calls") or []
     if not isinstance(calls, (list, tuple)):
         calls = []
+    def _call_name_args(c):
+        """Read provider tool-call shapes: openai nests name/arguments under
+        `function`, adapters may flatten them onto the call itself."""
+        if isinstance(c, dict):
+            fn = c.get("function")
+            if isinstance(fn, dict):
+                name = fn.get("name") or c.get("name") or ""
+                raw = fn.get("arguments")
+                if raw is None:
+                    raw = c.get("arguments")
+                if raw is None:
+                    raw = c.get("args")
+            else:
+                name = c.get("name") or ""
+                raw = c.get("arguments")
+                if raw is None:
+                    raw = c.get("args")
+        else:
+            fn = getattr(c, "function", None)
+            if isinstance(fn, dict):
+                name = fn.get("name") or getattr(c, "name", "") or ""
+                raw = fn.get("arguments")
+                if raw is None:
+                    raw = getattr(c, "arguments", None) or getattr(c, "args", None)
+            else:
+                name = getattr(c, "name", "") or ""
+                raw = getattr(c, "arguments", None)
+                if raw is None:
+                    raw = getattr(c, "args", None)
+        return name, raw
+
     norm_calls = []
     for c in calls:
-        if isinstance(c, dict):
-            args = c.get("arguments") or c.get("args") or {}
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    args = {}
-            norm_calls.append({"name": c.get("name", ""), "arguments": args or {}})
-        else:
-            args = getattr(c, "arguments", {}) or getattr(c, "args", {}) or {}
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    args = {}
-            norm_calls.append({"name": getattr(c, "name", ""), "arguments": args or {}})
+        name, raw_args = _call_name_args(c)
+        if raw_args is None:
+            raw_args = {}
+        args = raw_args
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {}          # repaired from the raw string afterwards
+        if isinstance(args, str):
+            args = {}
+        norm_calls.append({"name": name,
+                           "arguments": args if isinstance(args, dict) else {},
+                           "_raw_arguments": raw_args})
     cost = _num(_get(resp, "cost", "cost_usd"), 0.0)
+
+    # Providers that reason mid-call emit arguments as truncated JSON
+    # ('{"findings": ') — a strict parse throws real findings away.
+    for c in norm_calls:
+        if not c.get("arguments"):
+            c["arguments"] = _repair_args(c.get("_raw_arguments"))
     return text, norm_calls, cost
+
+
+def _repair_args(raw) -> dict:
+    """Lenient parse of a truncated tool-call arguments payload."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return repair_json_fragment(str(raw))
+    except Exception:
+        return {}
 
 
 def _parse_verdict(raw: str) -> dict:
