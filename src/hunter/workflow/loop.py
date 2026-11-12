@@ -573,7 +573,7 @@ class HuntLoop:
 
         builder = PromptBuilder(
             target=state.target or "",
-            files=[self._target_label()],
+            files=self._real_file_list(state),
             findings=state.findings[-30:],
         )
         prompt, tools = builder.build(lane, mode="sweep")
@@ -627,6 +627,24 @@ class HuntLoop:
         except Exception:
             pass
         return f"{self.state.target or 'unknown'}"
+
+    def _real_file_list(self, state: "HuntState", cap: int = 25) -> list[str]:
+        """Return REAL relative file paths under the target so PromptBuilder can
+        inline real source. A label string is useless — the file must exist."""
+        from pathlib import Path as _P
+        root = _P(state.target or "")
+        if root.is_file():
+            return [root.name]
+        if not root.is_dir():
+            return []
+        skip = {".venv", "node_modules", "__pycache__", ".git", "dist", "build"}
+        exts = (".py", ".sol", ".go", ".rs", ".js", ".ts", ".tsx", ".jsx")
+        try:
+            out = [str(p.relative_to(root)) for p in root.rglob("*")
+                   if p.is_file() and p.suffix in exts and not skip & set(p.parts)]
+            return out[:cap]
+        except Exception:
+            return []
 
     def _resolve_anchor_path(self, path: str) -> Path | None:
         """Resolve a cited path to a real file.

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 #: Max prompt chars (rough 1 token ≈ 4 chars for mixed ID/EN text).
-CEILING = 3800
+CEILING = 7000
 
 # ── static soul snippets (kept short — every char counts) ─────────
 
@@ -112,8 +112,15 @@ class PromptBuilder:
 
         # Safety: if prompt exceeds ceiling, trim the file list and
         # previously-recorded section (they are the most elastic).
-        while _count_tokens(prompt) > 1000:
-            prompt = self._trim(prompt)
+        # HARD BOUND: never spin — _trim must shrink, but if it ever fails to,
+        # this exits after a bounded number of passes.
+        _passes = 0
+        while _count_tokens(prompt) > 1000 and _passes < 12:
+            shorter = self._trim(prompt)
+            if len(shorter) >= len(prompt):
+                break  # _trim failed to shrink — do NOT loop forever
+            prompt = shorter
+            _passes += 1
 
         return prompt, tools
 
@@ -123,14 +130,14 @@ class PromptBuilder:
         role = _SNIPPET.get(agent, f"Kamu {agent.upper()}.")
         tasks = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(_TASKS.get(agent, [])))
         goals = _GOALS.get(agent, "≥1 finding per cycle.")
-        files = "\n".join(f"  {f}" for f in self.files[:20])
         known = self._known_section(agent)
+        snippet = self._source_snippet()
 
         return (
             f"ROLE: {role}\n\n"
             f"TARGET: {self.target}\n\n"
             f"TASKS:\n{tasks}\n\n"
-            f"FILES (read with read_file tool):\n{files}\n\n"
+            f"SOURCE:\n{snippet}\n\n"
             f"ALREADY RECORDED:\n{known}\n\n"
             f"GOALS: {goals}\n"
             f"Output: gunakan tool yang tersedia. Jangan narasi — langsung tool call."
@@ -174,12 +181,13 @@ class PromptBuilder:
         return "\n".join(lines)
 
     def _tools_for(self, agent: str) -> list[dict]:
+        """Return only the report tool — source is already inlined in the prompt."""
         if agent == "architect":
             return [{
                 "type": "function",
                 "function": {
                     "name": "report_mapping",
-                    "description": "Report a trust-graph mapping entry.",
+                    "description": "Report a trust-graph mapping entry (actor, asset, invariant, SPOF, boundary, data_flow).",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -195,7 +203,6 @@ class PromptBuilder:
                                         "file": {"type": "string"},
                                         "line": {"type": "integer"},
                                         "code": {"type": "string"},
-                                        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
                                     },
                                     "required": ["title", "type", "description"],
                                 },
@@ -209,7 +216,7 @@ class PromptBuilder:
             "type": "function",
             "function": {
                 "name": "report_finding",
-                "description": "Report a vulnerability finding.",
+                "description": "Report a vulnerability finding with file:line anchor.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -236,23 +243,54 @@ class PromptBuilder:
             },
         }]
 
+    def _source_snippet(self, max_lines: int = 200, max_chars: int = 7000) -> str:
+        """Inline a SMALL source window so the LLM has something to audit.
+
+        Returns numbered lines from the first file on the list. Kept tiny —
+        just enough context for the agent to reason, not the full source.
+        """
+        if not self.files:
+            return "(no source files available — report what you can infer)"
+        first = self.files[0]
+        # try to read it as a real path
+        from pathlib import Path as _P
+        root = _P(self.target) if self.target else _P(".")
+        if root.is_file():
+            fp = root
+        elif root.is_dir():
+            fp = root / first
+        else:
+            return f"(cannot resolve {first} from {self.target})"
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return f"(cannot read {first})"
+        lines = text.splitlines()[:max_lines]
+        snippet = "\n".join(f"{i+1:4d} | {line.strip()}" for i, line in enumerate(lines))
+        if len(snippet) > max_chars:
+            snippet = snippet[:max_chars] + "\n... (truncated)"
+        return f"--- {first} (first {len(lines)} lines) ---\n{snippet}"
+
+
     def _trim(self, prompt: str) -> str:
-        """Trim the most elastic section: ALREADY RECORDED or FILES."""
-        # halve the known section
+        """Shrink the prompt deterministically. MUST strictly reduce length —
+        the caller loops until under ceiling, so a no-op return hangs it."""
+        # 1) halve the known section (most elastic — repeats every cycle)
         marker = "ALREADY RECORDED:"
         if marker in prompt:
             parts = prompt.split(marker, 1)
-            known_lines = parts[1].split("\n")
-            if len(known_lines) > 5:
-                kept = known_lines[:1] + known_lines[2::2]  # keep every other
-                return parts[0] + marker + "\n".join(kept)
-        # halve the files section
-        marker2 = "FILES (read with read_file tool):"
-        if marker2 in prompt:
-            parts = prompt.split(marker2, 1)
-            file_lines = parts[1].split("\n")
-            if len(file_lines) > 15:
-                kept = file_lines[:10]
-                return parts[0] + marker2 + "\n".join(kept)
-        # desperate: strip to 1000 tokens raw
-        return prompt[:_count_tokens(prompt) * 4]
+            body = parts[1]
+            cut = body.find("\nGOALS:")
+            tail = body[cut:] if cut != -1 else ""
+            known = body[:cut] if cut != -1 else body
+            if len(known.split("\n")) > 3:
+                half = len(known) // 2
+                out = parts[0] + marker + known[:half] + tail
+                if len(out) < len(prompt):
+                    return out
+        # 2) hard truncate — always strictly shorter than the input
+        target = max(500, int(len(prompt) * 0.75))
+        if target < len(prompt):
+            return prompt[:target]
+        # 3) last resort — fixed cap (guaranteed shorter for any >2800 input)
+        return prompt[:2800]
