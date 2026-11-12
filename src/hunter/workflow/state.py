@@ -73,7 +73,7 @@ __all__ = [
 #: Bumped only when a field is removed or changes meaning.  Readers tolerate
 #: unknown extra keys and missing optional keys, so a bump never blocks a
 #: resume of an older file.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 STATE_FILENAME = "hunt_state.json"
 
