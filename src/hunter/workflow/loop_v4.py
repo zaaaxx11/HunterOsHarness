@@ -743,7 +743,11 @@ class HuntLoopV4:
                 if self._time_exhausted() or self._budget_exhausted():
                     break
                 tools = [_ARCHITECT_TOOL] if lane == "architect" else [_REPORT_FINDING_TOOL]
-                lane_findings = self._run_lane(lane, self.state, source, tools)
+                try:
+                    lane_findings = self._run_lane(lane, self.state, source, tools)
+                except Exception as exc:
+                    self._log(f"[C{c}] [{lane}] CRASH: {type(exc).__name__}: {_clip(str(exc))}")
+                    lane_findings = []
                 for f in lane_findings:
                     f.setdefault("source_lane", lane)
                     f.setdefault("cycle", c)

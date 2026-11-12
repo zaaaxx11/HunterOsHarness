@@ -1184,14 +1184,54 @@ def doctor(
     live: bool = typer.Option(
         False, "--live", help="Probe configured provider endpoints (real network, bounded)."
     ),
+    fix: bool = typer.Option(
+        False, "--fix", help="Automatically repair known failures (corrupt state, missing deps, bad schema)."
+    ),
 ) -> None:
-    """Check the environment: python, deps, ledger, engines, providers, chat db."""
+    """Check the environment: python, deps, ledger, engines, providers, chat db.
+
+    With ``--fix``, attempts automatic repair for known failures.
+    """
     import json
     from dataclasses import asdict
 
     from hunter.cli.doctor_core import collect_checks
 
     checks = collect_checks(state, live=live, ledger_factory=lambda: _open_ledger(state))
+
+    if v4:
+        try:
+            from hunter.cli.doctor_v4 import collect_v4_checks
+            checks += collect_v4_checks(state, live=live)
+        except Exception as exc:
+            from hunter.cli.doctor_core import Check
+            checks.append(Check("v4:collector", "fail", f"{type(exc).__name__}: {exc}"))
+
+    # Auto-fix pass
+    if fix:
+        from hunter.cli.doctor_fix import attempt_fixes
+        results = attempt_fixes(checks)
+        if results and not json_out:
+            console.print()
+            console.print("[bold]Auto-fix results:[/bold]")
+            for r in results:
+                mark = {"applied": "[hunter.success]FIXED[/hunter.success]",
+                        "needs_network": "[hunter.warning]NETWORK[/hunter.warning]",
+                        "skipped": "[dim]SKIPPED[/dim]",
+                        "failed": "[hunter.error]FAILED[/hunter.error]"}.get(r.action, r.action)
+                console.print(f"  {mark}  [bold]{r.label}[/bold] {r.detail}")
+            # Re-run checks after fix to show final state
+            checks = collect_checks(state, live=live,
+                                    ledger_factory=lambda: _open_ledger(state))
+            if v4:
+                try:
+                    from hunter.cli.doctor_v4 import collect_v4_checks
+                    checks += collect_v4_checks(state, live=live)
+                except Exception as exc:
+                    from hunter.cli.doctor_core import Check
+                    checks.append(Check("v4:collector", "fail",
+                                        f"{type(exc).__name__}: {exc}"))
+
     ok = all(check.status != "fail" for check in checks)
     if json_out:
         console.print_json(json.dumps({"checks": [asdict(c) for c in checks], "ok": ok}))
