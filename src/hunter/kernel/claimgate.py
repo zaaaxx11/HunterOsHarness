@@ -17,6 +17,8 @@ Rules (v0.1):
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .findings import Finding, FindingStatus
 
 
@@ -60,6 +62,23 @@ def validate_finding_insert(finding: Finding, evidence_count: int) -> None:
     validate_klass(finding.klass)
 
 
+def _artifact_on_disk(path: str | None) -> bool:
+    """True when ``path`` names a real, readable FILE.
+
+    A non-empty string is not proof: the rule says the artifact "must exist on
+    disk", and a path that was never written — or that names a directory —
+    satisfied the old check while carrying zero evidence. That is exactly the
+    fabrication the gate exists to stop.
+    """
+    if not path or not str(path).strip():
+        return False
+    try:
+        candidate = Path(str(path))
+        return candidate.is_file() and candidate.stat().st_size >= 0
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def validate_status_change(
     finding: Finding, new_status: FindingStatus, evidence_count: int
 ) -> None:
@@ -101,36 +120,38 @@ def validate_status_change(
                 "BLOCKED: CANDIDATE → VERIFIED requires >=2 evidence "
                 "(independent re-read + re-verification of the claim)."
             )
-        if not finding.poc_path:
+        if not _artifact_on_disk(finding.poc_path):
             raise ClaimGateBlocked(
                 "BLOCKED: CANDIDATE → VERIFIED requires poc_path — "
-                "a basic PoC artifact must exist on disk."
+                "a basic PoC artifact must exist ON DISK: "
+                f"{finding.poc_path!r} is not a readable file."
             )
 
     # --- VERIFIED → PROMOTED ---
     if finding.status == FindingStatus.VERIFIED and new_status == FindingStatus.PROMOTED:
-        if not finding.logs_path:
+        if not _artifact_on_disk(finding.logs_path):
             raise ClaimGateBlocked(
                 "BLOCKED: VERIFIED → PROMOTED requires logs_path — "
-                "a plain-text verification log must exist on disk."
+                f"a verification log must exist ON DISK: {finding.logs_path!r}"
             )
         if not finding.falsifier or not finding.falsifier.strip():
             raise ClaimGateBlocked(
                 "BLOCKED: VERIFIED → PROMOTED requires falsifier — "
                 "the adversary challenge must be recorded (what COULD disprove this)."
             )
-        if not finding.poc_path:
+        if not _artifact_on_disk(finding.poc_path):
             raise ClaimGateBlocked(
                 "BLOCKED: VERIFIED → PROMOTED requires poc_path — "
-                "the PoC must have been re-tested for mainnet viability."
+                f"the PoC must exist ON DISK: {finding.poc_path!r}"
             )
 
     # --- PROMOTED → PROVEN_LIVE ---
     if finding.status == FindingStatus.PROMOTED and new_status == FindingStatus.PROVEN_LIVE:
-        if not finding.poc_path or not finding.logs_path:
+        if not _artifact_on_disk(finding.poc_path) or not _artifact_on_disk(finding.logs_path):
             raise ClaimGateBlocked(
                 "BLOCKED: PROMOTED → PROVEN_LIVE requires poc_path AND logs_path — "
-                "proof of live execution + execution log are mandatory."
+                "both artifacts must exist ON DISK: "
+                f"poc={finding.poc_path!r} logs={finding.logs_path!r}"
             )
         if evidence_count < 2:
             raise ClaimGateBlocked(

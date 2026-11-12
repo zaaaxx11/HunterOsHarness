@@ -274,6 +274,13 @@ END;
 -- finding id exists. Replay evidence is an http_exchange with replay=true,
 -- OR a local_read (contract audit — the source code IS the replay). Mirrors
 -- the claim gate for raw SQL.
+-- RULE-E2 at the storage layer: a row can neither be created with nor
+-- updated to status 'verified' unless replay evidence bound to that exact
+-- finding id exists. Replay evidence is an http_exchange with replay=true,
+-- OR a local_read of the source code (a contract audit has no HTTP exchange —
+-- its "replay" is reading the same vulnerable line). EVERY branch is bound to
+-- NEW.id: an unbound `kind = 'local_read'` let any single local_read anywhere
+-- in the database satisfy the rule for an unrelated finding.
 CREATE TRIGGER IF NOT EXISTS findings_insert_verified_requires_replay
 BEFORE INSERT ON findings
 WHEN NEW.status = 'verified'
@@ -281,7 +288,11 @@ WHEN NEW.status = 'verified'
         SELECT 1 FROM evidence
         WHERE (kind = 'http_exchange' AND json_extract(data, '$.replay') = 1
                AND json_extract(data, '$.finding_id') = NEW.id)
-           OR kind = 'local_read'
+           OR (kind = 'local_read'
+               AND json_extract(data, '$.finding_id') = NEW.id)
+           OR (kind = 'local_read'
+               AND json_extract(data, '$.replay') = 1
+               AND json_extract(data, '$.finding_id') = NEW.id)
     )
 BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: verified requires replay evidence (RULE-E2)');
@@ -294,7 +305,8 @@ WHEN NEW.status = 'verified'
         SELECT 1 FROM evidence
         WHERE (kind = 'http_exchange' AND json_extract(data, '$.replay') = 1
                AND json_extract(data, '$.finding_id') = NEW.id)
-           OR kind = 'local_read'
+           OR (kind = 'local_read'
+               AND json_extract(data, '$.finding_id') = NEW.id)
     )
 BEGIN
     SELECT RAISE(ABORT, 'BLOCKED: verified requires replay evidence (RULE-E2)');
