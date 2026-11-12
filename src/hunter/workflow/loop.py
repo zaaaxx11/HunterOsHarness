@@ -655,9 +655,26 @@ class HuntLoop:
         split file is wrongly refuted.
         """
         clean = re.sub(r"#(p|h)\d+$", "", str(path or "")).strip()
+        # Salvage: the cited string often embeds a REAL filename
+        # ("--- server.py (first 200 lines) ---", "(cannot read server.py)").
+        # Extract that name first, so junk labels still anchor correctly.
+        root = self.state.target or str(self.workdir)
+        m = re.search(r"([\w.\-/]+\.(?:py|sol|go|rs|js|ts|tsx|jsx|md|json|toml|cfg))", clean)
+        if m and not re.fullmatch(r"[\w.]+", clean):
+            salvage = Path(root) / m.group(1)
+            try:
+                if salvage.exists() and salvage.is_file():
+                    return salvage
+            except OSError:
+                pass
+        if not clean or clean.startswith(("-", "{", "(")) \
+                or "first" in clean and "line" in clean \
+                or "cannot read" in clean or "unreadable" in clean.lower() \
+                or clean.endswith(":") and not clean.endswith("::") \
+                or clean.startswith("Source"):
+            return None
         if not clean:
             return None
-        root = self.state.target or str(self.workdir)
         cands = []
         c = Path(clean)
         if c.is_absolute():

@@ -289,8 +289,11 @@ class PromptBuilder:
                 if len(out) < len(prompt):
                     return out
         # 2) hard truncate — always strictly shorter than the input
-        target = max(500, int(len(prompt) * 0.75))
-        if target < len(prompt):
+        target = int(len(prompt) * 0.75)
+        if 200 < target < len(prompt):
             return prompt[:target]
-        # 3) last resort — fixed cap (guaranteed shorter for any >2800 input)
-        return prompt[:2800]
+        # 3) last resort — drop 10 chars at a time (guaranteed strictly shorter)
+        if len(prompt) > 200:
+            return prompt[:-10]
+        # 4) cannot shrink further — caller MUST detect this and stop
+        return prompt
