@@ -279,7 +279,7 @@ def test_ledger_default_state_dir_is_home(tmp_path, monkeypatch):
     ledger = Ledger()
     try:
         ledger.create_run("r1", "http://127.0.0.1:9/", "deterministic", "scope-x")
-        home = Path(os.environ["USERPROFILE"])
+        home = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home()))
         assert (home / ".hunter" / "ledger.db").is_file()
         assert not (tmp_path / ".hunter").exists()  # cwd default is gone
     finally:
@@ -304,7 +304,7 @@ def test_chat_db_default_moved(tmp_path, monkeypatch):
     store = ChatStore()
     try:
         store.create_session("hello")
-        home = Path(os.environ["USERPROFILE"])
+        home = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home()))
         assert (home / ".hunter" / "chat.db").is_file()
         assert not (home / ".hunteros" / "chat.db").exists()
     finally:

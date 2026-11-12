@@ -284,7 +284,7 @@ def test_resume_last_with_no_sessions_starts_fresh(store, monkeypatch):
 
 def test_repl_path_still_works_scripted(store, monkeypatch):
     """No prompt argument -> the REPL (regression guard), via the same seam."""
-    home = Path(os.environ["USERPROFILE"])
+    home = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home()))
     config_path = home / ".hunter" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("agent:\n  tier: basic\n", encoding="utf-8")

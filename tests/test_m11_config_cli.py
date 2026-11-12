@@ -23,13 +23,30 @@ from hunter.cli.main import app
 
 runner = CliRunner()
 
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):
+    """Never read or write the operator's real ~/.hunter.
+
+    `key list` decides its source label by comparing the live env value with
+    keys.env, and real-home pollution makes that comparison lie.
+    """
+    fake_home = tmp_path / "hunter-home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("HUNTEROS_CONFIG", raising=False)
+    monkeypatch.delenv("HUNTER_STATE_DIR", raising=False)
+    monkeypatch.delenv("HUNTEROS_KEYS_FILE", raising=False)
+    return fake_home
+
 SENTINEL = "sk-m11-sentinel-0xf00f-never-leak"
 KEY_VAR = "CUSTOM_API_KEY"
 CONFIG_DIRNAME = ".hunter"  # post-M1 home (M1 under test)
 
 
 def _home() -> Path:
-    return Path(os.environ["USERPROFILE"])
+    return Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or Path.home())
 
 
 def _config_path() -> Path:

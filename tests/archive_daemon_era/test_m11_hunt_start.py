@@ -45,7 +45,7 @@ def _patch_daemon_fn(monkeypatch, name, fn):
 
 
 def _home() -> Path:
-    return Path(os.environ["USERPROFILE"])
+    return Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or Path.home())
 
 
 def _config_path() -> Path:

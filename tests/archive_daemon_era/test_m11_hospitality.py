@@ -101,7 +101,7 @@ def test_backstop_appends_hint_for_hintless_config_error(capsys):
 def test_version_flag_prints_and_exits_zero_before_migration():
     """`hunter --version` prints and exits BEFORE keys/env/migration: a
     legacy-only home stays untouched and no migration notice prints."""
-    home = Path(os.environ["USERPROFILE"])
+    home = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home()))
     (home / ".hunteros").mkdir(parents=True, exist_ok=True)
     (home / ".hunteros" / "config.yaml").write_text("agent:\n  tier: basic\n", encoding="utf-8")
 

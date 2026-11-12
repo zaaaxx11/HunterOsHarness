@@ -243,7 +243,7 @@ def _isolated_home():
     import os
     from pathlib import Path
 
-    return Path(os.environ["USERPROFILE"])
+    return Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home()))
 
 
 async def _wait_and_collect(app) -> str:
