@@ -1199,14 +1199,6 @@ def doctor(
 
     checks = collect_checks(state, live=live, ledger_factory=lambda: _open_ledger(state))
 
-    if v4:
-        try:
-            from hunter.cli.doctor_v4 import collect_v4_checks
-            checks += collect_v4_checks(state, live=live)
-        except Exception as exc:
-            from hunter.cli.doctor_core import Check
-            checks.append(Check("v4:collector", "fail", f"{type(exc).__name__}: {exc}"))
-
     # Auto-fix pass
     if fix:
         from hunter.cli.doctor_fix import attempt_fixes
@@ -1223,14 +1215,6 @@ def doctor(
             # Re-run checks after fix to show final state
             checks = collect_checks(state, live=live,
                                     ledger_factory=lambda: _open_ledger(state))
-            if v4:
-                try:
-                    from hunter.cli.doctor_v4 import collect_v4_checks
-                    checks += collect_v4_checks(state, live=live)
-                except Exception as exc:
-                    from hunter.cli.doctor_core import Check
-                    checks.append(Check("v4:collector", "fail",
-                                        f"{type(exc).__name__}: {exc}"))
 
     ok = all(check.status != "fail" for check in checks)
     if json_out:
