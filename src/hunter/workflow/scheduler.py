@@ -26,7 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from hunter.daemon_health import memory_snapshot
+# inlined after the daemon purge: scheduler keeps its own memory probe
+# (the daemon_* half of that module is gone for good).
 
 __all__ = [
     "SEVERITY_WEIGHTS",
@@ -38,6 +39,91 @@ __all__ = [
 # How many child hunts a single finding may spawn, by severity. A verified
 # critical is worth four; an informational candidate is worth one
 # deterministic derivation and no LLM speculation.
+
+# ---- memory probe (inlined; daemon_health did not survive the purge) --------
+
+DEFAULT_MIN_AVAILABLE_MB = 256
+
+
+@dataclass(frozen=True)
+class MemorySnapshot:
+    """Available memory in MB, plus the raw figures for diagnostics."""
+
+    available_mb: float
+    total_mb: float
+    used_mb: float
+    source: str
+
+    @property
+    def pressure(self) -> str:
+        if self.available_mb < 128:
+            return "critical"
+        if self.available_mb < DEFAULT_MIN_AVAILABLE_MB:
+            return "high"
+        if self.available_mb < 512:
+            return "moderate"
+        return "low"
+
+
+def memory_snapshot() -> MemorySnapshot:
+    """Best-effort available memory. Never raises.
+
+    Linux reads ``/proc/meminfo`` (MemAvailable is the honest number — it
+    already accounts for reclaimable page cache). Elsewhere it falls back to
+    ``os.sysconf``, and if even that fails it reports a generous snapshot so a
+    missing probe never blocks work it cannot measure.
+    """
+    try:
+        info: dict[str, int] = {}
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                key, _, rest = line.partition(":")
+                parts = rest.split()
+                if parts:
+                    try:
+                        info[key.strip()] = int(parts[0])  # kB
+                    except ValueError:
+                        continue
+        total_kb = info.get("MemTotal", 0)
+        avail_kb = info.get("MemAvailable")
+        if avail_kb is None:
+            avail_kb = (
+                info.get("MemFree", 0)
+                + info.get("Buffers", 0)
+                + info.get("Cached", 0)
+                + info.get("SReclaimable", 0)
+            )
+        if total_kb > 0:
+            return MemorySnapshot(
+                available_mb=avail_kb / 1024.0,
+                total_mb=total_kb / 1024.0,
+                used_mb=(total_kb - avail_kb) / 1024.0,
+                source="procfs",
+            )
+    except OSError:
+        pass
+
+    try:  # pragma: no cover - non-Linux fallback
+        page = os.sysconf("SC_PAGE_SIZE")
+        total_pages = os.sysconf("SC_PHYS_PAGES")
+        avail_pages = os.sysconf("SC_AVPHYS_PAGES")
+        total_mb = total_pages * page / (1024 * 1024)
+        avail_mb = avail_pages * page / (1024 * 1024)
+        if total_mb > 0:
+            return MemorySnapshot(
+                available_mb=avail_mb,
+                total_mb=total_mb,
+                used_mb=total_mb - avail_mb,
+                source="sysconf",
+            )
+    except (ValueError, OSError, AttributeError):
+        pass
+
+    return MemorySnapshot(
+        available_mb=float("inf"), total_mb=0.0, used_mb=0.0, source="unknown",
+    )
+
+
 SEVERITY_WEIGHTS: dict[str, int] = {
     "critical": 4,
     "high": 3,

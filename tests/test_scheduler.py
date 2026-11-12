@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hunter.daemon_health import MemorySnapshot
+from hunter.workflow.scheduler import MemorySnapshot
 from hunter.workflow.scheduler import (
     SEVERITY_WEIGHTS,
     TaskBudget,

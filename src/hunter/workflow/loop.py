@@ -74,7 +74,28 @@ except ImportError:
 
 # ---- LLM helper (deferred — import only when used) -------------------------
 
-__all__ = ["HuntLoop", "LANE_SOULS", "run_v4"]
+# NOTE: this list is what ``from hunter.workflow.loop import *`` exports, so the
+# loop_v3/loop_v4 compat shims and the tests that import helpers by name keep
+# working. Underscore helpers are listed explicitly because "import *" skips
+# them unless named here.
+__all__ = [
+    "HuntLoop",
+    "LANE_SOULS",
+    "run_v4",
+    # module-level helpers (imported by name by loop_v4 shim + tests)
+    "_calls_from_text",
+    "_candidates_from_args",
+    "_clip",
+    "_load_soul",
+    "_norm_response",
+    "_number_lines",
+    "_num",
+    "_parse_verdict",
+    "_repair_args",
+    "_split_source",
+    "_target_files",
+    "repair_json_fragment",
+]
 
 _LOG_LIMIT = 500
 _MAX_ROUND_ERRORS = 3

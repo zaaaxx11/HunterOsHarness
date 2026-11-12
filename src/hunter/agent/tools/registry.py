@@ -46,8 +46,8 @@ from hunter.kernel.redaction import redact_text
 from hunter.tools.http_client import Exchange
 from hunter.tools.scope import ScopeViolation
 
-from .approval import classify_shell_command
-from .browser import (
+from ..approval import classify_shell_command
+from ..browser import (
     BROWSER_TOOL_NAMES,
     PLAYWRIGHT_INSTALL_HINT,
     BrowserInputError,
@@ -60,8 +60,8 @@ from .browser import (
     validate_selector,
     validate_url,
 )
-from .inventory import inventory_binaries
-from .tools_base import ToolContext, ToolOutcome, ToolRegistry, ToolSpec
+from ..inventory import inventory_binaries
+from ..tools_base import ToolContext, ToolOutcome, ToolRegistry, ToolSpec
 
 __all__ = [
     "ACTIVE_PROBES",
