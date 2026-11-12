@@ -626,7 +626,7 @@ class HuntLoop:
                 return f"{root.name}/ (directory)"
         except Exception:
             pass
-        return f"{self.state.target or "unknown"}"
+        return f"{self.state.target or 'unknown'}"
 
     def _resolve_anchor_path(self, path: str) -> Path | None:
         """Resolve a cited path to a real file.
