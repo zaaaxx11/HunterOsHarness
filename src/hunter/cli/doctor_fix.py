@@ -69,8 +69,8 @@ def _fix_corrupt_hunt_state(check: Check) -> FixResult:
 
 
 def _fix_missing_target_json(check: Check) -> FixResult:
-    """Create a skeleton target.json; the operator must fill it."""
-    ws = Path.cwd()
+    """Create a skeleton target.json where the state directory lives."""
+    ws = Path(os.environ.get("HUNTER_STATE_DIR") or os.path.expanduser("~/.hunter"))
     path = ws / "target.json"
     if path.exists():
         return FixResult(check.label, "skipped", "already exists")

@@ -558,7 +558,7 @@ class HuntLoopV4:
             if not calls and text.strip():
                 calls = _calls_from_text(text)
         if not calls:
-            raw = str(self.llm.complete(soul + _JSON_STRICT, user) or "")
+            raw = str(self.llm.complete(soul, user) or "")
             if raw.strip():
                 text = text or raw
                 calls = _calls_from_text(raw)
@@ -597,14 +597,13 @@ class HuntLoopV4:
         # "clean" verdict. Retry ONCE with a hard nudge before believing it.
         if not findings:
             nudge = (
-                user
-                + "\n\nYOUR PREVIOUS TOOL CALL CARRIED NO FINDINGS. That is only\n"
-                  "correct if the code is genuinely clean. Re-read the source and\n"
-                  "call the reporting tool NOW with every real issue you can cite.\n"
-                  "Use the EXACT `--- <path> ---` label as `file` and the gutter\n"
-                  "number as `line`. If it really is clean, return an empty list."
+                "\n\nYOUR PREVIOUS TOOL CALL CARRIED NO FINDINGS. That is only\n"
+                "correct if the code is genuinely clean. Re-read the source and\n"
+                "call the reporting tool NOW with every real issue you can cite.\n"
+                "Use the EXACT `--- <path> ---` label as `file` and the gutter\n"
+                "number as `line`. If it really is clean, return an empty list."
             )
-            t2, c2, cost2 = self._ask_lane(lane, nudge, tools)
+            t2, c2, cost2 = self._ask_lane(lane, user + nudge, tools)
             self._charge(state, cost2)
             for call in c2:
                 args = call.get("arguments", {}) if isinstance(call, dict) else {}
@@ -766,7 +765,8 @@ class HuntLoopV4:
                 try:
                     raw = self.llm.complete(_load_soul("chainer"), chain_prompt)
                     chains = json.loads(raw[raw.find("{"):raw.rfind("}")+1]).get("chains", [])
-                except Exception:
+                except Exception as exc:
+                    self._log(f"[C{c}] [chainer] parse error: {_clip(str(exc))}")
                     chains = []
                 for ch in chains:
                     ch.setdefault("source_lane", "chainer")
