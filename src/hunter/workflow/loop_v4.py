@@ -506,7 +506,7 @@ class HuntLoopV4:
         self._idle_streak = 0
         self._cycle = int(self.state.round or 0)
         self._t_start = time.time()
-        self._tools_work = True
+        self._tools_work = True   # reset per cycle, not per session
 
     # ----- clock -----------------------------------------------------------
 
@@ -538,7 +538,7 @@ class HuntLoopV4:
         cwt = getattr(self.llm, "complete_with_tools", None)
 
         text, calls, cost = "", [], 0.0
-        if callable(cwt) and self._tools_work:
+        if callable(cwt):
             resp = cwt(soul, user, tools)
             text, calls, cost = _norm_response(resp)
             if not calls:
@@ -555,8 +555,6 @@ class HuntLoopV4:
                     cost += cost2
                     if c2:
                         calls, text = c2, (t2 or text)
-            if not calls:
-                self._tools_work = False
             if not calls and text.strip():
                 calls = _calls_from_text(text)
         if not calls:
