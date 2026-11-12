@@ -125,8 +125,10 @@ def test_evidence_ids_strip_replay_without_status_change_blocked(tmp_path, make_
     change must be rejected (RULE-E2 at storage)."""
     led = make_ledger()
     led.create_run("r1", "t", "e", "s")
+    from _support import write_poc
+
     ev_id = led.add_evidence("r1", "http_response", {"body": "signal"})
-    led.create_finding(_finding(evidence_ids=(ev_id,)))
+    led.create_finding(_finding(evidence_ids=(ev_id,), poc_path=write_poc(tmp_path)))
     replay_id = led.add_evidence(
         "r1", "http_exchange", {"replay": True, "finding_id": "F-0001", "status": 200}
     )

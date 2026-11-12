@@ -14,6 +14,7 @@ import json
 import re
 
 import pytest
+from pathlib import Path
 from typer.testing import CliRunner
 
 from hunter.errors import HunterError
@@ -68,10 +69,24 @@ def _seed_finding(
     status: str,
     klass: str = "sql-injection",
     title: str = "SQL injection in login username",
-    poc_path: str | None = "/tmp/poc_sqli_login.py",
+    poc_path: str | None = None,
+    tmp_path=None,
     extra_evidence: dict | None = None,
 ) -> Finding:
-    """Create + drive a finding to ``status`` through the ledger's own paths."""
+    """Create + drive a finding to ``status`` through the ledger's own paths.
+
+    ``poc_path`` defaults to a REAL artifact written next to the state dir: the
+    claim gate refuses CANDIDATE -> VERIFIED without one, and poc_path is an
+    append-only column, so it has to exist before ``create_finding``. Passing
+    ``poc_path=""`` explicitly opts out (for claims that must stay below
+    VERIFIED).
+    """
+    from _support import write_poc
+
+    db = Path(getattr(ledger, "_path", None) or ".")
+    artifact = poc_path
+    if artifact is None:
+        artifact = write_poc(tmp_path or db.parent, f"poc-{key.split('|')[0]}.py")
     base = ledger.add_evidence(
         run_id,
         "http_exchange",
@@ -107,7 +122,7 @@ def _seed_finding(
             klass=klass,
             falsifier="Parameterized query returns a generic error.",
             action_class="auth-test",
-            poc_path=poc_path,
+            poc_path=(artifact or None),
         )
     )
     status = str(getattr(status, "value", status))
@@ -243,6 +258,11 @@ def runner():
 
 
 def _cli_env(monkeypatch, ledger: Ledger, tmp_path):
+    # HOME too: without it `hunter promote skill` writes into the operator's
+    # real ~/.hunter/skills/, and the run refuses to overwrite a skill an
+    # earlier run left there. A suite must never touch the real home.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("HUNTER_STATE_DIR", str(ledger.path.parent))
     monkeypatch.setenv("HUNTEROS_CONFIG", str(tmp_path / "config.yaml"))
     monkeypatch.setenv("HUNTEROS_NO_UPDATE_CHECK", "1")

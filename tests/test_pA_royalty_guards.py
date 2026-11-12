@@ -94,9 +94,13 @@ def test_pa_royalty_rule_e1_finding_requires_bound_evidence(royalty_ledger: Ledg
     assert royalty_ledger.findings("r1") == []  # no finding without EV-ids, ever
 
 
-def test_pa_royalty_rule_e2_verified_requires_replay(royalty_ledger: Ledger) -> None:
+def test_pa_royalty_rule_e2_verified_requires_replay(royalty_ledger: Ledger, tmp_path) -> None:
+    from _support import write_poc
+
     evidence_id = royalty_ledger.add_evidence("r1", "http_exchange", {"url": "http://127.0.0.1/"})
-    created = royalty_ledger.create_finding(_royalty_finding(evidence_ids=(evidence_id,)))
+    created = royalty_ledger.create_finding(
+        _royalty_finding(evidence_ids=(evidence_id,), poc_path=write_poc(tmp_path))
+    )
     assert created.status is FindingStatus.CANDIDATE
     with pytest.raises(ClaimGateBlocked, match="RULE-E2"):
         royalty_ledger.set_finding_status(created.id, FindingStatus.VERIFIED, reason="looks real")

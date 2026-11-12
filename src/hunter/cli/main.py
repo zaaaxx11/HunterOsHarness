@@ -374,9 +374,13 @@ def hunt(
         targets = [raw.strip()]
     # Interactive mode: no --time → ask the operator.
     # When --time was explicitly set to "0" (unlimited), skip the prompt.
-    # In --json mode a prompt would hang any non-tty consumer (pipe, CI,
-    # script) and corrupt machine output, so the default is used silently.
-    if not time_opt and daemon_target is None and not json_out:
+    # The prompt is also skipped in --json mode and when stdin is NOT a tty:
+    # a non-tty caller (pipe, CI, a chat command, a scripted test) cannot
+    # answer it, so the command must fall back to the default instead of
+    # blocking on a read that will never come.
+    if not time_opt and daemon_target is None and (json_out or not _stdin_isatty()):
+        time_opt = "21600"
+    elif not time_opt and daemon_target is None:
         time_opt = typer.prompt("Time budget? (seconds — 21600 = 6h)", default="21600")
     # Free-form description: if the single argument is not a URL/dir, ask the
     # LLM to extract concrete targets from it.
@@ -582,6 +586,25 @@ def hunt(
             err_console.print(
                 "[hunter.error]BLOCKED:[/hunter.error] no scope resolved for any target")
             raise typer.Exit(3)
+        # The operator summary every hunt used to print from the single-target
+        # path: which target was accepted and which skills the run mounted.
+        # It lives here because EVERY hunt now runs through the RAG loop —
+        # the single-target branch below is only the dead fallback.
+        rag_target = targets[0]
+        if not json_out:
+            host = urlparse(rag_target).hostname if "://" in rag_target else None
+            shown = f" (host: {host})" if host else ""
+            typer.echo(f"target check: {rag_target} — valid URL{shown}"
+                       if host else f"target check: {rag_target}")
+            try:
+                from hunter.agent.skills import selected_skill_names
+
+                rag_selected = selected_skill_names(rag_target, rag_target)
+            except Exception:  # noqa: BLE001 — the banner is advisory only
+                rag_selected = []
+            typer.echo(f"skills mounted: {len(rag_selected)}" + (
+                f" ({', '.join(f'{n} [{s}]' for n, s in rag_selected)})"
+                if rag_selected else ""))
         rag_config = RagConfig(
             state_dir=resolved_state,
             target=targets[0],
@@ -1195,6 +1218,14 @@ def init(
 
 
 # -------------------------------------------------------------------- doctor ---
+
+def _stdin_isatty() -> bool:
+    """True only when a human is at a terminal. Never raises."""
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:  # noqa: BLE001 — a dead/detached stdin is a non-tty
+        return False
+
 
 @app.command()
 def doctor(

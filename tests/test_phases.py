@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from _support import write_poc
+
 from hunter.engine.base import CandidateFinding, EngineResult
 from hunter.errors import HunterError
 from hunter.kernel.events import EventKind
@@ -77,8 +79,14 @@ def canonical_starts(ledger: Ledger, phase: str):
     ]
 
 
-def seed_verified_finding(ledger: Ledger, key: str = "reflected-xss|GET|/search|q") -> str:
-    """One VERIFIED finding through the real claim gate (RULE-E1/E2 honored)."""
+def seed_verified_finding(ledger, tmp_path=None, key: str = "reflected-xss|GET|/search|q") -> str:
+    """One VERIFIED finding through the real claim gate (RULE-E1/E2 honored).
+
+    RULE-E1 (>=1 evidence), RULE-E2 (replay evidence bound) AND the poc_path
+    requirement all apply: the artifact has to exist before the claim, because
+    poc_path is an append-only column the gate reads on the row.
+    """
+    poc = write_poc(tmp_path) if tmp_path is not None else ""
     evidence = ledger.add_evidence(
         RUN, "http_exchange", {"method": "GET", "url": f"{TARGET}search?q=canary", "status": 200}
     )
@@ -94,6 +102,7 @@ def seed_verified_finding(ledger: Ledger, key: str = "reflected-xss|GET|/search|
             method="GET",
             param="q",
             evidence_ids=(evidence,),
+            poc_path=poc or None,
         )
     )
     ledger.add_evidence(
@@ -148,7 +157,7 @@ def test_machine_happy_path_pairs_events_in_rank_order(tmp_path):
     ledger.append(RUN, "probe_result", {"check_id": "reflected-xss", "candidates": 1, "hit": True})
     state.close_current()
     state.start("verify")
-    seed_verified_finding(ledger)
+    seed_verified_finding(ledger, tmp_path)
     state.close_current()
     state.start("report")
     mark_report_rendered(ledger, RUN, fmt="markdown", sha256="ab" * 32, chars=42)
@@ -344,7 +353,7 @@ def test_verify_gate(tmp_path):
     result = check_gate(ledger, RUN, "verify")
     assert result.passed is True  # vacuously: zero findings, zero unresolved
     assert result.evidence["findings"] == 0
-    seed_verified_finding(ledger)
+    seed_verified_finding(ledger, tmp_path)
     result = check_gate(ledger, RUN, "verify")
     assert result.passed is True
     assert result.evidence == {"findings": 1, "verified": 1, "ruled_out": 0, "unresolved": []}
@@ -639,7 +648,7 @@ def test_retro_lesson_ruled_out(tmp_path):
 def test_retro_lesson_verified_ladder_held(tmp_path):
     ledger = Ledger(tmp_path / "ledger.db")
     seed_run(ledger)
-    seed_verified_finding(ledger)
+    seed_verified_finding(ledger, tmp_path)
     report = compute_retro(ledger, RUN)
     assert report.lessons == [
         "1 finding(s) verified by independent replay — the evidence ladder held end to end."

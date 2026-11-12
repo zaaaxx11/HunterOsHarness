@@ -138,6 +138,8 @@ def test_hunt_banner_line_shows_selected_sources(monkeypatch, tmp_path):
                 "--engine",
                 "deterministic",
                 "--yes",
+                "--time",
+                "5",
                 "--state",
                 str(tmp_path / "state"),
             ],
@@ -165,6 +167,7 @@ def _verified_ledger(tmp_path, run_id="R-SURFACE"):
     ledger = Ledger(tmp_path / "ledger.db")
     ledger.create_run(run_id, "https://example.test/", "deterministic", "test")
     evidence = ledger.add_evidence(run_id, "http_exchange", {"method": "GET", "url": "https://example.test/"})
+    from _support import write_poc
     finding = ledger.create_finding(
         Finding(
             id="",
@@ -176,6 +179,7 @@ def _verified_ledger(tmp_path, run_id="R-SURFACE"):
             endpoint="/search",
             remediation="Replay the marker.",
             evidence_ids=(evidence,),
+            poc_path=write_poc(tmp_path),
         )
     )
     replay = ledger.add_evidence(run_id, "http_exchange", {"replay": True, "finding_id": finding.id})

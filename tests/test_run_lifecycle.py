@@ -20,6 +20,7 @@ import sqlite3
 
 import pytest
 import typer
+from pathlib import Path
 
 from hunter.kernel.events import EventKind
 from hunter.kernel.findings import Finding, FindingStatus, Severity
@@ -50,6 +51,7 @@ def _seed_run(ledger: Ledger, run_id: str = RUN) -> str:
 
 def _finding(ledger: Ledger, run_id: str, key: str, severity: Severity) -> Finding:
     ev = ledger.add_evidence(run_id, "note", {"obs": key})
+    poc = _poc_next_to_ledger(ledger, run_id, key)
     return ledger.create_finding(
         Finding(
             id="",
@@ -60,8 +62,25 @@ def _finding(ledger: Ledger, run_id: str, key: str, severity: Severity) -> Findi
             cwe="CWE-89",
             endpoint="/search",
             evidence_ids=(ev,),
+            poc_path=str(poc),
         )
     )
+
+
+def _poc_next_to_ledger(ledger: Ledger, run_id: str, key: str) -> Path:
+    """Write the PoC beside the ledger (``pocs/<run_id>/``), as the pipeline does.
+
+    The claim gate needs poc_path on the row; it is an append-only column, so
+    the artifact has to exist BEFORE the claim. Writing it next to the ledger
+    also keeps tmp_path threading out of every helper signature.
+    """
+    import re as _re
+
+    from _support import write_poc
+
+    db = Path(getattr(ledger, "_path", None) or Path.cwd())
+    safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", key)[:80] or "finding"
+    return Path(write_poc(db.parent, f"{safe}.py"))
 
 
 def _proven_finding(ledger: Ledger, run_id: str, key: str, severity: Severity) -> Finding:

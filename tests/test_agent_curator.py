@@ -61,6 +61,7 @@ def _verified_run(tmp_path: Path, run_id: str = "R-CURATE"):
     ledger = Ledger(tmp_path / "ledger.db")
     ledger.create_run(run_id, "https://example.test/", "deterministic", "test")
     evidence = ledger.add_evidence(run_id, "http_exchange", {"method": "GET", "url": "https://example.test/"})
+    from _support import write_poc
     finding = ledger.create_finding(
         Finding(
             id="",
@@ -72,6 +73,7 @@ def _verified_run(tmp_path: Path, run_id: str = "R-CURATE"):
             endpoint="/search",
             remediation="Replay the reflected marker and bind both exchanges.",
             evidence_ids=(evidence,),
+            poc_path=write_poc(tmp_path),
         )
     )
     replay = ledger.add_evidence(

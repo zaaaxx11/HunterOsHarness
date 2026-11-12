@@ -36,6 +36,8 @@ def ledger(make_ledger):
 
 
 def _finding(**overrides) -> Finding:
+    """A candidate finding. ``poc_path`` must be overridden for any claim that
+    is expected to reach VERIFIED — the gate reads that column on the row."""
     kwargs: dict = dict(
         id="",
         run_id="r1",
@@ -235,9 +237,12 @@ def test_create_finding_success(ledger):
 # -- I4: status transitions -----------------------------------------------------
 
 
-def test_verified_requires_replay_evidence(ledger):
+def test_verified_requires_replay_evidence(ledger, tmp_path):
+    from _support import write_poc
+
+    poc = write_poc(tmp_path)
     ev_id = ledger.add_evidence("r1", "http_response", {"body": "signal"})
-    ledger.create_finding(_finding(evidence_ids=(ev_id,)))
+    ledger.create_finding(_finding(evidence_ids=(ev_id,), poc_path=poc))
     with pytest.raises(ClaimGateBlocked):
         ledger.set_finding_status("F-0001", FindingStatus.VERIFIED, "no replay yet")
     assert ledger.get_finding("F-0001").status is FindingStatus.CANDIDATE

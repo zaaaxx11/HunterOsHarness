@@ -84,9 +84,13 @@ def test_r2a_royalty_rule_e1_finding_requires_bound_evidence(r2a_ledger: Ledger)
     assert r2a_ledger.findings("r-r2a") == []
 
 
-def test_r2a_royalty_rule_e2_verified_requires_replay(r2a_ledger: Ledger) -> None:
+def test_r2a_royalty_rule_e2_verified_requires_replay(r2a_ledger: Ledger, tmp_path) -> None:
+    from _support import write_poc
+
     eid = r2a_ledger.add_evidence("r-r2a", "http_exchange", {"url": "http://127.0.0.1/"})
-    created = r2a_ledger.create_finding(_finding(evidence_ids=(eid,)))
+    created = r2a_ledger.create_finding(
+        _finding(evidence_ids=(eid,), poc_path=write_poc(tmp_path))
+    )
     assert created.status is FindingStatus.CANDIDATE
     with pytest.raises(ClaimGateBlocked, match="RULE-E2"):
         r2a_ledger.set_finding_status(created.id, FindingStatus.VERIFIED, reason="looks real")
