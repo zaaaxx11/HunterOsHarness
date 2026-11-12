@@ -710,6 +710,21 @@ class HuntLoop:
             finding["l2"] = {"verdict": "error", "reason": str(exc)[:200]}
             self._log(f"  L2: ERROR — {exc}")
 
+        # L3: PoC execution gate (web2) — only on verified findings with a reachable target
+        if (finding.get("status") == "verified"
+                and finding.get("title") and self.target):
+            try:
+                from hunter.workflow.poc_web2 import run_poc_web2  # noqa: PLC0415
+                poc_res = run_poc_web2(finding, self.target)
+                finding["l3"] = poc_res
+                if poc_res.get("ok"):
+                    finding["status"] = "proven_live"
+                    self._log(f"  L3: PROVEN — {str(poc_res.get('diff',''))[:100]}")
+                else:
+                    self._log(f"  L3: unmatched — {str(poc_res.get('output',''))[:100]}")
+            except Exception as exc:
+                self._log(f"  L3: skipped — {type(exc).__name__}: {exc}")
+
     # ----- main loop -------------------------------------------------------
 
     def run(self) -> HuntState:
@@ -772,6 +787,27 @@ class HuntLoop:
                     ch.setdefault("source_lane", "chainer")
                     ch.setdefault("cycle", c)
                     ch.setdefault("status", "unverified")
+                    # Auto-anchor: inherit the highest-severity ancestor's file:line
+                    # so chainer findings never stay unverified for lack of an anchor.
+                    _ancestors = [f for f in all_findings
+                                  if any(k.lower() in str(ch.get("title","")).lower()
+                                         or k.lower() in str(ch.get("steps","")).lower()
+                                         for k in (str(f.get("title","")).split()[:3]))]
+                    if not _ancestors and len(all_findings) <= 10:
+                        _ancestors = all_findings  # small batch → inherit any
+                    if _ancestors:
+                        best = max(_ancestors, key=lambda f: (
+                            {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+                            .get(str(f.get("severity","")).lower(), 0)))
+                        anchor = best.get("file_line") or (
+                            f"{best.get('file','')}:{best.get('line','')}"
+                            if best.get("file") and best.get("line") else None)
+                        if anchor:
+                            ch["file_line"] = anchor
+                            ch["file"] = best.get("file", "")
+                            ch["line"] = best.get("line", "")
+                            ch["severity"] = ch.get("severity") or best.get("severity")
+                            ch["ancestors"] = [best.get("id", ""), best.get("title", "")]
                     all_findings.append(ch)
                 self._log(f"[C{c}] [chainer] {len(chains)} chain(s)")
             else:
