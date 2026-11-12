@@ -566,25 +566,18 @@ class HuntLoop:
 
     # ----- one lane phase --------------------------------------------------
 
-    def _run_lane(self, lane: str, state: HuntState, source: str | None, tools: list[dict]) -> list[dict]:
-        known = _known_titles(state)
-        user = (
-            f"TARGET: {state.target or '(unspecified)'}\n"
-            f"CYCLE: {self._cycle}\n"
-            f"TIME LEFT: {int(time_left(state, self.clock()))}s\n"
-            f"LANE: {lane.upper()}\n"
-            + (f"ALREADY RECORDED ({len(known)}) — do NOT report these again:\n" +
-               "\n".join(f"  {i}. {t}" for i, t in enumerate(known, 1)) + "\n"
-               if known else "ALREADY RECORDED: none — this is the first cycle.\n")
-            + "\nTARGET SOURCE — each block is headed `--- <path> ---`; the gutter on\n"
-              "each line is the REAL line number. Set `file` to the EXACT path from\n"
-              "the nearest `--- <path> ---` header above the line you cite, and\n"
-              "`line` to the number shown in the gutter. A claim with a wrong\n"
-              "file:line is rejected by the verifier.\n\n"
-            + (source or "(source not readable)")
-        )
+    def _run_lane(self, lane: str, state: HuntState, tools: list[dict]) -> list[dict]:
+        """Build a 1000-token prompt via PromptBuilder, call the LLM, parse findings."""
+        # Use PromptBuilder for all lanes (sweep mode — broad audit)
+        from hunter.workflow.prompt_builder import PromptBuilder
 
-        text, calls, cost = self._ask_lane(lane, user, tools)
+        builder = PromptBuilder(
+            target=state.target or "",
+            files=[self._target_label()],
+            findings=state.findings[-30:],
+        )
+        prompt, tools = builder.build(lane, mode="sweep")
+        text, calls, cost = self._ask_lane(lane, prompt, tools)
         self._charge(state, cost)
 
         findings: list[dict] = []
@@ -603,7 +596,7 @@ class HuntLoop:
                 "Use the EXACT `--- <path> ---` label as `file` and the gutter\n"
                 "number as `line`. If it really is clean, return an empty list."
             )
-            t2, c2, cost2 = self._ask_lane(lane, user + nudge, tools)
+            t2, c2, cost2 = self._ask_lane(lane, prompt + nudge, tools)
             self._charge(state, cost2)
             for call in c2:
                 args = call.get("arguments", {}) if isinstance(call, dict) else {}
@@ -618,6 +611,22 @@ class HuntLoop:
         return findings
 
     # ----- verification ----------------------------------------------------
+
+
+    def _target_label(self) -> str:
+        """Return a concise file inventory string for the PromptBuilder."""
+        try:
+            root = Path(self.state.target or self.workdir)
+            if root.is_file():
+                return f"{root.name} ({root.stat().st_size // 1024}KB)"
+            if root.is_dir():
+                py = list(root.rglob("*.py")) + list(root.rglob("*.sol")) + list(root.rglob("*.go"))
+                if py:
+                    return f"{root.name}/ ({len(py)} files)"
+                return f"{root.name}/ (directory)"
+        except Exception:
+            pass
+        return f"{self.state.target or "unknown"}"
 
     def _resolve_anchor_path(self, path: str) -> Path | None:
         """Resolve a cited path to a real file.
@@ -747,7 +756,7 @@ class HuntLoop:
             self._log(f"\n{'='*60}\n[CYCLE {c}] elapsed={int(elapsed_seconds(self.state,self.clock()))}s "
                       f"remaining={int(time_left(self.state,self.clock()))}s\n{'='*60}")
 
-            source = self._source_for_lane("architect")  # same source for all 3
+            # source no longer inlined — PromptBuilder handles file access per agent
 
             # Phase 1-3: three lanes (sequential, conceptually parallel)
             all_findings: list[dict] = []
@@ -756,7 +765,7 @@ class HuntLoop:
                     break
                 tools = [_ARCHITECT_TOOL] if lane == "architect" else [_REPORT_FINDING_TOOL]
                 try:
-                    lane_findings = self._run_lane(lane, self.state, source, tools)
+                    lane_findings = self._run_lane(lane, self.state, tools)
                 except Exception as exc:
                     self._log(f"[C{c}] [{lane}] CRASH: {type(exc).__name__}: {_clip(str(exc))}")
                     lane_findings = []
