@@ -182,6 +182,7 @@ def test_l1_edges():
         workdir = ws
         from hunter.workflow.loop_v4 import HuntLoopV4 as H
         _resolve_anchor_path = H._resolve_anchor_path
+        _anchor_inside = H._anchor_inside
         _l1_verify_finding = H._l1_verify_finding
         def _log(self, *a): pass
     loop = _L()

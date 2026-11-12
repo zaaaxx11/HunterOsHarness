@@ -22,9 +22,15 @@ def repair_json_fragment(raw: str) -> Any:
     if not s:
         return {}
 
-    # 1) already valid
+    # 1) already valid. A literal ``null``/``true``/``123`` is valid JSON but is
+    # NOT a usable argument object, and returning it verbatim makes callers
+    # unable to tell "parsed null" from "nothing recoverable" — so non-container
+    # scalars normalise to {} (the documented failure value).
     try:
-        return json.loads(s)
+        parsed = json.loads(s)
+        if isinstance(parsed, (dict, list)):
+            return parsed
+        return {}
     except Exception:
         pass
 

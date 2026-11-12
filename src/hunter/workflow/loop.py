@@ -100,6 +100,10 @@ __all__ = [
 _LOG_LIMIT = 500
 _MAX_ROUND_ERRORS = 3
 _HIGH_SEVERITY = {"critical", "high"}
+# A cited `file` field that is longer than this is not a path — it is a
+# hallucination or a copied blob, and running the salvage regex over it costs
+# quadratic time (the hunt hangs). Real paths never approach 4 KiB.
+_ANCHOR_MAX_LEN = 4096
 
 # ---- lane definitions (soul prompt, tools, report schema) --------------------
 
@@ -730,20 +734,27 @@ class HuntLoop:
         finding under a later part still names its real source file. Strip that
         suffix before touching the filesystem, otherwise every citation from a
         split file is wrongly refuted.
+
+        Length is bounded BEFORE any regex: a multi-megabyte ``file`` string
+        (a hallucinating model, a copied log blob) makes the filename pattern
+        backtrack quadratically and hangs the whole hunt — the verifier never
+        sees it again.
         """
-        clean = re.sub(r"#(p|h)\d+$", "", str(path or "")).strip()
+        raw = str(path or "")
+        if len(raw) > _ANCHOR_MAX_LEN:
+            return None  # a real citation is a short path, never a megabyte
+        clean = re.sub(r"#(p|h)\d+$", "", raw).strip()
         # Salvage: the cited string often embeds a REAL filename
         # ("--- server.py (first 200 lines) ---", "(cannot read server.py)").
         # Extract that name first, so junk labels still anchor correctly.
+        # Bounded repetition ({1,64} per segment) instead of `+`: an
+        # unbounded run over a megabyte of text backtracks quadratically and
+        # hangs the verifier mid-hunt.
         root = self.state.target or str(self.workdir)
-        m = re.search(r"([\w.\-/]+\.(?:py|sol|go|rs|js|ts|tsx|jsx|md|json|toml|cfg))", clean)
-        if m and not re.fullmatch(r"[\w.]+", clean):
-            salvage = Path(root) / m.group(1)
-            try:
-                if salvage.exists() and salvage.is_file():
-                    return salvage
-            except OSError:
-                pass
+        for segment in re.findall(r"[\w\-.]{1,64}\.(?:py|sol|go|rs|js|ts|tsx|jsx|md|json|toml|cfg)", clean):
+            found = self._anchor_inside(root, segment)
+            if found is not None:
+                return found
         if not clean or clean.startswith(("-", "{", "(")) \
                 or "first" in clean and "line" in clean \
                 or "cannot read" in clean or "unreadable" in clean.lower() \
@@ -752,19 +763,40 @@ class HuntLoop:
             return None
         if not clean:
             return None
-        cands = []
         c = Path(clean)
-        if c.is_absolute():
-            cands.append(c)
-        else:
-            cands += [Path(root) / clean, Path(root) / Path(clean).name, Path(clean)]
+        cands = [c] if c.is_absolute() else [Path(root) / clean,
+                                             Path(root) / c.name, c]
         for cand in cands:
-            try:
-                if cand.exists() and cand.is_file():
-                    return cand
-            except OSError:
-                continue
+            found = self._anchor_inside(root, str(cand), absolute_ok=True)
+            if found is not None:
+                return found
         return None
+
+    def _anchor_inside(self, root: str, candidate: str, *,
+                       absolute_ok: bool = False) -> Path | None:
+        """Return ``candidate`` only when it is a real FILE inside ``root``.
+
+        The containment check is the point: without it a citation like
+        ``../../etc/passwd`` resolves against the target root to a file OUTSIDE
+        the audited tree, and the finding then claims an anchor the hunt never
+        read. Symlinked targets are resolved first so the comparison is on the
+        real location.
+        """
+        try:
+            # Join against the root FIRST, then test existence: the bare
+            # filename on its own is relative to the process CWD, not to the
+            # audited tree, so checking it before the join rejects every
+            # salvaged name ("server.py:284" -> "server.py").
+            path = Path(root) / candidate if not absolute_ok else Path(candidate)
+            if not (path.exists() and path.is_file()):
+                return None
+            real_root = Path(root).resolve()
+            real_path = path.resolve()
+            if not (real_path == real_root or real_root in real_path.parents):
+                return None  # escaped the audited tree — refuse to anchor it
+            return real_path
+        except (OSError, ValueError, RuntimeError):
+            return None
 
     def _l1_verify_finding(self, finding: dict) -> dict:
         """Deterministic L1 (NO LLM). file exists? line in range? code matches?"""
