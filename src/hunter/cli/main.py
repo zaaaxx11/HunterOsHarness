@@ -289,7 +289,7 @@ def hunt(
         None, "--budget", help="Daemon verb: maximum hunt budget in USD (0 is unlimited)."
     ),
     time_opt: str | None = typer.Option(
-        None, "--time", help="Daemon verb: max wall time [Nh][Nm][Ns] (ignored for plain hunts)."
+        None, "--time", help="Max wall time [Nh][Nm][Ns] for this hunt (0 = unlimited; prompts when omitted)."
     ),
     min_time_opt: str | None = typer.Option(
         None, "--min-time", help="Daemon verb: minimum wall time floor (ignored for plain hunts)."
