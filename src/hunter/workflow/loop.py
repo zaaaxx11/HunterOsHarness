@@ -170,15 +170,35 @@ _REPORT_FINDING_TOOL = {
 # ---- engine -----------------------------------------------------------------
 
 def _load_soul(name: str) -> str:
-    """Read a lane soul prompt shipped with the harness."""
+    """Read a lane soul prompt shipped with the harness.
+
+    The base identity (``_core.md``) is prepended to every lane: without it a
+    model reads "audit this production host" as a request to attack a stranger,
+    and refuses — or worse, reasons about permission instead of hunting. Keep
+    _core.md small (it is spent on every single lane turn).
+    """
+    base = Path(__file__).resolve().parent.parent / "_data" / "prompts" / "souls"
+    core_text = ""
+    try:
+        core = base / "_core.md"
+        core_text = core.read_text(encoding="utf-8") if core.exists() else ""
+    except OSError:
+        core_text = ""  # a missing/unreadable core must degrade, never crash
     candidates = [
-        Path(__file__).resolve().parent.parent / "_data" / "prompts" / "souls" / f"{name}.md",
+        base / f"{name}.md",
         Path(os.path.expanduser(f"~/.hunter/skills/{name}/SKILL.md")),
     ]
+    lane = ""
     for p in candidates:
-        if p.exists():
-            return p.read_text(encoding="utf-8")
-    return f"You are {name}. Find vulnerabilities. Report with report_finding tool."
+        try:
+            if p.exists():
+                lane = p.read_text(encoding="utf-8")
+                break
+        except OSError:
+            continue
+    if not lane:
+        lane = f"You are {name}. Find vulnerabilities. Report with report_finding tool."
+    return f"{core_text}\n\n{lane}" if core_text else lane
 
 
 LANE_SOULS: dict[str, str] = {
