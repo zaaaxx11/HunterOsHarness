@@ -108,10 +108,13 @@ def _llm_parse(description: str, provider: Any) -> dict[str, Any] | None:
     """Ask the LLM for a structured parse of a free-form mandate."""
     if provider is None:
         return None
+    from hunter.agent.soul import CORE_IDENTITY
+
     messages = [
         {
             "role": "system",
             "content": (
+                f"{CORE_IDENTITY}\n\n"
                 "You parse one hunt mandate for a security harness. "
                 "Return ONLY a JSON object, no prose. Keys:\n"
                 '  "targets": list of concrete targets (URLs, hosts, local paths, '

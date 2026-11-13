@@ -180,6 +180,7 @@ def _parse_json_list(text: str) -> list[str]:
 
 
 def wonder_followups(provider: Any, finding: Finding, scope: ScopeSet, origin: str) -> list[str]:
+    from hunter.agent.soul import CORE_IDENTITY
     """Ask the LLM (utility tier) for exactly 4 in-scope follow-up targets."""
     if provider is None:
         return []
@@ -190,6 +191,7 @@ def wonder_followups(provider: Any, finding: Finding, scope: ScopeSet, origin: s
         {
             "role": "system",
             "content": (
+                f"{CORE_IDENTITY}\n\n"
                 "You are a security-hunt planner. Given one finding, propose EXACTLY 4 "
                 "in-scope follow-up URLs to hunt next (deeper variants, siblings, "
                 "parameters). Return ONLY a JSON array of 4 strings. No prose."

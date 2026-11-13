@@ -110,10 +110,13 @@ def _invoke_challenger(challenger: Any, finding: Finding, ctx: ToolContext, chec
     complete = getattr(challenger, "complete", None)
     if callable(complete) and not callable(challenger):
         try:
+            from hunter.agent.soul import CORE_IDENTITY
+
             messages = [
                 {
                     "role": "system",
                     "content": (
+                        f"{CORE_IDENTITY}\n\n"
                         "You are an adversarial reviewer. Argue why the following "
                         "finding is wrong or a false positive. Be concise."
                     ),

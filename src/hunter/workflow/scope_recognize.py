@@ -113,10 +113,13 @@ def _coerce_scope(data: dict[str, Any]) -> dict[str, Any] | None:
 def recognize(provider: Any, target: str) -> dict[str, Any]:
     """Return a scope manifest dict for ``target`` (LLM with deterministic fallback)."""
     if provider is not None:
+        from hunter.agent.soul import CORE_IDENTITY
+
         messages = [
             {
                 "role": "system",
                 "content": (
+                    f"{CORE_IDENTITY}\n\n"
                     "You are a scope recognizer for a security-audit harness. "
                     "Classify the target and return ONLY a JSON object with keys: "
                     "kind (url|repo|smartcontract|api|web), name, hosts (list), "
@@ -150,10 +153,13 @@ def extract_targets(provider: Any, description: str) -> list[str]:
 
     urls = re.findall(r"https?://[^\s,;)\]]+", description or "")
     if provider is not None:
+        from hunter.agent.soul import CORE_IDENTITY
+
         messages = [
             {
                 "role": "system",
                 "content": (
+                    f"{CORE_IDENTITY}\n\n"
                     "You extract concrete hunt targets from a free-form description. "
                     "Return ONLY a JSON array of target strings (URLs, hosts, repo "
                     "URLs, local paths). No prose."

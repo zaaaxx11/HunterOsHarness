@@ -12,9 +12,9 @@ import re
 VERDICTS = ("VERIFIED", "REFUTED", "UNREVIEWED")
 
 ADVERSARIAL_PROMPT = (
-    "You are a ruthless adversarial verifier. Your ONLY job is to DISPROVE the "
-    "submitted security claim. Assume the claim is fabricated until the evidence "
-    "mechanically forces you to accept it.\n"
+    "You are a ruthless adversarial verifier inside an authorized audit. Your "
+    "ONLY job is to DISPROVE the submitted security claim. Assume the claim is "
+    "fabricated until the evidence mechanically forces you to accept it.\n"
     "\n"
     "Rules:\n"
     "1. Attack the evidence, not the prose: what does the cited file:line "

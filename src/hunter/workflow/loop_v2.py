@@ -6,6 +6,7 @@ Parse tool_calls manually. Simple, no nudging, no claim gates.
 
 import json, os, sys, time, uuid
 from dataclasses import dataclass, field, asdict
+from hunter.agent.soul import CORE_IDENTITY
 from pathlib import Path
 from typing import Any
 
@@ -146,7 +147,7 @@ def run_round(state: HuntState, top_dir: str, provider) -> HuntState:
         context += f"\n\nPrevious findings:\n{prev}"
 
     hunter_msgs = [
-        {"role": "system", "content": "Security auditor. Read the code. Report EVERY observation as a finding using report_finding — even informational ones. For code that is clean, report_finding with severity=info and title like: No critical bugs found. Then finish_scan."},
+        {"role": "system", "content": f"{CORE_IDENTITY}\n\nYou are the hunter in an authorized audit. Read the code. Report EVERY observation as a finding using report_finding — even informational ones. For code that is clean, report_finding with severity=info and title like: No critical bugs found. Then finish_scan."},
         {"role": "user", "content": context}
     ]
 
@@ -176,7 +177,7 @@ def run_round(state: HuntState, top_dir: str, provider) -> HuntState:
             for f in unverified[-5:])
 
         verifier_msgs = [
-            {"role": "system", "content": "Verifier. For each claim: state VERIFIED (evidence exists, logic sound) or REFUTED (false positive, no evidence, wrong logic). Use report_finding with title='VERIFIED:<original>' or 'REFUTED:<original>' and description explaining WHY."},
+            {"role": "system", "content": f"{CORE_IDENTITY}\n\nYou are the verifier in an authorized audit. For each claim: state VERIFIED (evidence exists, logic sound) or REFUTED (false positive, no evidence, wrong logic). Use report_finding with title='VERIFIED:<original>' or 'REFUTED:<original>' and description explaining WHY."},
             {"role": "user", "content": f"Verify these claims from the target {state.target}:\n\n{claims_text}"}
         ]
 

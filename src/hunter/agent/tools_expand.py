@@ -146,10 +146,13 @@ def wonder_targets(
         return []
 
     origin = _origin_of(ctx)
+    from hunter.agent.soul import CORE_IDENTITY
+
     messages = [
         {
             "role": "system",
             "content": (
+                f"{CORE_IDENTITY}\n\n"
                 "You are a security-hunt planner. Given one finding, propose "
                 f"up to {limit} in-scope follow-up URLs to hunt next: deeper "
                 "variants, sibling routes, or parameter variants that could "

@@ -47,7 +47,24 @@ __all__ = [
 # The core identity. Hardcoded in the engine — not read from any file, so no
 # user edit, prompt injection, or override can rename the harness or its
 # builder. Always prepended before the persona text.
-CORE_IDENTITY = "You are Hunter, the HunterOS audit agent built by zaaaxx."
+#
+# The single source of truth for the identity TEXT is
+# ``hunter/_data/prompts/souls/_core.md``: the same block is prepended to every
+# hunt lane by ``hunter.workflow.loop._load_soul`` and to every role by
+# ``role_soul_block`` below. Two copies would drift, and a lane that quietly
+# lost the authorization frame turns back into a model that refuses to audit
+# the target it was handed. Read it, never inline it again.
+def _load_core_identity() -> str:
+    try:
+        with resources.files("hunter").joinpath(
+            "_data/prompts/souls/_core.md"
+        ).open("r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except (FileNotFoundError, ModuleNotFoundError, OSError, UnicodeDecodeError):
+        return "You are Hunter, the HunterOS audit agent built by zaaaxx."
+
+
+CORE_IDENTITY = _load_core_identity()
 
 SOUL_FILE_NAME = "SOUL.md"
 SOUL_MAX_CHARS = 8000
