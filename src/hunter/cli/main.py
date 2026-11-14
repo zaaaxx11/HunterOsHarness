@@ -449,7 +449,7 @@ def hunt(
     # multiple tasks. The daemon handles ordering, retry, and child
     # spawning. One session, one daemon — no free-form loops.
     if len(targets or []) >= 1:
-        from hunter._daemon_shim import daemon_running, enqueue_hunt, start_daemon
+        from hunter._daemon_shim import daemon_running, start_daemon
         from hunter.duration import parse_duration
         from hunter.home import state_dir as _state_dir
         from hunter.tools.scope import scope_from_manifest
@@ -547,20 +547,10 @@ def hunt(
                 tgt_scope = recognize_scope(provider, tgt)
             if first_scope is None:
                 first_scope = tgt_scope
-            try:
-                enqueue_hunt(
-                    resolved_state,
-                    target=tgt,
-                    scope=tgt_scope,
-                    engine=rag_engine,
-                    # 0.0 = unlimited (RunBudget treats 0 as "no cap").
-                    max_wall_seconds=0.0 if unlimited_wall else float(budget_s),
-                    max_cost_usd=0.0,
-                    min_wall_seconds=0.0,
-                )
-            except ValueError as exc:
-                err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {exc}")
-                raise typer.Exit(3) from exc
+            # Multi-target is handled by the RAG seed loop which walks
+            # every host in the approved scope — individual enqueue
+            # calls to the daemon stub are unnecessary and were silently
+            # dropping targets since the daemon was removed.
         try:
             running, _ = daemon_running(resolved_state)
             if not running:
