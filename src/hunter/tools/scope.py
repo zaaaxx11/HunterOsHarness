@@ -101,10 +101,15 @@ class ScopeSet:
     allow_subdomains: bool = False
     name: str = "default"
     local_roots: tuple[str, ...] = field(default_factory=tuple)
+    #: Hosts that are explicitly excluded even if they match a subdomain pattern.
+    exclude_hosts: frozenset[str] = field(default_factory=frozenset)
 
     def allows_host(self, host: str | None) -> bool:
         normalized = _normalize_host(host)
         if not normalized:
+            return False
+        # Exclusions take priority over allow rules.
+        if self.exclude_hosts and normalized in self.exclude_hosts:
             return False
         if normalized in LOCAL_HOSTS:
             return True
@@ -112,6 +117,9 @@ class ScopeSet:
             if normalized == allowed:
                 return True
             if self.allow_subdomains and normalized.endswith("." + allowed):
+                # Subdomain match is overruled by an exclusion on the subdomain itself.
+                if self.exclude_hosts and normalized in self.exclude_hosts:
+                    return False
                 return True
         return False
 
@@ -233,4 +241,5 @@ def scope_from_manifest(path: str | Path) -> ScopeSet:
         allow_subdomains=bool(raw.get("allow_subdomains", False)),
         name=str(raw.get("name", Path(path).stem)),
         local_roots=tuple(str(r) for r in local_roots),
+        exclude_hosts=frozenset(str(h).strip().lower() for h in (raw.get("exclude_hosts") or [])),
     )
