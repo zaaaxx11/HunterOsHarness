@@ -219,15 +219,26 @@ def localhost_scope() -> ScopeSet:
 def scope_from_manifest(path: str | Path) -> ScopeSet:
     """Load a scope manifest (JSON).
 
-    Schema::
+    Accepts two formats:
 
-        {
-          "name": "client-x",
-          "hosts": ["example.com", "api.example.com"],
-          "allow_subdomains": false
-        }
+    1. HunterOs native manifest::
+         {"name": "client-x", "hosts": ["example.com", ...], "allow_subdomains": false}
+
+    2. VDP / Bugcrowd policy JSON::
+         {"program": {...}, "scope": {"in_scope": [...], "out_of_scope": [...]}}
+       Auto-recognised and translated to the native format on load.
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("scope manifest must be a JSON object")
+
+    # VDP auto-detect: a manifest with \"program\" + \"scope\" keys is a
+    # vulnerability-disclosure policy, not a native manifest. Translate it
+    # in-memory so the caller does not need a separate conversion step.
+    if isinstance(raw.get("scope"), dict) and isinstance(raw.get("program"), dict):
+        from hunter.workflow.scope_recognize import recognize_from_file
+        raw = recognize_from_file(None, path)
+
     hosts = raw.get("hosts", [])
     local_roots = raw.get("local_roots", [])
     if not isinstance(local_roots, list):

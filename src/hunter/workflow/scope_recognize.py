@@ -114,7 +114,8 @@ def _scope_from_vdp_json(data: dict, path: Path) -> dict[str, Any]:
         # Parse host from the URL.
         parsed = urlparse(target_raw if "://" in target_raw else f"https://{target_raw}")
         host = (parsed.hostname or "").lower()
-        if host and host not in ("play.google.com", "example.com"):
+        # Only accept real-looking hostnames: must contain a dot and no spaces.
+        if host and "." in host and " " not in host and host not in ("play.google.com", "example.com"):
             host = host.lstrip("www.")
             if host and host not in hosts:
                 hosts.append(host)
