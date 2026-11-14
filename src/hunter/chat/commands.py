@@ -1347,34 +1347,25 @@ def _exec_hunt(ctx: CommandContext) -> CommandReply:
         except HunterError as exc:
             return CommandReply(exc.user_message(), data={"hunt": {"action": "invalid"}})
         state_dir = ctx.options.get("state_dir") or default_state_dir()
-        running, _ = daemon_running(state_dir)
-        if not running:
-            return CommandReply(
-                "engine is off — run `hunt start` to boot the 24/7 engine",
-                data={"hunt": {"action": "engine_off"}},
-            )
-        engine_name = str(opts.get("engine", "deterministic"))
-        tasks = [
-            {
-                "target": target,
-                "scope": scope.summary(),
-                "engine": engine_name,
-                "min_wall_seconds": 0.0,
-                "max_wall_seconds": seconds,
-                "max_cost_usd": budget,
-            }
-            for target, scope in zip(normalized_targets, scopes, strict=True)
-        ]
-        count = enqueue_hunts(state_dir, tasks)
+        engine_name = str(opts.get("engine", "llm"))
+        from hunter.hunt import run_hunt as _rh
+        from hunter.llm.budget import RunBudget as _RBudget
+
+        outcomes: list[str] = []
+        for target, scope in zip(normalized_targets, scopes, strict=True):
+            budget_obj = _RBudget(wall_seconds=seconds, max_cost_usd=budget, max_iterations=0)
+            try:
+                outcome = _rh(target, scope=scope, engine_name=engine_name,
+                              state_dir=state_dir, budget=budget_obj)
+                outcomes.append(outcome.run_id or "none")
+            except Exception as exc:
+                outcomes.append(f"error:{type(exc).__name__}")
         minutes = max(1, math.ceil(seconds / 60.0))
         return CommandReply(
-            f"queued {count} hunt(s) — time {minutes}m budget ${budget:.2f} — `hunt status` to watch",
-            data={
-                "hunt": {
-                    "action": "queued", "count": count, "time_seconds": seconds,
-                    "budget_usd": budget, "targets": normalized_targets,
-                }
-            },
+            f"started {len(outcomes)} hunt(s) — {minutes}m budget ${budget:.2f} — runs: {', '.join(outcomes[:5])}",
+            data={"hunt": {"action": "started", "count": len(outcomes),
+                           "time_seconds": seconds, "budget_usd": budget,
+                           "targets": normalized_targets, "run_ids": outcomes}},
         )
     # Keep malformed/non-target arguments on the status/usage line; explicit
     # target handling otherwise shares /audit's scope gate and one-shot contract.

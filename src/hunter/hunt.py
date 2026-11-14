@@ -37,32 +37,60 @@ def confirm_prompt(prompt: str) -> bool:
 
 
 def normalize_hunt_target(raw: str) -> tuple[str, str]:
-    """Return a normalized URL or an absolute existing directory."""
+    """Return kind: ``url`` | ``dir`` | ``repo`` | ``smartcontract`` | ``invalid``."""
     token = (raw or "").strip()
     if not token:
         return "", "invalid"
+
+    # -- existing directory
     path = Path(token).expanduser()
     try:
         if path.is_dir():
             return str(path.resolve()), "dir"
     except OSError:
         return "", "invalid"
+
+    # -- smartcontract address: 0x<40-hex> [on <chain>]
+    import re as _re
+    _addr = _re.match(r"^(0x[a-fA-F0-9]{40})(?:\s+on\s+(\S+))?", token)
+    if _addr:
+        addr = _addr.group(1)
+        chain = _addr.group(2) or "ethereum"
+        return f"{addr} on {chain}", "smartcontract"
+
+    # -- git repo URL (git@, https://github, .git suffix)
+    if token.startswith("git@") or token.endswith(".git") or (
+        token.startswith("https://") and any(
+            h in token for h in ("github.com", "gitlab.com", "bitbucket.org")
+        )
+    ):
+        return token, "repo"
+
+    # -- explicit file path for a single-file audit
+    try:
+        if path.is_file():
+            return str(path.resolve()), "dir"  # single file → dir audit
+    except OSError:
+        pass
+
+    # -- HTTP(S) URL
     parsed = urlparse(token)
     if parsed.scheme and parsed.scheme.lower() in ("http", "https"):
         if parsed.hostname:
             return token, "url"
         return "", "invalid"
+
     # A bare host is accepted, but arbitrary prose is not. URL-like host:port
     # strings are parsed only after adding the explicit scheme. A `0x…` hex
     # string is a contract address, not a host — it must not become
     # `http://0x…` (the leading digit satisfies `isdigit()` below).
     if token.lower().startswith("0x"):
-        return "", "invalid"
-    # Whitespace means this is prose, not a host. urlparse would happily wrap
-    # `audit 0x… via https://x` into `http://audit 0x… via https://x`, which
-    # then "works" as a target and hunts a nonsense host.
+        return token, "smartcontract"
+
+    # Whitespace means this is prose, not a host.
     if any(ch.isspace() for ch in token):
         return "", "invalid"
+
     host = token if ("." in token or token.lower().startswith("localhost") or token[0].isdigit()) else ""
     if not host:
         return "", "invalid"
