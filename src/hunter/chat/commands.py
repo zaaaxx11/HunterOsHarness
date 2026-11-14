@@ -116,7 +116,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Audit", args_hint="<target> [--scope PATH] | status | finish",
                busy_policy="reject"),
     CommandDef("hunt", "Hunt mode and one-shot hunts from chat", "Audit",
-               args_hint="on | off | <target> [--scope PATH]", busy_policy="reject"),
+               args_hint="<target> [--scope FILE] [--time 2h] [--budget 5] [--engine llm]", busy_policy="reject"),
     CommandDef("approve", "Approve a pending dangerous-tool request", "Audit",
                args_hint="<request_id>"),
     CommandDef("deny", "Deny a pending dangerous-tool request", "Audit",

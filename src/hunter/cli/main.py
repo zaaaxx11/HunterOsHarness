@@ -525,12 +525,24 @@ def hunt(
                 err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] {_resolved.reason}")
                 raise typer.Exit(3)
             tgt = _resolved.target
-            # An explicit --scope manifest WINS. `recognize_scope` asks the
-            # LLM to guess the scope from the target string, which silently
-            # replaced a 68-host approved manifest with a 1-host guess —
-            # the operator's authorization thrown away by a heuristic.
-            # Only fall back to recognition when no manifest was given.
+            # An explicit --scope manifest WINS. When absent, try auto-detection:
+            # 1. If target itself is a JSON file → treat it as a scope manifest
+            # 2. Otherwise, use the LLM-proposed scope from target_resolve
             tgt_scope = manifest_scope
+            if tgt_scope is None:
+                tgt_path = Path(tgt).expanduser()
+                if tgt_path.is_file() and tgt_path.suffix == ".json":
+                    try:
+                        tgt_scope = scope_from_manifest(tgt_path)
+                        targets = list(tgt_scope.allowed_hosts)  # hunt every host in scope
+                        if not targets:
+                            err_console.print("[hunter.error]BLOCKED:[/hunter.error] scope manifest has no hosts")
+                            raise typer.Exit(3)
+                        first_scope = tgt_scope  # set before the for-loop
+                        break  # scope file replaces all targets
+                    except (ValueError, OSError) as exc:
+                        err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope: {exc}")
+                        raise typer.Exit(3) from exc
             if tgt_scope is None and _resolved.scope_manifest is not None:
                 try:
                     from hunter.home import state_dir as _sd_fn
