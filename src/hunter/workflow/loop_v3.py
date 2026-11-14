@@ -129,7 +129,7 @@ _LOG_LIMIT = 400
 # --------------------------------------------------------------------------- #
 HUNTER_SYSTEM = """\
 You are a security auditor. Audit the code in this message and report every
-vulnerability you find by calling the report_finding tool — one call per finding.
+vulnerability you find by calling the report_finding tool -- one call per finding.
 
 Do not explain, summarise or think out loud in text: the only acceptable reply is
 one or more report_finding calls.
@@ -144,7 +144,56 @@ one or more report_finding calls.
 """
 
 #: Tool schema for the HUNTER turn (OpenAI function-calling shape).
+_HUNTER_WEB_SYSTEM = """\
+You are a security auditor probing a live web target. You have tools to fetch
+URLs and report findings. Follow this exact workflow:
+
+1. Call fetch_url on the target with GET to see what the surface looks like.
+2. Read the response: status code, headers, body. Look for:
+   - Info leaks: internal paths, framework versions, keys, tokens
+   - Misconfigurations: missing security headers, directory listings
+   - Auth bypass: endpoints that return data without authentication
+   - Error messages that disclose stack traces or internal architecture
+3. Call fetch_url again on interesting paths you discover (robots.txt,
+   /.well-known/, /api/, /graphql, sitemap, etc).
+4. When you have evidence for a vulnerability, call report_finding with:
+   - title: short, specific
+   - severity: critical|high|medium|low|info
+   - description: mechanism + attacker steps + impact (<400 chars)
+   - evidence: paste the exact response snippet that proves the finding
+5. If you exhaust all leads with nothing exploitable, call report_finding
+   with {"findings": []} and stop.
+
+Never guess a vulnerability. Cite only what you actually fetched.
+"""
+
 HUNTER_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": (
+                "Fetch a URL within the audit scope. Returns the HTTP status, "
+                "response headers, and body (truncated to 4000 chars). Use this "
+                "to probe endpoints that the audit target exposes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full URL to fetch (must be within the authorised scope).",
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "OPTIONS", "HEAD"],
+                        "description": "HTTP method (default: GET).",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -184,7 +233,7 @@ HUNTER_TOOLS: list[dict] = [
 
 _NUDGE = """
 STOP. You returned text but made no report_finding call.
-Now call report_finding once per candidate finding — do not explain, do not summarise,
+Now call report_finding once per candidate finding -- do not explain, do not summarise,
 just call the tool with title, severity, description, file and line.
 If the target genuinely yielded nothing new, call report_finding with {"findings": []}.
 """
@@ -200,7 +249,7 @@ _JSON_FALLBACK_INSTRUCTION = (
 #: the whole output budget on reasoning_content and stop before the tool call).
 _JSON_STRICT = """
 
-OUTPUT FORMAT — OVERRIDE (your tool call did not arrive):
+OUTPUT FORMAT -- OVERRIDE (your tool call did not arrive):
 You have NO tools in this turn. Your ENTIRE reply must be exactly one JSON object,
 with no prose before or after it:
 
@@ -213,7 +262,7 @@ Rules:
 - file MUST be one of the paths shown in the --- <path> --- headers, and line the
   real line number inside it.
 - If you found nothing new, reply exactly {"findings": []}.
-- Do NOT write an introduction, an analysis, a summary, or any thinking out loud —
+- Do NOT write an introduction, an analysis, a summary, or any thinking out loud --
   only the JSON object."""
 
 
@@ -222,7 +271,7 @@ _HUNTER_EXTS = {
     ".java", ".rb", ".php", ".c", ".h", ".cpp", ".cs", ".sh", ".yaml", ".json",
 }
 
-#: Directories that are dependencies, build output, or test scaffolding —
+#: Directories that are dependencies, build output, or test scaffolding --
 #: auditing these wastes the whole prompt budget on OpenZeppelin/Node modules
 #: instead of the target's own code.
 _SKIP_DIRS = {
@@ -279,7 +328,7 @@ def read_target_source(
 ) -> str:
     """Inline the target's source so the hunter is not blind.
 
-    The HUNTER turn has no file-reading tool (by design — fewer tools, fewer
+    The HUNTER turn has no file-reading tool (by design -- fewer tools, fewer
     ways to stall). Without this the model is asked to audit code it cannot
     see, which is the single largest source of invented findings. Paths are
     emitted relative to the target root so a cited ``file:line`` matches what
@@ -413,7 +462,7 @@ def _number_lines(lines: list[str], offset: int) -> str:
 
     Blank-line padding was ambiguous: a model counts the lines it can see, not the
     leading newlines, so a cited "line 8" pointed at the wrong code. An explicit
-    gutter removes the guesswork — the number the model reads is the number the
+    gutter removes the guesswork -- the number the model reads is the number the
     verifier looks up.
     """
     return "\n".join(
@@ -479,15 +528,15 @@ def build_chunk_prompt(
         f"TARGET: {state.target or '(unspecified)'}",
         f"UNIT {index}/{total}: {label}  (this is the ONLY code in scope for this turn)",
         f"ROUND: {state.round}   TIME LEFT: {left_s}",
-        "PHASE: HUNTER — report NEW candidate findings for THIS UNIT only.",
+        "PHASE: HUNTER -- report NEW candidate findings for THIS UNIT only.",
         "",
     ]
     if known:
-        lines.append(f"ALREADY RECORDED ({len(known)}) — do NOT repeat any of these:")
+        lines.append(f"ALREADY RECORDED ({len(known)}) -- do NOT repeat any of these:")
         for i, title in enumerate(known, 1):
             lines.append(f"  {i}. {title}")
     else:
-        lines.append("ALREADY RECORDED: none — this is the first turn.")
+        lines.append("ALREADY RECORDED: none -- this is the first turn.")
     lines += [
         "",
         f"Report each vulnerability in the code below with report_finding. "
@@ -524,25 +573,25 @@ def build_hunter_prompt(
 
     lines = [
         f"TARGET: {state.target or '(unspecified)'}",
-        "(the full source of this target is included at the END of this message —",
+        "(the full source of this target is included at the END of this message --",
         " you do NOT need to read, list or explore anything)",
         f"ROUND: {state.round}",
         f"TIME LEFT: {left_s}   BUDGET: {budget}",
-        "PHASE: HUNTER — report NEW candidate findings only.",
+        "PHASE: HUNTER -- report NEW candidate findings only.",
         "",
     ]
     if known:
         lines.append(
-            f"ALREADY RECORDED ({len(known)}) — do NOT report any of these again:"
+            f"ALREADY RECORDED ({len(known)}) -- do NOT report any of these again:"
         )
         for i, title in enumerate(known, 1):
             lines.append(f"  {i}. {title}")
     else:
-        lines.append("ALREADY RECORDED: none — this is the first round.")
+        lines.append("ALREADY RECORDED: none -- this is the first round.")
     lines += [
         "",
         "INSTRUCTIONS:",
-        "1. Audit the TARGET SOURCE included below. It is the real code — do not",
+        "1. Audit the TARGET SOURCE included below. It is the real code -- do not",
         "   describe code that is not in it.",
         "2. Find vulnerabilities that are NOT in the list above.",
         "3. For each one call report_finding with title, severity, description, file,",
@@ -558,7 +607,7 @@ def build_hunter_prompt(
     else:
         lines += [
             "",
-            "TARGET SOURCE: (not readable from the shell — report only what you can",
+            "TARGET SOURCE: (not readable from the shell -- report only what you can",
             "cite concretely; an uncited claim will be rejected).",
         ]
     prompt = "\n".join(lines)
@@ -717,7 +766,7 @@ _NON_FINDING_RE = re.compile(
 
 
 def _is_non_finding(title: Any, description: Any = "") -> bool:
-    """A "we found nothing" note is a status, not a finding — never store it."""
+    """A "we found nothing" note is a status, not a finding -- never store it."""
     text = f"{title or ''} {description or ''}".strip()
     if not text:
         return True
@@ -909,7 +958,7 @@ class HuntLoop:
         )
         if self.verify_claim is None:
             self._log(
-                f"[R{state.round}] verify: NO verify_claim injected — "
+                f"[R{state.round}] verify: NO verify_claim injected -- "
                 f"candidates cannot be verified"
             )
 
@@ -947,7 +996,7 @@ class HuntLoop:
                 try:
                     self.sleeper(float(state.idle_seconds))
                 except Exception as exc:  # a broken sleeper must not kill the hunt
-                    self._log(f"[R{state.round}] idle: sleep failed ({exc}) — continuing")
+                    self._log(f"[R{state.round}] idle: sleep failed ({exc}) -- continuing")
 
         save(state, self.state_path)
         self._print_stop(state)
@@ -1015,7 +1064,7 @@ class HuntLoop:
             self.max_rounds = _SAFETY_ROUNDS
             self._log(
                 f"[R{state.round}] safety: no time budget, no goals and no max_rounds "
-                f"— capping this run at {_SAFETY_ROUNDS} rounds"
+                f"-- capping this run at {_SAFETY_ROUNDS} rounds"
             )
 
     # -- phases ----------------------------------------------------------- #
@@ -1089,14 +1138,14 @@ class HuntLoop:
             # zero-budget hunt still runs its single mandatory turn).
             has_wall = state.wall_seconds is not None and float(state.wall_seconds) > 0
             if calls_total and has_wall and self._time_exhausted(state):
-                self._log(f"[R{r}] hunter: wall budget reached — stopping unit loop")
+                self._log(f"[R{r}] hunter: wall budget reached -- stopping unit loop")
                 break
             found, calls = self._audit_unit(state, known, label, code, index, len(units), r)
             candidates.extend(found)
             calls_total += calls
 
             # A unit can still be truncated (finish_reason=length) when the model
-            # reasons unusually long for it — reasoning length is not proportional
+            # reasons unusually long for it -- reasoning length is not proportional
             # to prompt size. One deterministic recovery: split the unit in half
             # and retry the halves, rather than guessing a smaller fixed size.
             if not found and not calls and code and len(code) > 700:
@@ -1110,7 +1159,7 @@ class HuntLoop:
                     halves = []
                 if len(halves) > 1:
                     self._log(
-                        f"[R{r}] hunter: unit {index} yielded nothing — retrying as "
+                        f"[R{r}] hunter: unit {index} yielded nothing -- retrying as "
                         f"{len(halves)} smaller halves"
                     )
                     for h_i, half in enumerate(halves, 1):
@@ -1132,69 +1181,217 @@ class HuntLoop:
         total: int,
         r: int,
     ) -> tuple[list[dict], int]:
-        """One unit's HUNTER turn(s): returns (candidates, tool_call_count)."""
+        """One unit's HUNTER turn(s): multi-turn tool-calling with execution.
+
+        The model is given tools (fetch_url, report_finding, etc). Non-report
+        tool calls are EXECUTED server-side and the result is fed back as the
+        next user turn -- exactly the loop every LLM agent runtime uses.
+        report_finding calls are collected; the loop stops when the model
+        either reports findings or explicitly finishes with no more work.
+        """
+        from urllib.parse import urlparse
+
         calls_total = 0
         candidates: list[dict] = []
+        # Build the initial user prompt.  When there is no source code at all
+        # (a pure URL target) the hunter gets a web-recon prompt instead.
         user = (
             build_chunk_prompt(state, known, label, code, index=index, total=total)
             if code else
             build_hunter_prompt(state, known, workdir=self.workdir)
         )
+        # Conversation history for multi-turn tool usage.
+        messages: list[dict] = [
+            {"role": "system", "content": _HUNTER_WEB_SYSTEM if not code else HUNTER_SYSTEM},
+            {"role": "user", "content": user},
+        ]
         attempt = 0
-        while True:
+        TOOL_TURN_LIMIT = 8  # max tool-calling back-and-forth rounds
+
+        while len(messages) <= TOOL_TURN_LIMIT * 2 + 2:
             try:
-                text, calls, cost = self._ask_hunter(user)
-            except Exception as exc:  # provider hiccup: keep the round
+                text, calls, cost = self._ask_hunter(messages)
+            except Exception as exc:
                 self._log(
                     f"[R{r}] hunter: llm error {type(exc).__name__}: "
-                    f"{_clip(str(exc))} — unit skipped"
+                    f"{_clip(str(exc))} -- unit skipped"
                 )
                 break
 
             self._charge(state, cost)
             calls_total += len(calls)
-            report_calls = [c for c in calls if _is_report_call(c.get("name"))]
 
+            # Separate reporting calls from action calls.
+            report_calls = [c for c in calls if _is_report_call(c.get("name"))]
+            action_calls = [c for c in calls if not _is_report_call(c.get("name"))]
+
+            # Collect findings from report calls.
             batch: list[dict] = []
             for call in report_calls:
                 batch.extend(_candidates_from_args(call.get("arguments") or {}))
-
             if batch:
                 candidates.extend(batch)
-                break
+                break  # findings reported -- unit done
             if report_calls:
-                # The model DID call report_finding and had nothing to add.
                 self._log(f"[R{r}] hunter: unit {index} clean (no new findings)")
                 break
+
+            # Execute non-report tool calls and feed results back.
+            if action_calls:
+                tool_results: list[str] = []
+                for call in action_calls:
+                    executed = self._execute_tool(
+                        call.get("name", ""),
+                        call.get("arguments", {}) if isinstance(call.get("arguments"), dict) else {},
+                        state,
+                    )
+                    tool_results.append(executed)
+                    calls_total += 1
+                # Append the assistant's tool call + the executed result as
+                # two messages so the model sees the output it asked for.
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": f"call_{len(messages)}",
+                            "type": "function",
+                            "function": {
+                                "name": c.get("name", ""),
+                                "arguments": json.dumps(c.get("arguments", {}))
+                                if isinstance(c.get("arguments"), dict) else "{}",
+                            },
+                        }
+                        for c in action_calls
+                    ],
+                })
+                for r_idx, result in enumerate(tool_results):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": f"call_{len(messages) - 1 - len(action_calls) + r_idx + 1}",
+                        "content": result,
+                    })
+                continue  # feed results back to model
+
+            # No report calls, no action calls -- something went wrong.
             if attempt >= MAX_HUNTER_RETRIES:
                 break
             if not text.strip():
-                self._log(f"[R{r}] hunter: unit {index} empty response — no retry")
+                self._log(f"[R{r}] hunter: unit {index} empty response -- no retry")
                 break
 
             attempt += 1
             self._log(
-                f"[R{r}] hunter: unit {index} returned text but 0 report_finding "
-                f"calls — retrying once with an explicit nudge"
+                f"[R{r}] hunter: unit {index} returned text but 0 calls -- "
+                f"retrying once with nudge"
             )
-            user = (
-                build_chunk_prompt(state, known, label, code, index=index,
-                                   total=total, nudge=True)
-                if code else
-                build_hunter_prompt(state, known, workdir=self.workdir, nudge=True)
-            )
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "user", "content": _NUDGE})
 
         return candidates, calls_total
 
-    def _ask_hunter(self, user: str) -> tuple[str, list[dict], float]:
-        """One hunter turn: tool-calling when it works, JSON text when it does not.
 
-        Reasoning models on this provider spend the entire output budget on
-        ``reasoning_content`` and finish with ``finish_reason=length`` before the
-        tool call is emitted, so a tools-only path silently yields nothing. When
-        the tool turn produces no call we make ONE more attempt asking for a bare
-        JSON object; the deterministic verifier gates whatever comes back.
+    # -- tool execution --------------------------------------------------- #
+
+    def _execute_tool(self, name: str, args: dict, state: "HuntState") -> str:
+        """Execute one tool call server-side and return a result string."""
+        if name == "fetch_url":
+            return self._tool_fetch_url(args, state)
+        return json.dumps({"error": f"unknown tool: {name}"})
+
+    def _tool_fetch_url(self, args: dict, state: "HuntState") -> str:
+        """Fetch a URL within the audit scope and return status/headers/body.
+
+        Scope enforcement happens HERE — the model can request any URL, but
+        the handler only fetches what is within the authorised scope set.
+        An out-of-scope request returns a clear rejection.
         """
+        from urllib.parse import urlparse
+
+        url = str(args.get("url", "")).strip()
+        method = str(args.get("method", "GET")).strip().upper()
+        if method not in ("GET", "POST", "OPTIONS", "HEAD"):
+            method = "GET"
+
+        if not url:
+            return json.dumps({"error": "empty url parameter"})
+
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+        except Exception:
+            return json.dumps({"error": f"invalid URL: {url}"})
+
+        if not host:
+            return json.dumps({"error": f"no host in URL: {url}"})
+
+        # Negotiate scope from the state when available.
+        scope = getattr(state, "allowed_hosts", None)
+        if not scope:
+            try:
+                scope = getattr(self, "_scope_hosts", None)
+            except Exception:
+                scope = None
+        subs = getattr(state, "allow_subdomains", False)
+        from urllib.parse import urlparse as _up
+
+        if scope is not None:
+            ok = host in scope
+            if not ok and subs:
+                ok = any(host.endswith("." + h) for h in scope if isinstance(h, str))
+            if not ok:
+                return json.dumps({
+                    "error": f"host {host} is out of scope",
+                    "allowed": sorted(list(scope))[:30],
+                })
+
+        import urllib.request, ssl
+        ctx = ssl.create_default_context()
+        try:
+            req = urllib.request.Request(url, method=method)
+            req.add_header("User-Agent", "HunterOS/2.0 (authorized-security-audit)")
+            resp = urllib.request.urlopen(req, timeout=15, context=ctx)
+        except urllib.error.HTTPError as e:
+            body = b""
+            try:
+                body = e.read()[:4096]
+            except Exception:
+                pass
+            headers = {k.lower(): v for k, v in dict(e.headers).items()}
+            return json.dumps({
+                "url": url,
+                "status": e.code,
+                "headers": {k: v for k, v in list(headers.items())[:25]},
+                "body": body.decode("utf-8", errors="replace")[:4000],
+            })
+        except Exception as exc:
+            return json.dumps({"error": f"fetch failed: {type(exc).__name__}: {exc}"})
+
+        body = resp.read()[:4096]
+        headers = {k.lower(): v for k, v in dict(resp.headers).items()}
+        return json.dumps({
+            "url": url,
+            "status": resp.status,
+            "headers": {k: v for k, v in list(headers.items())[:25]},
+            "body": body.decode("utf-8", errors="replace")[:4000],
+        })
+
+
+    def _ask_hunter(self, messages: list[dict]) -> tuple[str, list[dict], float]:
+        """One hunter turn with a full conversation history (multi-turn tool-calling).
+
+        The first element must be the system message; the rest are alternating
+        user/assistant/tool turns. Tools must already be attached separately
+        (they are not part of the message list for most providers).
+        """
+        system = messages[0]["content"] if messages and messages[0].get("role") == "system" else HUNTER_SYSTEM
+        # Reconstruct the current user turn from the last user message
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        user = user_msgs[-1]["content"] if user_msgs else ""
+        return self._ask_hunter_raw(system, user)
+
+    def _ask_hunter_raw(self, system: str, user: str) -> tuple[str, list[dict], float]:
+        """Low-level hunter turn: tool-calling with JSON fallback."""
         mode = (os.environ.get("HUNTEROS_HUNTER_MODE") or "auto").strip().lower()
         complete_with_tools = getattr(self.llm, "complete_with_tools", None)
 
@@ -1367,7 +1564,7 @@ class HuntLoop:
 
         L2 is the layer that turns an anchored claim into a verified one. If the
         loop never supplies an LLM here, L2 degrades to UNREVIEWED and nothing can
-        ever reach "verified" — which is exactly what happened before this hook.
+        ever reach "verified" -- which is exactly what happened before this hook.
         The verifier tier is preferred when the client exposes a provider.
         """
         provider = getattr(self.llm, "provider", None)
@@ -1377,7 +1574,7 @@ class HuntLoop:
                 return sibling.complete(system, user)
             except Exception as exc:  # noqa: BLE001
                 self._verifier_llm_failed = True
-                self._log(f"verifier tier unavailable ({type(exc).__name__}) — "
+                self._log(f"verifier tier unavailable ({type(exc).__name__}) -- "
                           f"falling back to the hunter model")
         return self.llm.complete(system, user)
 
@@ -1414,7 +1611,7 @@ class HuntLoop:
         detail = why if ok else why
         self._log(
             f"[R{state.round}] stop: {state.completion_reason or 'done'} "
-            f"({detail}) — findings={len(state.findings)} "
+            f"({detail}) -- findings={len(state.findings)} "
             f"verified={count_verified(state)} chains={len(state.chains)} "
             f"spent=${_num(state.spent_usd, 0.0):.4f} "
             f"elapsed={elapsed_seconds(state, self.clock()):.1f}s"
@@ -1431,12 +1628,12 @@ class HuntLoop:
 # module-level entry points
 # --------------------------------------------------------------------------- #
 def run_hunt(llm: Any, verify_claim: Callable | None, **kwargs: Any) -> HuntState:
-    """``HuntLoop(llm, verify_claim, **kwargs).run()`` — the llm-first entry."""
+    """``HuntLoop(llm, verify_claim, **kwargs).run()`` -- the llm-first entry."""
     return HuntLoop(llm, verify_claim, **kwargs).run()
 
 
 def run_loop(target: str, llm: Any, verify_claim: Callable | None, **kwargs: Any) -> HuntState:
-    """``HuntLoop(llm, verify_claim, target=..., **kwargs).run()`` — target-first."""
+    """``HuntLoop(llm, verify_claim, target=..., **kwargs).run()`` -- target-first."""
     kwargs.setdefault("target", target)
     return HuntLoop(llm, verify_claim, **kwargs).run()
 

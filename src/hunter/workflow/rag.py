@@ -246,6 +246,11 @@ class RagConfig:
     dry_run: bool = False
     once: bool = False
     manage_daemon: bool = True
+    #: Run each child hunt in-process instead of queueing it. The daemon was
+    #: removed, so ``enqueue_task``/``drain_daemon`` are no-ops — a queued task
+    #: is a task that never runs. This is what makes a daemon-free ``hunt``
+    #: actually hunt instead of exiting 0 over an untouched ledger.
+    run_inline: bool = False
     provider: Any = None
 
 
@@ -304,11 +309,47 @@ class RagLoop:
         if self.config.dry_run:
             print(f"[dry-run] would enqueue {target}")
             return True
+        if self.config.run_inline:
+            return self._run_inline(target, task)
         try:
             enqueue_task(self.state_dir, task)
         except Exception:  # noqa: BLE001
             return False
         return True
+
+    def _run_inline(self, target: str, task: dict) -> bool:
+        """Run one child hunt in-process — no daemon, no queue.
+
+        The pre-daemon-removal code parked the task in ``<state>/daemon/queue/``
+        and relied on a supervisor to drain it. With the daemon gone that queue
+        is a black hole, so a hunt could report success having scanned nothing.
+        Run the child here and let its findings land in the ledger immediately.
+        """
+        from hunter.hunt import run_hunt
+
+        slice_s = float(task.get("max_wall_seconds") or 0.0)
+        budget = None
+        if slice_s > 0 and slice_s != float("inf"):
+            from hunter.llm.budget import RunBudget
+
+            budget = RunBudget(wall_seconds=slice_s, max_cost_usd=0.0, max_iterations=0 if slice_s == float("inf") else max(1, int(slice_s / 30)))
+        try:
+            outcome = run_hunt(
+                target,
+                scope=self.config.scope,
+                engine_name=str(self.config.engine),
+                state_dir=self.state_dir,
+                budget=budget,
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad child must not kill the loop
+            _rag_log(f"[rag] inline child failed {target}: {type(exc).__name__}: {exc}")
+            return False
+        _rag_log(
+            f"[rag] inline child {target} -> exit={outcome.exit_code} "
+            f"findings={outcome.findings} run={outcome.run_id or 'none'}"
+        )
+        # exit_code 2 = findings, 0 = clean; both mean the child actually ran.
+        return outcome.exit_code in (0, 2)
 
     def _cycle(self) -> list[str]:
         """One feeder cycle. Returns list of enqueued targets."""

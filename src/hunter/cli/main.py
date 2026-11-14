@@ -619,6 +619,7 @@ def hunt(
             dry_run=False,
             once=False,
             manage_daemon=False,
+            run_inline=True,  # no daemon exists — run each child here or nothing runs
             provider=provider,
         )
         rag_loop = RagLoop(rag_config)
@@ -981,12 +982,24 @@ def loop(
     from hunter.hunt import normalize_hunt_target
     from hunter.tools.scope import LOCAL_HOSTS, ScopeSet, localhost_scope, scope_from_manifest
     from hunter.workflow.hunt_state import _slugify, load_mission
-    from hunter.workflow.loop import run_loop as _run_loop
+    from hunter.workflow.loop_v3 import run_loop as _run_loop
 
     resolved_state: Path = _state_dir(state)
     normalized, kind = normalize_hunt_target(target)
     if kind == "invalid":
         err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid target: {target!r}")
+        raise typer.Exit(3)
+
+    # `loop` is the SOURCE auditor: it reads files from disk, chunks them, and
+    # asks the model about code. It has no HTTP path at all, so handing it a
+    # URL used to produce a run that reported findings it could not possibly
+    # have had evidence for. Send URL targets to the RAG path instead — that
+    # one scans live surfaces and enforces --scope.
+    if kind != "dir":
+        err_console.print(
+            "[hunter.error]BLOCKED:[/hunter.error] `loop` audits local source only "
+            "(a directory). For a URL/host use `hunter hunt <url> --scope <manifest>`."
+        )
         raise typer.Exit(3)
 
     # Scope: local dir = localhost; else from manifest or host-based
@@ -1051,8 +1064,15 @@ def loop(
         console.print(f"  resumes: run #{mission.run_count}  ·  last: {mission.last_run_id} ({mission.last_run_status})")
 
     try:
-        code = _run_loop(
+        from hunter.llm.config import load_config as _lc_loop
+        from hunter.llm.router import provider_from_config as _pfc_loop
+
+        _loop_cfg = _lc_loop()
+        _loop_provider = _pfc_loop(_loop_cfg)
+        _state = _run_loop(
             normalized,
+            llm=lambda tier, messages, **kw: _loop_provider.complete(tier, messages, **kw),
+            verify_claim=None,  # verification ladder runs inside the loop's own layer
             scope=chosen_scope,
             state_dir=resolved_state,
             engine=engine_name,
@@ -1061,7 +1081,8 @@ def loop(
             idle_seconds=idle_seconds,
             goals=goal_list,
         )
-        raise typer.Exit(code)
+        _found = len(getattr(_state, "claims", ()) or ())
+        raise typer.Exit(2 if _found else 0)
     except KeyboardInterrupt:
         mission = load_mission(resolved_state, slug)
         mission.completed = True

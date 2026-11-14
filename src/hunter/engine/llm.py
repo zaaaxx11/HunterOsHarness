@@ -157,53 +157,57 @@ class LLMEngine:
                 interrupt_check=ctx.config.get("interrupt_check"),
             )
 
-            # HARDCODED: run forge_build + slither BEFORE the agent loop.
-            # Agent consistently ignores prompt instructions. These calls
-            # guarantee auto_extract has detector data to work with.
+            # HARDCODED: run forge_build + slither BEFORE the agent loop when
+            # the target IS a local directory. For remote URLs this block is
+            # noise — it raises "no local_root in scope" and prevents the LLM
+            # from ever running.
             slither_evidence = None
-            try:
-                from hunter.agent.toolchain import forge_build, slither_run
-                # The daemon serves a local dir as an HTTP URL (SimpleHTTPServer),
-                # so target.url is http://127.0.0.1:PORT/ — NOT the directory.
-                # The real filesystem root rides in scope.local_roots.
-                local_root = (target.scope.local_roots or ())[0] if getattr(target.scope, "local_roots", None) else ""
-                ctx.emit("engine_event", {
-                    "stage": "pre_agent_forge", "status": "starting",
-                    "target_url": str(target.url)[:200],
-                    "local_root": str(local_root)[:200],
-                })
-                if not local_root:
-                    raise RuntimeError("no local_root in scope for forge/slither")
-                forge_result = forge_build({"path": local_root}, tool_ctx)
-                if forge_result.get("exit_code") != 0:
-                    raise RuntimeError(
-                        "forge build failed (exit=%s): %s"
-                        % (forge_result.get("exit_code"), forge_result.get("result_for_model", "?")[:200])
-                    )
-                ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "ok"})
-                ctx.emit("engine_event", {"stage": "pre_agent_slither", "status": "starting"})
-                slither_result = slither_run({"path": local_root, "timeout_s": 300}, tool_ctx)
-                if slither_result.get("slither_json_ok"):
-                    slither_evidence = slither_result
-                    ctx.emit("engine_event", {
-                        "stage": "pre_agent_slither",
-                        "detector_count": slither_result.get("detector_count", 0),
-                        "status": "ok",
-                    })
-                else:
-                    # Never report ok on a failed parse — that hid a 16KB
-                    # truncation bug for four hunts and produced 0 findings.
-                    ctx.emit("engine_event", {
-                        "stage": "pre_agent_slither",
-                        "status": "failed",
-                        "error": slither_result.get("slither_parse_error")
-                        or slither_result.get("code")
-                        or slither_result.get("result_for_model", "")[:300],
-                    })
-            except Exception as exc:
-                ctx.emit("engine_event", {"stage": "pre_agent", "error": str(exc)})
+            local_root = (target.scope.local_roots or ())[0] if getattr(target.scope, "local_roots", None) else ""
+            if local_root:
+                try:
+                    from hunter.agent.toolchain import forge_build, slither_run
 
+                    ctx.emit("engine_event", {
+                        "stage": "pre_agent_forge", "status": "starting",
+                        "target_url": str(target.url)[:200],
+                        "local_root": str(local_root)[:200],
+                    })
+                    forge_result = forge_build({"path": local_root}, tool_ctx)
+                    if forge_result.get("exit_code") != 0:
+                        raise RuntimeError(
+                            "forge build failed (exit=%s): %s"
+                            % (forge_result.get("exit_code"), forge_result.get("result_for_model", "?")[:200])
+                        )
+                    ctx.emit("engine_event", {"stage": "pre_agent_forge", "status": "ok"})
+                    ctx.emit("engine_event", {"stage": "pre_agent_slither", "status": "starting"})
+                    slither_result = slither_run({"path": local_root, "timeout_s": 300}, tool_ctx)
+                    if slither_result.get("slither_json_ok"):
+                        slither_evidence = slither_result
+                        ctx.emit("engine_event", {
+                            "stage": "pre_agent_slither",
+                            "detector_count": slither_result.get("detector_count", 0),
+                            "status": "ok",
+                        })
+                    else:
+                        ctx.emit("engine_event", {
+                            "stage": "pre_agent_slither",
+                            "status": "failed",
+                            "error": slither_result.get("slither_parse_error")
+                            or slither_result.get("code")
+                            or slither_result.get("result_for_model", "")[:300],
+                        })
+                except Exception as exc:
+                    ctx.emit("engine_event", {"stage": "pre_agent", "error": str(exc)})
+
+            ctx.emit("engine_event", {"stage": "agent_starting", "budget": {
+                "wall_s": getattr(self._budget, "wall_seconds", "?"),
+                "max_iter": getattr(self._budget, "max_iterations", "?"),
+                "governed": getattr(loop, "_budget_governed", "?"),
+            }})
             agent_result = loop.run(tool_ctx, goal, stream_cb=ctx.config.get("stream_cb"))
+            ctx.emit("engine_event", {"stage": "agent_done", "summary": str(agent_result.summary)[:200],
+                "finished": agent_result.finished, "interrupted": agent_result.interrupted,
+                "stalled": agent_result.stalled, "stats": agent_result.stats})
 
             # AUTO-EXTRACT: slither evidence -> findings -> debunk verify
             # The agent describes vulns but can't construct create_finding_request()
