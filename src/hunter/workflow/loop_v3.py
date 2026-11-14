@@ -903,6 +903,7 @@ class HuntLoop:
         self.verify_claim = verify_claim
         self.chainer = chainer
         self.target = str(target or "")
+        self._scope_hosts: frozenset[str] | None = None  # set by run_loop for fetch_url enforcement
         self._goals_arg = goals
         self._wall_arg = wall_seconds
         self._idle_arg = idle_seconds
