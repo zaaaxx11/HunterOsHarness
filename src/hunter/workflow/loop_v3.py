@@ -1346,7 +1346,24 @@ class HuntLoop:
                     "allowed": sorted(list(scope))[:30],
                 })
 
-        import urllib.request, ssl
+        import ipaddress, socket, urllib.request, ssl
+
+        # SSRF guard: resolve the host FIRST and refuse private/link-local/
+        # loopback/metadata IPs. A scope-approved hostname can still be
+        # attacker-controlled DNS (rebinding) pointing at internal ranges —
+        # hostname scope checks alone are not enough.
+        try:
+            addrinfos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+        except socket.gaierror as exc:
+            return json.dumps({"error": f"dns resolution failed for {host}: {exc}"})
+        for ai in addrinfos:
+            ip = ipaddress.ip_address(ai[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+                return json.dumps({
+                    "error": f"SSRF guard: {host} resolves to non-public address {ip}",
+                    "blocked_ip": str(ip),
+                })
+
         ctx = ssl.create_default_context()
         try:
             req = urllib.request.Request(url, method=method)

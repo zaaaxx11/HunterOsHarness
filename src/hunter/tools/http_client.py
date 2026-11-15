@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from .scope import ScopeSet
+from .scope import ScopeSet, ScopeViolation
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +98,38 @@ class ScopedHttpClient:
             time.sleep(wait)
         self._last_request_ts = time.monotonic()
 
+    def _ssrf_guard(self, url: str) -> None:
+        """Reject URLs whose host resolves to a non-public IP.
+
+        A scope-approved hostname can still be attacker-controlled DNS
+        (rebinding) pointing at loopback / private / link-local / metadata
+        ranges. Hostname scope checks alone are not enough — resolve FIRST
+        and fail closed before any connection is made.
+        """
+        import ipaddress
+        import socket
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            infos = socket.getaddrinfo(host, port)
+        except socket.gaierror:
+            return  # unresolvable — the request itself will fail normally
+        for ai in infos:
+            try:
+                ip = ipaddress.ip_address(ai[4][0])
+            except ValueError:
+                continue
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                raise ScopeViolation(
+                    f"SSRF guard: {host} resolves to non-public address {ip}"
+                )
+
     def request(
         self,
         method: str,
@@ -107,6 +139,7 @@ class ScopedHttpClient:
         body: str | None = None,
     ) -> Exchange:
         self.scope.check_url(url)  # fail-closed BEFORE any I/O
+        self._ssrf_guard(url)      # IP-level guard (DNS rebinding, SSRF)
         self._throttle()
         self.stats.requests += 1
         started = time.perf_counter()
