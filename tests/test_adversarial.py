@@ -613,10 +613,16 @@ def test_two_scans_share_one_global_chain(tmp_path):
         led.close()
 
 
-def test_failed_run_leaves_ledger_consistent(tmp_path):
+def test_failed_run_leaves_ledger_consistent(tmp_path, monkeypatch):
     good = run_scan(
         "http://127.0.0.1:1/", engine_name="mock", scope=localhost_scope(), state_dir=tmp_path
     )
+    # Deterministically fail the second run: the LLM engine's run() raises
+    # when no provider is bound. Provider auto-discovery from operator config
+    # must not leak into this test — force the provider-less path.
+    from hunter.tools import registry as reg_mod
+
+    monkeypatch.setattr(reg_mod, "_default_llm_provider", lambda cfg: None)
     bad = run_scan(
         "http://127.0.0.1:1/", engine_name="llm", scope=localhost_scope(), state_dir=tmp_path
     )
