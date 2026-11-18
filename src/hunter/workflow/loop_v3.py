@@ -167,6 +167,37 @@ URLs and report findings. Follow this exact workflow:
 Never guess a vulnerability. Cite only what you actually fetched.
 """
 
+#: Tool schema for the HUNTER turn — loaded dynamically from agent/tools.
+# The hardcoded list below is only the FALLBACK when the agent tools module is
+# not importable (stripped builds, selftest without the bundle).
+try:
+    import importlib.util as _iu
+    _spec = _iu.spec_from_file_location(
+        "all_tools",
+        str(Path(__file__).resolve().parents[2] / "hunter" / "agent" / "tools" / "all_tools.py")
+    )
+    if _spec is not None and _spec.origin is not None and Path(_spec.origin).is_file():
+        _mod = _iu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _ALL_AGENT_TOOLS: dict = dict(_mod.TOOLS)
+    else:
+        _ALL_AGENT_TOOLS = {}
+except Exception:
+    _ALL_AGENT_TOOLS = {}
+
+_KNOWN_TOOLS: list[dict] = []
+for _tname, _tfn in (_ALL_AGENT_TOOLS or {}).items():
+    _doc = (_tfn.__doc__ or "").strip().split("\n")[0][:300]
+    _KNOWN_TOOLS.append({
+        "type": "function",
+        "function": {
+            "name": _tname,
+            "description": _doc,
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    })
+
+# Always include report_finding as the primary output tool
 HUNTER_TOOLS: list[dict] = [
     {
         "type": "function",
@@ -229,7 +260,7 @@ HUNTER_TOOLS: list[dict] = [
             },
         },
     }
-]
+] + _KNOWN_TOOLS
 
 _NUDGE = """
 STOP. You returned text but made no report_finding call.
