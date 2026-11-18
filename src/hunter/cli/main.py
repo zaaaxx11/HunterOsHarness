@@ -588,60 +588,63 @@ def hunt(
             err_console.print(
                 "[hunter.error]BLOCKED:[/hunter.error] no scope resolved for any target")
             raise typer.Exit(3)
-        # The operator summary every hunt used to print from the single-target
-        # path: which target was accepted and which skills the run mounted.
-        # It lives here because EVERY hunt now runs through the RAG loop —
-        # the single-target branch below is only the dead fallback.
-        rag_target = targets[0]
-        if not json_out:
-            host = urlparse(rag_target).hostname if "://" in rag_target else None
-            shown = f" (host: {host})" if host else ""
-            typer.echo(f"target check: {rag_target} — valid URL{shown}"
-                       if host else f"target check: {rag_target}")
+        # Multi-target: feed every resolved target through RagConfig.
+        # Each target gets its own scope (auto-detected or manifest),
+        # its own run, and findings land in the shared ledger.
+        total_ok = 0
+        total_failed = 0
+        for tgt_idx, tgt in enumerate(targets or []):
+            # Resolve scope per target
+            tgt_scope = manifest_scope
+            if tgt_scope is None:
+                tgt_scope = recognize_scope(provider, tgt)
+            if tgt_scope is None:
+                if not json_out:
+                    err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] no scope for {tgt}")
+                total_failed += 1
+                continue
+
+            # Summary line per target
+            if not json_out and len(targets or []) > 1:
+                host = urlparse(tgt).hostname if "://" in tgt else None
+                shown = f" (host: {host})" if host else ""
+                typer.echo(f"[{tgt_idx+1}/{len(targets)}] target: {tgt}{shown}")
+
+            rag_config = RagConfig(
+                state_dir=resolved_state,
+                target=tgt,
+                scope=tgt_scope,
+                engine=rag_engine,
+                time_budget_s=float(budget_s),
+                interval_s=15.0,
+                high_water=8,
+                dry_run=False,
+                once=True,  # one target, one cycle — move to next
+                manage_daemon=False,
+                run_inline=True,
+                provider=provider,
+            )
             try:
-                from hunter.agent.skills import selected_skill_names
+                rag_loop = RagLoop(rag_config)
+                rag_loop.run()
+                total_ok += 1
+            except Exception as exc:
+                if not json_out:
+                    err_console.print(f"[hunter.error] {tgt}: {exc}")
+                total_failed += 1
 
-                rag_selected = selected_skill_names(rag_target, rag_target)
-            except Exception:  # noqa: BLE001 — the banner is advisory only
-                rag_selected = []
-            typer.echo(f"skills mounted: {len(rag_selected)}" + (
-                f" ({', '.join(f'{n} [{s}]' for n, s in rag_selected)})"
-                if rag_selected else ""))
-        rag_config = RagConfig(
-            state_dir=resolved_state,
-            target=targets[0],
-            scope=first_scope,
-            engine=rag_engine,
-            time_budget_s=float(budget_s),
-            interval_s=15.0,  # matches `hunter loop --idle` default; a hunt
-                              # sleeps 15s between RAG cycles, not 45s, so a
-                              # short --time budget is spent scanning rather
-                              # than idling.
-            high_water=8,
-            dry_run=False,
-            once=False,
-            manage_daemon=False,
-            run_inline=True,  # no daemon exists — run each child here or nothing runs
-            provider=provider,
-        )
-        rag_loop = RagLoop(rag_config)
-        rag_loop.run()
+        if not json_out:
+            typer.echo(f"[hunter] multi-target done: {total_ok} ok, {total_failed} failed")
         if json_out:
-            # The machine channel gets the run's own facts. Before this the
-            # RAG path exited 0 with an empty stdout — every `hunt --json`
-            # consumer (pipe, CI, the cockpit) parsed nothing at all.
             import json as _json
-
             console.print_json(_json.dumps({
-                "run_id": None,
                 "status": "completed",
+                "targets": {"ok": total_ok, "failed": total_failed},
                 "verified": 0,
-                "candidates": 0,
                 "findings": [],
-                "stats": rag_loop.summary(),
-                "report": None,
+                "stats": {"multi_target": True},
             }))
-        raise typer.Exit(0)
+        raise typer.Exit(0 if total_ok >= total_failed else 1)
 
     import json
 

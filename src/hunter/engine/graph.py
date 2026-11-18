@@ -40,13 +40,23 @@ class AttackGraph:
         return "\n".join(lines)
 
 
-def build_graph(ledger: Any, run_id: str) -> AttackGraph:
-    """Build exploration graph from ledger findings + chains."""
+def build_graph(ledger: Any, run_id: str = "", *, cross_target: bool = False) -> AttackGraph:
+    """Build exploration graph from ledger findings + chains.
+
+    If ``run_id`` is empty and ``cross_target`` is True, scan ALL runs in the ledger
+    for cross-target attack chains — findings from different targets that combine.
+    """
     graph = AttackGraph()
 
     # Add finding nodes
     try:
-        findings = list(ledger.findings(run_id))
+        if run_id:
+            findings = list(ledger.findings(run_id))
+        else:
+            findings = []
+            if cross_target:
+                for run in getattr(ledger, 'runs', lambda: [])():
+                    findings.extend(ledger.findings(getattr(run, 'id', '')))
     except Exception:
         findings = []
 
