@@ -530,19 +530,28 @@ def hunt(
             # 2. Otherwise, use the LLM-proposed scope from target_resolve
             tgt_scope = manifest_scope
             if tgt_scope is None:
+                from hunter.tools.scope import ScopeSet as _SS
                 tgt_path = Path(tgt).expanduser()
                 if tgt_path.is_file() and tgt_path.suffix == ".json":
                     try:
                         tgt_scope = scope_from_manifest(tgt_path)
-                        targets = list(tgt_scope.allowed_hosts)  # hunt every host in scope
-                        if not targets:
-                            err_console.print("[hunter.error]BLOCKED:[/hunter.error] scope manifest has no hosts")
-                            raise typer.Exit(3)
-                        first_scope = tgt_scope  # set before the for-loop
+                        # scope file expands the target list to its hosts
+                        scope_hosts = list(tgt_scope.allowed_hosts)
+                        if scope_hosts:
+                            targets = scope_hosts  # REPLACE: scope = all hosts
+                        first_scope = tgt_scope
                         break  # scope file replaces all targets
                     except (ValueError, OSError) as exc:
                         err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] invalid scope: {exc}")
                         raise typer.Exit(3) from exc
+                elif tgt_path.is_dir():
+                    _auto_name = f"auto-{tgt_path.name}"
+                    tgt_scope = _SS(
+                        allowed_hosts=frozenset(),
+                        name=_auto_name,
+                        local_roots=(str(tgt_path.resolve()),),
+                    )
+                    # DON'T overwrite targets — local dir = one target, keep list intact
             if tgt_scope is None and _resolved.scope_manifest is not None:
                 try:
                     from hunter.home import state_dir as _sd_fn
