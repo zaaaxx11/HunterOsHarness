@@ -1,32 +1,53 @@
-# relay-settlement Security Audit — LLM-Augmented
+# relay-settlement Security Audit — LLM-Augmented (Retryable)
 
-**Date:** 2026-11-18 | **Engine:** HunterOsHarness v0.11.0 + deepseek-v4.1-flash
+**Date:** 2026-11-18 19:23 | **Model:** deepseek-v4.1-flash | **Retries:** 5
 **Evidence:** 125 verified, 487 sha256-chained artifacts
 
 ---
 
 ## Executive Summary
 
-Provider 503 — see manual report above
+See manual executive summary in previous commits.
 
 ---
 
 ## Attack Chains
 
-Provider 503 — see manual chains below
+LLM unavailable — see manual chain analysis in previous commit
 
 ---
 
 ## Individual Reviews
 
-F-0001: NOISE: Reverting exactly when `amount == 0` is a conventional and safe nonzero-amount check, not an exploitable arithmetic condition.
-F-0002: FAILED
-F-0003: LIKELY: the external call can reenter before cachedReportHash is updated, allowing a stale cached hash to be read or reused, though the actual impact depends on how that cached hash is consumed.
-F-0004: FAILED
-F-0005: LIKELY: HUB.burn is an external call before gasPayments is updated, allowing reentrancy to exploit stale payment state.
-F-0006: FAILED
-F-0007: LIKELY — Ignoring `_addSource`’s return value can allow duplicate source processing to be treated as a fresh addition, undermining idempotency if callers rely on that result.
-F-0008: REAL_EXPLOIT: ignoring the return value of signature verification allows invalid spender authorizations to be treated as valid, enabling forged withdrawals.
+**F-0001** [evm-arithmetic-trust]: EXHAUSTED_RETRIES:5
+**F-0002** [evm-arithmetic-trust]: ERR502: <!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 8]>    <html class="no-
+**F-0003** [reentrancy]: ERR502: <!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 8]>    <html class="no-
+**F-0004** [reentrancy]: ERR502: <!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 8]>    <html class="no-
+**F-0005** [reentrancy]: ERR502: <!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 8]>    <html class="no-
+**F-0006** [evm-unverified-assumption]: ERR502: <!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 8]>    <html class="no-
+**F-0007** [evm-unverified-assumption]: ERR502: <!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 8]>    <html class="no-
+**F-0008** [evm-unverified-assumption]: ERR502: <!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->
+<!--[if IE 8]>    <html class="no-
 
 ---
 
@@ -40,3 +61,6 @@ F-0008: REAL_EXPLOIT: ignoring the return value of signature verification allows
 - **F-0006** [evm-unverified-assumption] RelayOracleMultisig._validateSignatures unused return value
 - **F-0007** [evm-unverified-assumption] RelayOracleIdempotencyStore._addSource unused return value
 - **F-0008** [evm-unverified-assumption] RelayAllocator.consumeSpenderSignature unused return - forged withdrawals
+
+---
+*HunterOsHarness v0.11.0 + deepseek-v4.1-flash | Retryable: 5x, 300s timeout*

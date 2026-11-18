@@ -44,7 +44,7 @@ from hunter.llm.config import (
 
 __all__ = ["NativeProvider"]
 
-_BACKOFF_CAP_SECONDS = 8.0
+_BACKOFF_CAP_SECONDS = 30.0  # was 8.0 — customin/Devora flaky, need longer backoff
 
 # HTTP status -> (reason, retryable, should_fallback). Ordered by specificity:
 # 402/429 before the generic 4xx bucket, because billing and rate limits are
@@ -238,7 +238,7 @@ class NativeProvider:
             model=model,
             base_url=base_url.rstrip("/"),
             api_key=api_key or "",
-            timeout=int(tier_cfg.timeout or 120),
+            timeout=int(tier_cfg.timeout or 300),  # was 120 — slow providers need more
             reasoning_effort=getattr(tier_cfg, "reasoning_effort", "") or "",
         )
 
@@ -252,7 +252,7 @@ class NativeProvider:
             model=model,
             base_url=(getattr(entry, "base_url", "") or self._provider_base_url(provider) or "").rstrip("/"),
             api_key=(getattr(entry, "api_key", "") or self._provider_key(provider) or ""),
-            timeout=int(getattr(entry, "timeout", 0) or 120),
+            timeout=int(getattr(entry, "timeout", 0) or 300),  # was 120
         )
 
     def _provider_block(self, name: str) -> Any:
@@ -278,7 +278,7 @@ class NativeProvider:
         tool_choice: str | None = None,
     ) -> TurnResult | ClassifiedError:
         """Dial one route, retrying transient failures up to the configured cap."""
-        max_retries = int(getattr(getattr(self.config, "agent", None), "api_max_retries", 3) or 3)
+        max_retries = int(getattr(getattr(self.config, "agent", None), "api_max_retries", 5) or 5)  # was 3
         last: ClassifiedError | None = None
 
         for attempt in range(max_retries + 1):
