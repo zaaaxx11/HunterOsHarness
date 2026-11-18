@@ -594,10 +594,23 @@ def hunt(
         total_ok = 0
         total_failed = 0
         for tgt_idx, tgt in enumerate(targets or []):
-            # Resolve scope per target
-            tgt_scope = manifest_scope
+            # Resolve scope per target.
+            # For multi-target (len>1), use per-target auto-detection even
+            # when a global --scope flag was provided — each target may
+            # need different local_roots or host lists.
+            tgt_scope = manifest_scope if len(targets or []) <= 1 else None
             if tgt_scope is None:
-                tgt_scope = recognize_scope(provider, tgt)
+                # Auto-detect: local directories get local_roots scope
+                from hunter.tools.scope import ScopeSet as _ScopeSet
+                tgt_path = Path(tgt).expanduser()
+                if tgt_path.is_dir():
+                    tgt_scope = _ScopeSet(
+                        allowed_hosts=frozenset(),
+                        name=f"auto-target-{tgt_idx}",
+                        local_roots=(str(tgt_path.resolve()),),
+                    )
+                else:
+                    tgt_scope = recognize_scope(provider, tgt)
             if tgt_scope is None:
                 if not json_out:
                     err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] no scope for {tgt}")
