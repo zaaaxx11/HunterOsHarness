@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -129,10 +130,23 @@ class NativeProvider:
 
     name = "native"
 
+    # Phase 3: per-provider quarantine. A provider whose last failure was
+    # definitively non-transient (auth / billing / config) is skipped by the
+    # next complete() call instead of re-dialed and paying the same latency.
+    _QUARANTINE_TTL: dict[str, float | None] = {
+        "rate_limit": 60.0,      # transient: 1-minute quarantine
+        "overloaded": 60.0,      # transient: 1-minute quarantine
+        "server_error": 30.0,    # transient: 30-second quarantine
+        "timeout": 30.0,         # transient: 30-second quarantine
+        "billing": None,         # None = long TTL, only cleared manually
+        "auth": None,            # None = long TTL, only cleared manually
+    }
+
     def __init__(self, config: HunterConfig, *, transport: Any | None = None) -> None:
         self.config = config
         self._transport = transport  # test seam: httpx.Client-compatible
         self._last_outcome: str | None = None
+        self._quarantine: dict[str, float] = {}  # provider -> monotonic until-timestamp
 
     # ------------------------------------------------------------- public --
 
@@ -162,6 +176,16 @@ class NativeProvider:
 
         last: ClassifiedError | None = None
         for route in routes:
+            # Phase 2/3: skip a provider that is quarantined (in-process) or has
+            # a live cross-session rate-limit cooldown (shared file state).
+            now_monotonic = time.monotonic()
+            until = self._quarantine.get(route.provider)
+            if until is not None and now_monotonic < until:
+                continue
+            from hunter.llm.rate_guard import remaining as _rate_remaining
+            _rl = _rate_remaining(route.provider)
+            if _rl is not None and _rl > 0:
+                continue
             result = self._attempt(route, messages, tools, stream_cb, tool_choice)
             if isinstance(result, TurnResult):
                 self._last_outcome = f"ok:{route.provider}"
@@ -286,16 +310,27 @@ class NativeProvider:
                 return self._request(route, messages, tools, stream_cb, tool_choice)
             except _ProviderHTTPError as exc:
                 verdict = exc.verdict
+                # Phase 3: quarantine only definitively non-transient failures
+                # (auth / billing / config). Transient classes (rate_limit /
+                # overloaded / timeout) are NOT armed — the capped + jittered
+                # backoff inside this loop already throttles them, and arming
+                # would suppress the primary route for the rest of the hunt.
+                if not verdict.retryable:
+                    ttl = NativeProvider._QUARANTINE_TTL.get(verdict.reason)
+                    if ttl is not None:
+                        self._quarantine[route.provider] = time.monotonic() + float(ttl)
                 last = verdict
                 if not verdict.retryable or attempt >= max_retries:
                     return verdict
-                wait = exc.retry_after or min(_BACKOFF_CAP_SECONDS, 2.0**attempt)
+                base = exc.retry_after or min(_BACKOFF_CAP_SECONDS, 2.0 ** attempt)
+                wait = base + random.uniform(0, 0.5 * base)  # jitter to decorrelate retries
                 time.sleep(wait)
             except (_TimeoutLike, OSError) as exc:
                 last = ClassifiedError(reason="timeout", retryable=True, message=str(exc)[:300])
                 if attempt >= max_retries:
                     return last
-                time.sleep(min(_BACKOFF_CAP_SECONDS, 2.0**attempt))
+                base = min(_BACKOFF_CAP_SECONDS, 2.0 ** attempt)
+                time.sleep(base + random.uniform(0, 0.5 * base))
         return last or ClassifiedError(reason="unknown")
 
     def _request(
@@ -502,6 +537,20 @@ class NativeProvider:
                 retry_after = min(_BACKOFF_CAP_SECONDS, float(raw))
         except (TypeError, ValueError):
             retry_after = None
+        # Phase 1b: body-based error heuristics (Hermes-style). A 5xx from a
+        # gateway proxy (Customin/Devora) often carries a JSON error body that
+        # names the real failure — classify it so retries are correctly paced.
+        body_override = _body_retry_override(status, body_text)
+        if body_override is not None:
+            reason_hint, suggested = body_override
+            # Honour the LONGER of header vs body backoff; never shorten a real Retry-After.
+            if retry_after is None or suggested > retry_after:
+                retry_after = suggested
+            # Only override reason when the status verdict is generic (server_error/unknown).
+            if base.reason in ("server_error", "unknown"):
+                from dataclasses import replace
+                base = replace(base, reason=reason_hint, retryable=True)
+            message = f"{message} [body:{reason_hint}]"
         return ClassifiedError(
             reason=base.reason,
             retryable=base.retryable,
@@ -528,6 +577,32 @@ class _TimeoutLike(Exception):
     """Marker for transport timeouts raised by the injected client."""
 
 
+def _body_retry_override(status: int, body_text: str) -> tuple[str, float] | None:
+    """Return (reason, suggested_backoff_seconds) from error-body heuristics, else None.
+
+    Phase 1b — mirrors Hermes' body-aware error classification. A gateway proxy
+    (Customin / Devora / Cloudflare-fronted) frequently returns 5xx with a JSON
+    body that names the real cause. Without reading the body, a generic 503 is
+    treated as a 30s-capped server retry; the body heuristics let us pace the
+    retry correctly (45s for provider_unavailable, 30s for rate-limit hints).
+    """
+    if status < 500:
+        return None
+    lowered = (body_text or "").strip()[:500].lower()
+    if not lowered:
+        return None
+    if "provider_unavailable" in lowered or "provider unavailable" in lowered:
+        return ("overloaded", 45.0)
+    if "rate_limit" in lowered or "rate limit" in lowered or "too many requests" in lowered:
+        return ("rate_limit", 30.0)
+    if any(kw in lowered for kw in ("overloaded", "temporarily unavailable", "capacity")):
+        return ("overloaded", 20.0)
+    if lowered.startswith(("<!doctype", "<html", "cloudflare")):
+        # Gateway error page (HTML) — transient, back off gently.
+        return ("server_error", 10.0)
+    return None
+
+
 def _extract_error_text(response: Any) -> str:
     try:
         body = response.json()
@@ -539,11 +614,14 @@ def _extract_error_text(response: Any) -> str:
     if isinstance(body, dict):
         err = body.get("error")
         if isinstance(err, dict):
-            return str(err.get("message") or err)
+            # Phase 1c: error is a dict — surface the most useful field.
+            return str(err.get("message") or err.get("detail") or err)
         if err:
             return str(err)
         if body.get("message"):
             return str(body["message"])
+        if body.get("detail"):
+            return str(body["detail"])
     return str(body)[:300]
 
 
