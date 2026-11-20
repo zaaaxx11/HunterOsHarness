@@ -36,6 +36,9 @@ from typing import Any
 
 from hunter.errors import HunterError
 from hunter.llm.base import ClassifiedError, StreamCb, ToolCall, TurnResult
+from hunter.llm.rate_control import breaker as _breaker
+from hunter.llm.rate_control import limiter as _limiter
+from hunter.llm.rate_control import throttle as _throttle
 from hunter.llm.config import (
     FallbackEntry,
     HunterConfig,
@@ -176,6 +179,15 @@ class NativeProvider:
 
         last: ClassifiedError | None = None
         for route in routes:
+            # Phase 2: a tripped circuit gates the whole provider. Skip it
+            # without paying a single dial, including the half-open probe:
+            # only the breaker decides when a probe is due.
+            if not _breaker.allows(route.provider):
+                last = ClassifiedError(
+                    reason="rate_limit",
+                    message=f"circuit open for provider '{route.provider}'",
+                )
+                continue
             # Phase 2/3: skip a provider that is quarantined (in-process) or has
             # a live cross-session rate-limit cooldown (shared file state).
             now_monotonic = time.monotonic()
@@ -189,6 +201,13 @@ class NativeProvider:
             result = self._attempt(route, messages, tools, stream_cb, tool_choice)
             if isinstance(result, TurnResult):
                 self._last_outcome = f"ok:{route.provider}"
+                # Phase 2: success closes the circuit, relaxes AIMD pacing,
+                # and releases any cross-session cooldown left from an old 429.
+                _breaker.note_success(route.provider)
+                _throttle.note_success(route.provider)
+                from hunter.llm.rate_guard import clear as _rate_clear
+
+                _rate_clear(route.provider)
                 if budget is not None:
                     budget.add_cost(result.cost_usd)
                 return result
@@ -196,8 +215,15 @@ class NativeProvider:
             self._last_outcome = f"{result.reason}:{route.provider}"
             if not (result.retryable or result.should_fallback):
                 break  # our request is malformed — another provider won't help
+            # Phase 2: a retryable failure that has exhausted its in-route
+            # retries (429 / 5xx) IS fallback-worthy. A different provider
+            # (different key + endpoint) is the only thing that can help;
+            # re-dialing the same one just burns more quota. Auth/billing/
+            # model-not-found keep the original should_fallback behaviour.
+            if result.retryable:
+                continue
             if not result.should_fallback:
-                break  # retries already exhausted inside _attempt
+                break
 
         assert last is not None
         raise HunterError(
@@ -307,7 +333,13 @@ class NativeProvider:
 
         for attempt in range(max_retries + 1):
             try:
-                return self._request(route, messages, tools, stream_cb, tool_choice)
+                # Phase 2: every dial passes through the one global door.
+                # Configure this provider's AIMD-derived pacing, then hold its
+                # semaphore across the request so concurrent hunts cannot
+                # burst the same key.
+                _limiter.configure(route.provider, min_interval=_throttle.delay(route.provider))
+                with _limiter.slot(route.provider):
+                    return self._request(route, messages, tools, stream_cb, tool_choice)
             except _ProviderHTTPError as exc:
                 verdict = exc.verdict
                 # Phase 3: quarantine only definitively non-transient failures
@@ -319,6 +351,19 @@ class NativeProvider:
                     ttl = NativeProvider._QUARANTINE_TTL.get(verdict.reason)
                     if ttl is not None:
                         self._quarantine[route.provider] = time.monotonic() + float(ttl)
+                # Phase 2: a 429 is the signal the whole kit learns from.
+                if verdict.reason == "rate_limit":
+                    _throttle.note_429(route.provider)
+                    _breaker.note_failure(route.provider)
+                    _limiter.note_429(route.provider)
+                    from hunter.llm.rate_guard import record as _rate_record
+
+                    # Honour the server's Retry-After when present; otherwise
+                    # fall back to the same 60s transient-quarantine TTL.
+                    _headers: dict[str, str] = {}
+                    if exc.retry_after is not None:
+                        _headers["retry-after"] = str(exc.retry_after)
+                    _rate_record(route.provider, headers=_headers, default_cooldown=60.0)
                 last = verdict
                 if not verdict.retryable or attempt >= max_retries:
                     return verdict
