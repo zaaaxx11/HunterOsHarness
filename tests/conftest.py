@@ -31,6 +31,7 @@ def _reset_rate_limit_singletons():
     rc.limiter.reset()
     rc.breaker.reset()
     rc.throttle.reset()
+    rc.limiter._file_gate and rc.limiter._file_gate.reset()  # noqa: SLF001
     yield
     rc.limiter.reset()
     rc.breaker.reset()

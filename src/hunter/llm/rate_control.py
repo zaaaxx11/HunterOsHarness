@@ -19,21 +19,94 @@ instances production code shares. Tests may construct fresh instances;
 
 from __future__ import annotations
 
+import contextlib
+import os
+import re
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from enum import Enum
+from pathlib import Path
 from typing import Iterator
+
+try:  # POSIX only; Windows degrades to in-process only.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 __all__ = [
     "AdaptiveThrottle",
     "CircuitBreaker",
     "CircuitState",
+    "FileGate",
     "ProviderLimiter",
     "breaker",
     "limiter",
     "throttle",
 ]
+
+
+def _safe_name(provider: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", provider) or "_"
+
+
+class FileGate:
+    """Cross-process per-provider mutex + start-to-start pacing.
+
+    ``fcntl.flock`` on a per-provider file gives mutual exclusion BETWEEN
+    processes (a ``threading.Semaphore`` cannot). A sibling timestamp file
+    carries the last slot entry in wall-clock time so two hunts in two
+    terminals honour the same ``min_interval``. The lock is held across the
+    whole slot, so only one process dials a provider at a time.
+
+    State lives under ``$HUNTEROS_STATE_DIR/llm_locks`` (default
+    ``~/.hunter/llm_locks``), alongside the existing rate-limit guard.
+    """
+
+    def __init__(self, state_dir: str | os.PathLike[str] | None = None) -> None:
+        self._state_dir = state_dir
+        self._enabled = fcntl is not None
+
+    def _lock_dir(self) -> Path:
+        base = self._state_dir or os.environ.get("HUNTEROS_STATE_DIR") or Path.home() / ".hunter"
+        return Path(base) / "llm_locks"
+
+    def _paths(self, provider: str) -> tuple[Path, Path]:
+        name = _safe_name(provider)
+        directory = self._lock_dir()
+        return directory / f"{name}.lock", directory / f"{name}.ts"
+
+    @contextmanager
+    def slot(self, provider: str, interval: float) -> Iterator[None]:
+        if not self._enabled or fcntl is None:
+            yield
+            return
+        directory = self._lock_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        lock_path, ts_path = self._paths(provider)
+        with lock_path.open("a+") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                try:
+                    last = float(ts_path.read_text(encoding="utf-8").strip())
+                except (OSError, ValueError):
+                    last = None
+                now = time.time()
+                if last is not None and interval > 0:
+                    wait = interval - (now - last)
+                    if wait > 0:
+                        time.sleep(wait)
+                tmp = ts_path.with_name(f"{ts_path.name}.{os.getpid()}.tmp")
+                tmp.write_text(str(time.time()), encoding="utf-8")
+                os.replace(tmp, ts_path)
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+    def reset(self) -> None:
+        with contextlib.suppress(OSError):
+            for path in self._lock_dir().glob("*.ts"):
+                path.unlink()
 
 
 class CircuitState(str, Enum):
@@ -56,9 +129,16 @@ class ProviderLimiter:
     feeds into ``configure(min_interval=throttle.delay(provider))``.
     """
 
-    def __init__(self, *, min_interval: float = 0.0, max_concurrent: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        min_interval: float = 0.0,
+        max_concurrent: int = 1,
+        file_gate: FileGate | None = None,
+    ) -> None:
         self._default_interval = max(0.0, float(min_interval))
         self._max_concurrent = max(1, int(max_concurrent))
+        self._file_gate = file_gate
         self._intervals: dict[str, float] = {}
         self._semaphores: dict[str, threading.Semaphore] = {}
         self._last_entry: dict[str, float] = {}
@@ -82,13 +162,21 @@ class ProviderLimiter:
 
     @contextmanager
     def slot(self, provider: str) -> Iterator[None]:
+        with self._lock:
+            interval = self._intervals.get(provider, self._default_interval)
+        if self._file_gate is not None:
+            # Cross-process door; resolves HUNTEROS_STATE_DIR at each slot.
+            with ExitStack() as stack:
+                gate = self._file_gate
+                stack.enter_context(gate.slot(provider, interval))
+                yield
+            return
         sem = self._semaphore(provider)
         sem.acquire()
         try:
-            with self._lock:
-                interval = self._intervals.get(provider, self._default_interval)
-                last = self._last_entry.get(provider)
             now = time.monotonic()
+            with self._lock:
+                last = self._last_entry.get(provider)
             if last is not None:
                 wait = interval - (now - last)
                 if wait > 0:
@@ -243,6 +331,6 @@ class AdaptiveThrottle:
                 self._delays.pop(provider, None)
 
 
-limiter = ProviderLimiter()
+limiter = ProviderLimiter(file_gate=FileGate())
 breaker = CircuitBreaker()
 throttle = AdaptiveThrottle()
