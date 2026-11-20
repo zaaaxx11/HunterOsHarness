@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ from hunter.runtime_paths import RuntimePaths
 from hunter.tools.scope import ScopeSet
 
 __all__ = [
+    "STATE_LOCK",
     "RagConfig",
     "RagLoop",
     "derive_child_targets",
@@ -43,6 +45,13 @@ __all__ = [
 
 def _state_path(state_dir: Path) -> Path:
     return Path(state_dir) / "rag-state.json"
+
+
+# Process-wide re-entrant lock for the shared rag-state file. ``save_rag_state``
+# writes atomically via os.replace, but the load-modify-save sequence is not
+# atomic on its own — a parallel multi-target fan-out needs this to avoid a
+# lost update. Re-entrant so helper composition never self-deadlocks.
+STATE_LOCK = threading.RLock()
 
 
 def load_rag_state(state_dir: Path) -> dict[str, Any]:
@@ -93,12 +102,13 @@ def followed_findings(state_dir: Path) -> set[str]:
 
 
 def mark_followed(state_dir: Path, finding_id: str) -> None:
-    state = load_rag_state(state_dir)
-    followed = [str(x) for x in (state.get("followed") or [])]
-    if finding_id not in followed:
-        followed.append(finding_id)
-    state["followed"] = followed
-    save_rag_state(state_dir, state)
+    with STATE_LOCK:
+        state = load_rag_state(state_dir)
+        followed = [str(x) for x in (state.get("followed") or [])]
+        if finding_id not in followed:
+            followed.append(finding_id)
+        state["followed"] = followed
+        save_rag_state(state_dir, state)
 
 
 def normalize_finding_target(finding: Finding, origin: str) -> str | None:

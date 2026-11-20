@@ -39,6 +39,8 @@ from hunter.llm.base import ClassifiedError, StreamCb, ToolCall, TurnResult
 from hunter.llm.rate_control import breaker as _breaker
 from hunter.llm.rate_control import limiter as _limiter
 from hunter.llm.rate_control import throttle as _throttle
+from hunter.llm.response_cache import cache as _cache
+from hunter.llm.response_cache import cache_key as _cache_key
 from hunter.llm.config import (
     FallbackEntry,
     HunterConfig,
@@ -198,7 +200,7 @@ class NativeProvider:
             _rl = _rate_remaining(route.provider)
             if _rl is not None and _rl > 0:
                 continue
-            result = self._attempt(route, messages, tools, stream_cb, tool_choice)
+            result = self._attempt(route, messages, tools, stream_cb, tool_choice, tier)
             if isinstance(result, TurnResult):
                 self._last_outcome = f"ok:{route.provider}"
                 # Phase 2: success closes the circuit, relaxes AIMD pacing,
@@ -325,11 +327,19 @@ class NativeProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         stream_cb: StreamCb | None,
-        tool_choice: str | None = None,
+        tool_choice: str | None,
+        tier: str = "orchestrator",
     ) -> TurnResult | ClassifiedError:
         """Dial one route, retrying transient failures up to the configured cap."""
         max_retries = int(getattr(getattr(self.config, "agent", None), "api_max_retries", 5) or 5)  # was 3
         last: ClassifiedError | None = None
+        # Streaming responses cannot be replayed from a cache. Everything else
+        # is de-duped by request shape for the cache's short TTL window.
+        key = "" if stream_cb is not None else _cache_key(tier, messages, tools, route)
+        if key:
+            cached = _cache.get(key)
+            if cached is not None:
+                return cached
 
         for attempt in range(max_retries + 1):
             try:
@@ -339,7 +349,11 @@ class NativeProvider:
                 # burst the same key.
                 _limiter.configure(route.provider, min_interval=_throttle.delay(route.provider))
                 with _limiter.slot(route.provider):
-                    return self._request(route, messages, tools, stream_cb, tool_choice)
+                    result = self._request(route, messages, tools, stream_cb, tool_choice)
+                # Only successful, non-streaming responses enter the cache.
+                if key:
+                    _cache.put(key, result, route.provider)
+                return result
             except _ProviderHTTPError as exc:
                 verdict = exc.verdict
                 # Phase 3: quarantine only definitively non-transient failures
@@ -356,6 +370,9 @@ class NativeProvider:
                     _throttle.note_429(route.provider)
                     _breaker.note_failure(route.provider)
                     _limiter.note_429(route.provider)
+                    # A throttled provider must not keep serving stale cached
+                    # successes from before the rate limit kicked in.
+                    _cache.clear_provider(route.provider)
                     from hunter.llm.rate_guard import record as _rate_record
 
                     # Honour the server's Retry-After when present; otherwise

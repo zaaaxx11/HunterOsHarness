@@ -453,7 +453,6 @@ def hunt(
         from hunter.duration import parse_duration
         from hunter.home import state_dir as _state_dir
         from hunter.tools.scope import scope_from_manifest
-        from hunter.workflow.rag import RagConfig, RagLoop
         from hunter.workflow.scope_recognize import recognize_scope
 
         # ``state_dir`` always returns a resolved ``Path`` (explicit -> env ->
@@ -597,20 +596,19 @@ def hunt(
             err_console.print(
                 "[hunter.error]BLOCKED:[/hunter.error] no scope resolved for any target")
             raise typer.Exit(3)
-        # Multi-target: feed every resolved target through RagConfig.
-        # Each target gets its own scope (auto-detected or manifest),
-        # its own run, and findings land in the shared ledger.
-        total_ok = 0
-        total_failed = 0
+        # Multi-target: fan out over a bounded pool while every LLM dial stays
+        # behind the process-wide rate limiter. Shared state is lock-guarded.
+        from hunter.workflow.multi_target import TargetSpec, run_targets
+
+        target_specs: list[TargetSpec] = []
         for tgt_idx, tgt in enumerate(targets or []):
-            # Resolve scope per target.
-            # For multi-target (len>1), use per-target auto-detection even
-            # when a global --scope flag was provided — each target may
+            # Resolve scope per target. For multi-target (len>1), use per-target
+            # auto-detection even when --scope was provided — each target may
             # need different local_roots or host lists.
             tgt_scope = manifest_scope if len(targets or []) <= 1 else None
             if tgt_scope is None:
-                # Auto-detect: local directories get local_roots scope
                 from hunter.tools.scope import ScopeSet as _ScopeSet
+
                 tgt_path = Path(tgt).expanduser()
                 if tgt_path.is_dir():
                     tgt_scope = _ScopeSet(
@@ -623,37 +621,35 @@ def hunt(
             if tgt_scope is None:
                 if not json_out:
                     err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] no scope for {tgt}")
-                total_failed += 1
+                target_specs.append(TargetSpec(tgt, None))  # counted as failed below
                 continue
 
-            # Summary line per target
+            prefix = ""
             if not json_out and len(targets or []) > 1:
                 host = urlparse(tgt).hostname if "://" in tgt else None
                 shown = f" (host: {host})" if host else ""
-                typer.echo(f"[{tgt_idx+1}/{len(targets)}] target: {tgt}{shown}")
+                prefix = f"[{tgt_idx+1}/{len(targets)}] target: {tgt}{shown}"
+            target_specs.append(TargetSpec(tgt, tgt_scope, prefix))
 
-            rag_config = RagConfig(
-                state_dir=resolved_state,
-                target=tgt,
-                scope=tgt_scope,
-                engine=rag_engine,
-                time_budget_s=float(budget_s),
-                interval_s=15.0,
-                high_water=8,
-                dry_run=False,
-                once=True,  # one target, one cycle — move to next
-                manage_daemon=False,
-                run_inline=True,
-                provider=provider,
-            )
-            try:
-                rag_loop = RagLoop(rag_config)
-                rag_loop.run()
-                total_ok += 1
-            except Exception as exc:
-                if not json_out:
-                    err_console.print(f"[hunter.error] {tgt}: {exc}")
-                total_failed += 1
+        # A spec with a None scope is an upstream resolution failure — don't
+        # hand it to the runner.
+        unresolved = [s for s in target_specs if s.scope is None]
+        runnable = [s for s in target_specs if s.scope is not None]
+
+        total_ok, runner_failed, errors = run_targets(
+            runnable,
+            state_dir=resolved_state,
+            engine=rag_engine,
+            time_budget_s=float(budget_s),
+            provider=provider,
+            max_workers=3,
+            parallel=not bool(os.environ.get("HUNTEROS_SEQUENTIAL_TARGETS")),
+            log=(lambda msg: typer.echo(msg)) if not json_out else None,
+        )
+        total_failed = runner_failed + len(unresolved)
+        for error in errors:
+            if not json_out:
+                err_console.print(f"[hunter.error] {error}")
 
         if not json_out:
             typer.echo(f"[hunter] multi-target done: {total_ok} ok, {total_failed} failed")
