@@ -39,6 +39,7 @@ __all__ = [
     "followed_findings",
     "mark_followed",
     "normalize_finding_target",
+    "update_rag_state",
     "wonder_followups",
 ]
 
@@ -96,19 +97,33 @@ def existing_targets(state_dir: Path) -> set[str]:
     return targets
 
 
+def update_rag_state(state_dir: Path, mutate) -> dict[str, Any]:
+    """Atomically load, mutate, and persist the shared rag-state.
+
+    The read-modify-write must happen as ONE critical section: ``save_rag_state``
+    writes via ``os.replace`` (so each individual write is atomic) but two
+    threads loading the same snapshot then saving would lose one another's
+    updates. Pass a callback that edits the state dict in place.
+    """
+    with STATE_LOCK:
+        state = load_rag_state(state_dir)
+        result = mutate(state)
+        save_rag_state(state_dir, state)
+        return state if result is None else result
+
+
 def followed_findings(state_dir: Path) -> set[str]:
-    state = load_rag_state(state_dir)
-    return {str(x) for x in (state.get("followed") or [])}
+    return {str(x) for x in (load_rag_state(state_dir).get("followed") or [])}
 
 
 def mark_followed(state_dir: Path, finding_id: str) -> None:
-    with STATE_LOCK:
-        state = load_rag_state(state_dir)
+    def _add(state: dict[str, Any]) -> None:
         followed = [str(x) for x in (state.get("followed") or [])]
         if finding_id not in followed:
             followed.append(finding_id)
         state["followed"] = followed
-        save_rag_state(state_dir, state)
+
+    update_rag_state(state_dir, _add)
 
 
 def normalize_finding_target(finding: Finding, origin: str) -> str | None:
@@ -364,6 +379,9 @@ class RagLoop:
     def _cycle(self) -> list[str]:
         """One feeder cycle. Returns list of enqueued targets."""
         enqueued: list[str] = []
+        # Read-once snapshot for decision making only. Persisted counters are
+        # merged at the end via update_rag_state so a parallel target's update
+        # is never overwritten by our stale snapshot.
         state = load_rag_state(self.state_dir)
         followed = {str(x) for x in (state.get("followed") or [])}
         existing = existing_targets(self.state_dir)
@@ -460,10 +478,12 @@ class RagLoop:
                 seen_hosts.add(("https", host))
                 pending += 1
 
-        state["cycle"] = cycle
-        state["last_ts"] = time.time()
-        state["last_finding_count"] = len(findings)
-        save_rag_state(self.state_dir, state)
+        def _persist(latest: dict[str, Any]) -> None:
+            latest["cycle"] = max(int(latest.get("cycle", 0) or 0), cycle)
+            latest["last_ts"] = time.time()
+            latest["last_finding_count"] = len(findings)
+
+        update_rag_state(self.state_dir, _persist)
         return enqueued
 
     def run(self) -> int:
