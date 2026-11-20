@@ -37,6 +37,10 @@ from hunter.llm.base import (
     ToolCall,
     TurnResult,
 )
+from hunter.llm.rate_control import breaker as _breaker
+from hunter.llm.rate_control import limiter as _limiter
+from hunter.llm.rate_control import throttle as _throttle
+from hunter.llm.response_cache import ResponseCache, cache_key as _cache_key
 from hunter.llm.config import FallbackEntry, HunterConfig, TierConfig, resolve_key, resolve_model
 
 # --------------------------------------------------------------------------
@@ -393,6 +397,8 @@ class ProviderRouter:
         # the imported ``litellm`` module (import failure raises HunterError).
         self._litellm: Any = litellm_module
         self._last_outcome: str | None = None
+        # Per-instance de-dup cache — a fresh router starts clean (see NativeProvider).
+        self._cache = ResponseCache()
         if self._litellm is None:
             try:
                 import litellm as module
@@ -427,9 +433,22 @@ class ProviderRouter:
 
         last: ClassifiedError | None = None
         for index, candidate in enumerate(candidates):
+            # Rate-limit survival kit: a tripped circuit skips the provider
+            # without paying a single dial. Same gate as NativeProvider.
+            if not _breaker.allows(candidate.provider):
+                last = ClassifiedError(
+                    reason="rate_limit",
+                    message=f"circuit open for provider '{candidate.provider}'",
+                )
+                continue
             outcome = self._attempt(candidate, messages, tools, stream_cb, budget, attempts)
             if isinstance(outcome, TurnResult):
                 self._last_outcome = _redact(f"ok via {candidate.provider}/{candidate.model}")
+                _breaker.note_success(candidate.provider)
+                _throttle.note_success(candidate.provider)
+                from hunter.llm.rate_guard import clear as _rate_clear
+
+                _rate_clear(candidate.provider)
                 return outcome
             last = outcome
             # Last-link: record the redacted outcome for describe_chain + /model.
@@ -588,13 +607,36 @@ class ProviderRouter:
         """Run one route up to ``attempts`` times. Returns the TurnResult, or
         the final ClassifiedError for the failover/terminal decision."""
         last: ClassifiedError | None = None
+        # De-dup identical non-streaming requests; never replay a stream.
+        key = "" if stream_cb is not None else _cache_key(
+            "router", messages, tools, candidate
+        )
+        if key:
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
         for attempt in range(attempts):
             try:
-                return self._invoke(candidate, messages, tools, stream_cb, budget)
+                _limiter.configure(
+                    candidate.provider, min_interval=_throttle.delay(candidate.provider)
+                )
+                with _limiter.slot(candidate.provider):
+                    result = self._invoke(candidate, messages, tools, stream_cb, budget)
+                if key:
+                    self._cache.put(key, result, candidate.provider)
+                return result
             except HunterError:
                 raise  # budget exhaustion / config errors are terminal
             except Exception as exc:
                 last = self.classify(exc)
+                if last.reason == "rate_limit":
+                    _throttle.note_429(candidate.provider)
+                    _breaker.note_failure(candidate.provider)
+                    _limiter.note_429(candidate.provider)
+                    self._cache.clear_provider(candidate.provider)
+                    from hunter.llm.rate_guard import record as _rate_record
+
+                    _rate_record(candidate.provider, default_cooldown=60.0)
                 if last.should_fallback:
                     return last
                 if last.retryable and attempt + 1 < attempts:

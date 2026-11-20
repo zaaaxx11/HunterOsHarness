@@ -204,8 +204,8 @@ class AdaptiveThrottle:
     def __init__(
         self,
         *,
-        base_delay: float = 1.0,
-        min_delay: float = 0.1,
+        base_delay: float = 0.0,
+        min_delay: float = 0.0,
         max_delay: float = 30.0,
         alpha: float = 0.5,
         beta: float = 2.0,

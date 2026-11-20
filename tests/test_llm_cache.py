@@ -57,15 +57,6 @@ def msgs() -> list[dict]:
     return [{"role": "user", "content": "ping"}]
 
 
-@pytest.fixture(autouse=True)
-def clear_cache():
-    from hunter.llm import native
-
-    native._cache.clear()
-    yield
-    native._cache.clear()
-
-
 def test_identical_call_does_not_hit_provider_twice():
     transport = CountingTransport()
     provider = NativeProvider(config(), transport=transport)

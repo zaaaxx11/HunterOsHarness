@@ -137,9 +137,6 @@ def isolation(monkeypatch, tmp_path: Path):
     rc.limiter.reset()
     rc.breaker.reset()
     rc.throttle.reset()
-    from hunter.llm import native as native_for_cache
-
-    native_for_cache._cache.clear()
     monkeypatch.setenv("HUNTEROS_STATE_DIR", str(tmp_path))
     for var in ("HUNTEROS_MODEL", "HUNTEROS_MAX_TOKENS", "HUNTEROS_TEMPERATURE", "HUNTEROS_TOOL_CHOICE"):
         monkeypatch.delenv(var, raising=False)

@@ -15,6 +15,28 @@ import pytest
 collect_ignore = ["archive_daemon_era"]
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_singletons():
+    """Keep the process-wide rate-limit gating deterministic across tests.
+
+    breaker/limiter/throttle are module-level singletons by design (every
+    provider shares the gate in production). A test that deliberately drives
+    a provider into a 429 must not leave an OPEN circuit for the next test.
+    """
+    try:
+        from hunter.llm import rate_control as rc
+    except ImportError:
+        yield
+        return
+    rc.limiter.reset()
+    rc.breaker.reset()
+    rc.throttle.reset()
+    yield
+    rc.limiter.reset()
+    rc.breaker.reset()
+    rc.throttle.reset()
+
+
 def write_poc(tmp_path, name: str = "poc.py", *, url: str = "http://127.0.0.1:1/",
               method: str = "GET", status: int = 200) -> str:
     """Write a minimal, runnable PoC artifact and return its path.

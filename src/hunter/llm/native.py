@@ -39,8 +39,7 @@ from hunter.llm.base import ClassifiedError, StreamCb, ToolCall, TurnResult
 from hunter.llm.rate_control import breaker as _breaker
 from hunter.llm.rate_control import limiter as _limiter
 from hunter.llm.rate_control import throttle as _throttle
-from hunter.llm.response_cache import cache as _cache
-from hunter.llm.response_cache import cache_key as _cache_key
+from hunter.llm.response_cache import ResponseCache, cache_key as _cache_key
 from hunter.llm.config import (
     FallbackEntry,
     HunterConfig,
@@ -152,6 +151,10 @@ class NativeProvider:
         self._transport = transport  # test seam: httpx.Client-compatible
         self._last_outcome: str | None = None
         self._quarantine: dict[str, float] = {}  # provider -> monotonic until-timestamp
+        # Per-instance cache: a new provider starts clean, so repeated calls
+        # in one agent loop are de-duped without stale results leaking into a
+        # later hunt (or a later test using the same request shape).
+        self._cache = ResponseCache()
 
     # ------------------------------------------------------------- public --
 
@@ -337,7 +340,7 @@ class NativeProvider:
         # is de-duped by request shape for the cache's short TTL window.
         key = "" if stream_cb is not None else _cache_key(tier, messages, tools, route)
         if key:
-            cached = _cache.get(key)
+            cached = self._cache.get(key)
             if cached is not None:
                 return cached
 
@@ -352,7 +355,7 @@ class NativeProvider:
                     result = self._request(route, messages, tools, stream_cb, tool_choice)
                 # Only successful, non-streaming responses enter the cache.
                 if key:
-                    _cache.put(key, result, route.provider)
+                    self._cache.put(key, result, route.provider)
                 return result
             except _ProviderHTTPError as exc:
                 verdict = exc.verdict
@@ -372,7 +375,7 @@ class NativeProvider:
                     _limiter.note_429(route.provider)
                     # A throttled provider must not keep serving stale cached
                     # successes from before the rate limit kicked in.
-                    _cache.clear_provider(route.provider)
+                    self._cache.clear_provider(route.provider)
                     from hunter.llm.rate_guard import record as _rate_record
 
                     # Honour the server's Retry-After when present; otherwise
