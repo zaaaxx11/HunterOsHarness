@@ -39,6 +39,7 @@ __all__ = [
     "CircuitBreaker",
     "CircuitState",
     "FileGate",
+    "file_gate",
     "ProviderLimiter",
     "breaker",
     "limiter",
@@ -66,6 +67,13 @@ class FileGate:
     def __init__(self, state_dir: str | os.PathLike[str] | None = None) -> None:
         self._state_dir = state_dir
         self._enabled = fcntl is not None
+        # Re-entrancy: a single process may request the same provider's slot
+        # recursively (e.g. a caller holds a gate.slot and an inner
+        # NativeProvider.complete() also enters the limiter's gate). flock is
+        # NOT re-entrant across separate open() calls, so we track the owning
+        # PID in-process and only take/release the real lock at depth 0.
+        self._owner_pid: int | None = None
+        self._depth = 0
 
     def _lock_dir(self) -> Path:
         base = self._state_dir or os.environ.get("HUNTEROS_STATE_DIR") or Path.home() / ".hunter"
@@ -84,8 +92,16 @@ class FileGate:
         directory = self._lock_dir()
         directory.mkdir(parents=True, exist_ok=True)
         lock_path, ts_path = self._paths(provider)
-        with lock_path.open("a+") as fh:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        pid = os.getpid()
+        hold = self._owner_pid != pid  # only the first nested entry takes the lock
+        fh = None
+        try:
+            if hold:
+                fh = lock_path.open("a+")
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                self._owner_pid = pid
+                self._depth = 0
+            self._depth += 1
             try:
                 try:
                     last = float(ts_path.read_text(encoding="utf-8").strip())
@@ -96,12 +112,17 @@ class FileGate:
                     wait = interval - (now - last)
                     if wait > 0:
                         time.sleep(wait)
-                tmp = ts_path.with_name(f"{ts_path.name}.{os.getpid()}.tmp")
+                tmp = ts_path.with_name(f"{ts_path.name}.{pid}.tmp")
                 tmp.write_text(str(time.time()), encoding="utf-8")
                 os.replace(tmp, ts_path)
                 yield
             finally:
+                self._depth -= 1
+        finally:
+            if fh is not None and self._depth == 0:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+                self._owner_pid = None
 
     def reset(self) -> None:
         with contextlib.suppress(OSError):
@@ -165,7 +186,6 @@ class ProviderLimiter:
         with self._lock:
             interval = self._intervals.get(provider, self._default_interval)
         if self._file_gate is not None:
-            # Cross-process door; resolves HUNTEROS_STATE_DIR at each slot.
             with ExitStack() as stack:
                 gate = self._file_gate
                 stack.enter_context(gate.slot(provider, interval))
@@ -331,6 +351,7 @@ class AdaptiveThrottle:
                 self._delays.pop(provider, None)
 
 
-limiter = ProviderLimiter(file_gate=FileGate())
+file_gate = FileGate()
+limiter = ProviderLimiter(file_gate=file_gate)
 breaker = CircuitBreaker()
 throttle = AdaptiveThrottle()
