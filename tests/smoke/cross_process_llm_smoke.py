@@ -28,7 +28,7 @@ def main() -> int:
     log = Path(state) / "dials.jsonl"
     log.write_text("")
     env = {**os.environ, "HUNTEROS_STATE_DIR": state, "SMOKE_LOG": str(log),
-           "PYTHONPATH": SRC, "DEVORA_API_KEY": "fake-smoke-key"}
+           "PYTHONPATH": SRC}
     procs = [
         subprocess.Popen([sys.executable, WORKER], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for _ in range(2)

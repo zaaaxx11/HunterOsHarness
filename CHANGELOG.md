@@ -12,6 +12,24 @@ Compare releases: `v0.3.1...v0.6.0`.
   Ping, upload install.sh, install, sync config + keys.env, start daemon.
   SSH password and SSH key auth both supported.
 
+### Rate-limit survival kit (resilience)
+
+- LLM dials now pass through a single process-wide door (`ProviderLimiter` +
+  `CircuitBreaker` + AIMD `AdaptiveThrottle`) so an agent loop or parallel
+  multi-target run cannot burst a provider into 429. Breaker opens after 3
+  consecutive 429s, half-opens for a probe, and a 429 also feeds a
+  cross-session `rate_guard` so a *later* process waits out the cooldown.
+- **Cross-process gate**: `FileGate` uses `fcntl.flock` on a per-provider file
+  under `$HUNTEROS_STATE_DIR/llm_locks`, so two hunts in two terminals share
+  the SAME gate — the limiter is now truly global, not just per-thread. No-op on
+  Windows. Re-entrancy-safe so a caller holding the gate while an inner
+  `complete()` also enters it will not deadlock.
+- Identical non-streaming requests are de-duplicated via a per-instance
+  response cache (60s TTL); streaming and errors are never replayed, and a 429
+  invalidates that provider's cached entries.
+- Verified by spawning two real subprocesses driving `NativeProvider.complete()`
+  against the same provider in parallel: 0 overlapping dial windows.
+
 ## 0.7.0 - 2026-10-31
 
 ### Taxonomy and evidence ladder
