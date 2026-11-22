@@ -472,6 +472,52 @@ ledger-only against `answer_key.json`.
 learning loop, challenger wiring, ledger-as-context, an honest eval harness,
 and a tosca-gradient TUI with the HunterOS emblem.
 
+### Production-readiness (audited 2026-11)
+
+The harness was taken from "works in a demo" to "safe to point at a real
+bug-bounty target" by closing three blocker-class gaps:
+
+- **Global rate-limit survival kit** — every LLM dial passes through one
+  `ProviderLimiter` (per-provider semaphore + start-to-start pacing) plus a
+  `CircuitBreaker` (open after 3 consecutive 429s, half-open probe) and an
+  AIMD `AdaptiveThrottle`. A 429 also feeds a cross-session `rate_guard`, so a
+  *later* process waits out the cooldown.
+- **Cross-process gate** — `FileGate` uses `fcntl.flock` on a per-provider file
+  under `$HUNTEROS_STATE_DIR/llm_locks`, so two hunts in two terminals share
+  the SAME gate. The limiter is now truly global, not just per-thread. Re-entrancy
+  safe (a caller holding the gate while an inner `complete()` also enters it will
+  not deadlock). No-op on Windows.
+- **Atomic multi-target state** — `RagLoop._cycle` now merges its
+  `rag-state.json` counters through one critical section (`update_rag_state`),
+  so parallel targets can no longer clobber each other's cycle counters.
+
+Verified in practice: spawning two real subprocesses driving
+`NativeProvider.complete()` against one devora provider produced **0 overlapping
+dial windows** (the flock serializes them). All rate-limit / router / cache /
+multi-target regression suites pass with **zero regressions** against the
+pre-kit baseline.
+
+### Bug-bounty field testing (checker role)
+
+Run against live programs as an ethical hacker, verifying every candidate by hand
+rather than trusting the classifier:
+
+- **Totalcoin** (`api.totalcoin.io`, 2× 5000s) — 27 candidates; manual curl
+  showed every "auth bypass / account / balance" endpoint returns
+  `{"data":null,"errorCode":-1}` — open but leaking nothing. No Critical/High.
+- **Relay web API** (`api.relay.link`, 5000s) — 0 findings; the API surface is
+  not exposed on common paths (portal/dashboard sit behind a 429 guard).
+- **Relay smart contracts** (`relayprotocol/relay-settlement`, 1075 `.sol` via
+  `scan --engine evm`) — 995 candidates across 55 files / 14 laws. EvmEngine is a
+  *law-classifier* (never auto-verifies); manual spot-checks of re-entrancy and
+  signature-binding samples showed Relay uses `HUB.transfer` + EIP-712 + nonces, so
+  the naive patterns are False Positives. No auto-confirmed Critical/High.
+
+Takeaway: the kit, the cross-process gate, and both engines run cleanly against
+production targets; the targets themselves were appropriately hardened. The
+`evm.py` engine is a triage starting point, not a substitute for a manual audit
+or Slither.
+
 ## License
 
 MIT — see the `license` field in [pyproject.toml](pyproject.toml).
