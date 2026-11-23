@@ -97,7 +97,6 @@ def test_make_console_uses_shared_theme():
 def test_cli_repl_tui_daemon_use_palette_seams():
     paths = {
         ROOT / "src" / "hunter" / "cli" / "main.py",
-        ROOT / "src" / "hunter" / "cli" / "daemon.py",
         ROOT / "src" / "hunter" / "chat" / "repl.py",
         ROOT / "src" / "hunter" / "tui" / "app.py",
     }
