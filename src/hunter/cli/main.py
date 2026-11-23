@@ -507,17 +507,15 @@ def hunt(
                 budget_s = parse_duration(time_opt)
             except Exception:
                 budget_s = 21600
-        unlimited_wall = budget_s <= 0
         first_scope = None
         # The RAG queue validates each task's target with
         # `normalize_hunt_target`, which rejects a bare contract address. So
         # resolve every extracted target here first — a contract address is
-        # replaced by its RPC URL, and a local dir is passed through.
-        from hunter.workflow.target_resolve import resolve_hunt_target as _rht
+        # replaced with its RPC URL, and a local dir is passed through.
+        import json as _json_for_rag
 
         from hunter.hunt import normalize_hunt_target as _nht_for_rag
-
-        import json as _json_for_rag
+        from hunter.workflow.target_resolve import resolve_hunt_target as _rht
         for tgt in targets or []:
             _resolved = _rht(
                 tgt,
@@ -1069,16 +1067,16 @@ def loop(
     if time_opt is not None:
         try:
             wall_s = parse_duration(time_opt)
-        except Exception:
+        except Exception as err:
             err_console.print(f"[hunter.error]config error:[/hunter.error] invalid duration {time_opt!r}")
-            raise typer.Exit(8)
+            raise typer.Exit(8) from err
     min_wall_s = 0.0
     if min_time_opt is not None:
         try:
             min_wall_s = parse_duration(min_time_opt)
-        except Exception:
+        except Exception as err:
             err_console.print(f"[hunter.error]config error:[/hunter.error] invalid min duration {min_time_opt!r}")
-            raise typer.Exit(8)
+            raise typer.Exit(8) from err
 
     engine_name = engine or "llm"
 
@@ -1111,14 +1109,14 @@ def loop(
         )
         _found = len(getattr(_state, "claims", ()) or ())
         raise typer.Exit(2 if _found else 0)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as err:
         mission = load_mission(resolved_state, slug)
         mission.completed = True
         mission.completion_reason = "stopped"
         from hunter.workflow.hunt_state import save_mission
         save_mission(mission)
         console.print(f"\nStopped after {mission.run_count} runs · {mission.total_findings} findings")
-        raise typer.Exit(0)
+        raise typer.Exit(0) from err
 
 
 @app.command("scope")
@@ -2013,14 +2011,14 @@ def gateway_start(
         _lock_handle = open(_lock_path, "a+")  # noqa: SIM115 - held for process life
         try:
             _fcntl.flock(_lock_handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        except OSError:
+        except OSError as err:
             _lock_handle.seek(0)
             holder = _lock_handle.read().strip() or "?"
             typer.echo(
                 f"another gateway already serves {_lock_dir} (pid {holder}) "
                 "— refusing to start a second poller"
             )
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from err
         _lock_handle.seek(0)
         _lock_handle.truncate()
         _lock_handle.write(str(os.getpid()))

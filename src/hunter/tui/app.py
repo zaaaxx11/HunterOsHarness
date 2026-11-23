@@ -25,7 +25,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll, Vertical, Horizontal
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import (
     Button,
     DataTable,
@@ -41,13 +41,13 @@ from textual.widgets import (
 )
 
 from hunter import __version__
+from hunter._daemon_shim import daemon_status, start_daemon, stop_daemon
 from hunter.branding import logo_text
 from hunter.cli.doctor_core import collect_checks
-from hunter._daemon_shim import daemon_status, start_daemon, stop_daemon
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
 from hunter.kernel.ledger import Ledger
-from hunter.palette import PALETTE, SKINS, get_token, palette_css, rich_style
+from hunter.palette import PALETTE, get_token, rich_style
 from hunter.palette import SKINS as _SKINS_REGISTRY
 from hunter.palette import skin_css as _skin_css
 from hunter.phases import current_phase
@@ -62,9 +62,8 @@ _CURRENT_SKIN = "teal"
 def skin_css(skin: str = "teal") -> str:
     """TUI hot-reload seam: per-skin CSS via tokens (no hardcoded hex)."""
     _ = get_token("base", skin=skin)
-    from hunter.palette import SKINS
 
-    mapping = SKINS.get(skin, SKINS["teal"])
+    mapping = _SKINS_REGISTRY.get(skin, _SKINS_REGISTRY["teal"])
     return "\n".join(f"$hunter-{role}: {color};" for role, color in mapping.items()) + "\n"
 
 
@@ -671,7 +670,10 @@ class HunterTui(App[None]):
                     id="chat-log", markup=True, highlight=True, wrap=True, max_lines=5000
                 )
             with TabPane("Hunt", id="tab-hunt"):
-                yield Static("H U N T E R O S  ·  H U N T  C O N F I G", id="hunt-header", classes="section-header")
+                yield Static(
+                    "H U N T E R O S  ·  H U N T  C O N F I G",
+                    id="hunt-header", classes="section-header",
+                )
                 yield HuntForm(id="hunt-form")
             with TabPane("Dashboard", id="tab-dashboard"):
                 yield Static("D A S H B O A R D", id="dashboard-header", classes="section-header")
@@ -997,10 +999,8 @@ class HunterTui(App[None]):
 
     def _disable_deploy_buttons(self, disabled: bool) -> None:
         for btn_id in ("deploy-run", "deploy-ping", "deploy-clear"):
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one(f"#{btn_id}", Button).disabled = disabled
-            except Exception:
-                pass
 
     @work(exclusive=True, group="hunt", exit_on_error=False)
     async def refresh_hunt(self) -> None:
