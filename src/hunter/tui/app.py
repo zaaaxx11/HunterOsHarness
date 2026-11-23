@@ -42,7 +42,6 @@ from textual.widgets import (
 
 from hunter import __version__
 from hunter._daemon_shim import daemon_status, start_daemon, stop_daemon
-from hunter.branding import logo_text
 from hunter.cli.doctor_core import collect_checks
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
@@ -151,7 +150,13 @@ KIND_STYLES = {
 CSS = _skin_css() + """
 Screen {
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-highlight_faint;
+}
+
+/* Text defaults: muted = body, bright = accent (sparse like Claude) */
+#home-welcome {
+    color: $hunter-dim;
+    padding: 1 2;
 }
 Header {
     background: $hunter-header_bg;
@@ -210,13 +215,11 @@ TabPane {
     text-style: italic;
 }
 #logo {
-    height: auto;
-    padding: 0 0;
-    color: $hunter-highlight_soft;
+    display: none;
 }
 #wordmark {
-    color: $hunter-highlight;
-    padding: 0 0 1 0;
+    color: $hunter-dim;
+    padding: 0 1 1 0;
 }
 #home-menu {
     padding: 0 0;
@@ -228,12 +231,11 @@ TabPane {
     text-style: italic;
 }
 .section-header {
-    background: $hunter-panel_bg;
     color: $hunter-highlight;
     text-style: bold;
     padding: 0 1;
     margin: 0 0 1 0;
-    border-left: thick $hunter-highlight;
+    border-bottom: solid $hunter-dim;
 }
 .section-body {
     color: $hunter-highlight_pale;
@@ -249,61 +251,63 @@ TabPane {
 #runs-table {
     height: 1fr;
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 #findings-filter {
     height: 3;
     margin: 0 0 1 0;
-    border: tall $hunter-panel_bg;
+    border: tall $hunter-dim;
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 #findings-filter:focus {
     border: tall $hunter-highlight;
+    color: $hunter-highlight;
 }
 #findings-table {
     height: 1fr;
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 #finding-detail {
     height: 42%;
-    border: tall $hunter-panel_bg;
+    border: tall $hunter-dim;
     padding: 0 1;
     overflow-y: auto;
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 #events-log {
     height: 1fr;
     padding: 0 1;
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 #chat-input {
-    border: tall $hunter-panel_bg;
+    border: tall $hunter-dim;
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 #chat-input:focus {
     border: tall $hunter-highlight;
+    color: $hunter-highlight;
 }
 #chat-log {
     height: 1fr;
     padding: 0 1;
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 #status-bar {
-    background: $hunter-header_bg;
-    color: $hunter-highlight;
+    background: $hunter-bg;
+    color: $hunter-dim;
     padding: 0 1;
     height: 1;
 }
 #doctor-report {
     padding: 1 2;
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 #deploy-form {
     background: $hunter-bg;
@@ -313,18 +317,19 @@ TabPane {
 }
 #deploy-log {
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 Input {
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 Input:focus {
     border: tall $hunter-highlight;
+    color: $hunter-highlight;
 }
 Button {
     background: $hunter-panel_bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 Button:hover {
     background: $hunter-deep;
@@ -349,7 +354,7 @@ DataTable > .datatable--hover {
 }
 RichLog {
     background: $hunter-bg;
-    color: $hunter-highlight_pale;
+    color: $hunter-dim;
 }
 VerticalScroll {
     background: $hunter-bg;
@@ -648,19 +653,13 @@ class HunterTui(App[None]):
         yield Header(show_clock=True)
         with TabbedContent(initial="tab-dashboard"):
             with TabPane("Home", id="tab-home"):
-                yield Static(logo_text("small"), id="logo")
                 yield Static(
-                    Text.assemble(
-                        ("H U N T E R O S", f"bold {PALETTE['base']}"),
-                        ("\nEvidence or Nothing", f"dim {PALETTE['dim']}"),
-                    ),
-                    id="wordmark",
-                )
-                yield Static(
-                    "[bold]Welcome to HunterOs[/bold]\n\n"
-                    "[1] Chat — interactive AI assistant, /scan to hunt\n"
-                    "[2] Hunt — configure a loop hunt with goals & time budget",
-                    id="home-menu",
+                    "HunterOs Harness — evidence-first security auditing\n\n"
+                    "every finding is proven by a hash-chained ledger, or it does not exist\n\n"
+                    "hunter init    — configure a brain (LLM provider, key, model)\n"
+                    "hunter demo    — first blood on a local practice target\n"
+                    "hunter doctor  — verify the environment end to end",
+                    id="home-welcome",
                 )
                 yield Static("Press 1 or 2, or use the tabs below.", id="home-hint")
             with TabPane("Chat", id="tab-chat"):
@@ -895,14 +894,14 @@ class HunterTui(App[None]):
 
     def action_help(self) -> None:
         self.notify(
-            "d demo · r refresh · / filter · l logo · s start · x stop · 1-6 tabs · q quit",
+            "d demo · r refresh · / filter · s start · x stop · 1-7 tabs · q quit",
             title="Keys",
             timeout=8,
         )
 
     def action_toggle_logo(self) -> None:
-        logo = self.query_one("#logo", Static)
-        logo.display = not logo.display
+        """No logo in layout — kept for binding compatibility (l)."""
+        return
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "hunt-steer":
