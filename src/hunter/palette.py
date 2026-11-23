@@ -93,8 +93,17 @@ def palette_css() -> str:
 # -- R2-C skins-as-data: single registry, no hardcoded hex at call sites ------
 
 SKINS: dict[str, dict[str, str]] = {
-    "teal": dict(PALETTE),
+    "teal": {
+        **PALETTE,
+        # Element-only color: backgrounds stay terminal-black (CLI parity).
+        "bg": "#000000",
+        "header_bg": "#101010",
+        "panel_bg": "#000000",
+    },
     "midnight": {
+        "bg": "#000000",
+        "header_bg": "#101010",
+        "panel_bg": "#000000",
         "base": "#7DD3FC",
         "highlight": "#93C5FD",
         "highlight_soft": "#BFDBFE",
@@ -104,6 +113,9 @@ SKINS: dict[str, dict[str, str]] = {
         "dim": "#1E3A5F",
     },
     "amber": {
+        "bg": "#000000",
+        "header_bg": "#101010",
+        "panel_bg": "#000000",
         "base": "#FFB224",
         "highlight": "#FFC95C",
         "highlight_soft": "#FFD98A",

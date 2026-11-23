@@ -41,13 +41,13 @@ from textual.widgets import (
 )
 
 from hunter import __version__
-from hunter.branding import logo_text, wordmark_text
+from hunter.branding import logo_text
 from hunter.cli.doctor_core import collect_checks
 from hunter._daemon_shim import daemon_status, start_daemon, stop_daemon
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
 from hunter.kernel.ledger import Ledger
-from hunter.palette import PALETTE, get_token, palette_css, rich_style
+from hunter.palette import PALETTE, SKINS, get_token, palette_css, rich_style
 from hunter.palette import SKINS as _SKINS_REGISTRY
 from hunter.palette import skin_css as _skin_css
 from hunter.phases import current_phase
@@ -62,7 +62,10 @@ _CURRENT_SKIN = "teal"
 def skin_css(skin: str = "teal") -> str:
     """TUI hot-reload seam: per-skin CSS via tokens (no hardcoded hex)."""
     _ = get_token("base", skin=skin)
-    return _skin_css(skin)
+    from hunter.palette import SKINS
+
+    mapping = SKINS.get(skin, SKINS["teal"])
+    return "\n".join(f"$hunter-{role}: {color};" for role, color in mapping.items()) + "\n"
 
 
 def set_skin(skin: str, *, target: object = None) -> str:
@@ -146,44 +149,96 @@ KIND_STYLES = {
     "retro_recorded": rich_style("bright3", bold=True),
 }
 
-CSS = palette_css() + """
+CSS = _skin_css() + """
 Screen {
-    background: $hunter-dim;
+    background: $hunter-bg;
     color: $hunter-highlight_pale;
 }
 Header {
-    background: $hunter-deep;
-    color: $hunter-highlight_faint;
+    background: $hunter-header_bg;
+    color: $hunter-highlight;
+    text-style: bold;
+}
+Header > .header--title {
+    color: $hunter-highlight;
+    text-style: bold;
+}
+Header > .header--clock {
+    color: $hunter-dim;
 }
 Footer {
-    background: $hunter-deep;
-    color: $hunter-highlight_pale;
+    background: $hunter-header_bg;
+    color: $hunter-dim;
 }
 Footer > .footer--key {
-    background: $hunter-base;
-    color: $hunter-dim;
+    background: $hunter-bg;
+    color: $hunter-highlight;
     text-style: bold;
 }
-TabbedContent Tabs {
-    background: $hunter-dim;
+Footer > .footer--description {
+    color: $hunter-dim;
+}
+TabbedContent {
+    background: $hunter-bg;
+}
+Tabs {
+    background: $hunter-header_bg;
 }
 Tab {
-    color: $hunter-highlight_soft;
-    background: $hunter-dim;
+    color: $hunter-dim;
+    background: $hunter-header_bg;
+    padding: 0 2;
 }
 Tab.-active {
-    background: $hunter-base;
-    color: $hunter-dim;
+    background: $hunter-bg;
+    color: $hunter-highlight;
     text-style: bold;
+    border-bottom: heavy $hunter-highlight;
 }
 Tab:hover {
-    background: $hunter-highlight;
+    background: $hunter-panel_bg;
+    color: $hunter-highlight_pale;
+}
+TabPane {
+    background: $hunter-bg;
+    padding: 1 2;
+}
+#tab-header {
+    height: auto;
+    dock: top;
+    padding: 0 1;
     color: $hunter-dim;
+    text-style: italic;
 }
 #logo {
     height: auto;
-    padding: 0 2;
+    padding: 0 0;
     color: $hunter-highlight_soft;
+}
+#wordmark {
+    color: $hunter-highlight;
+    padding: 0 0 1 0;
+}
+#home-menu {
+    padding: 0 0;
+    color: $hunter-highlight_pale;
+}
+#home-hint {
+    padding: 1 0 0 0;
+    color: $hunter-dim;
+    text-style: italic;
+}
+.section-header {
+    background: $hunter-panel_bg;
+    color: $hunter-highlight;
+    text-style: bold;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    border-left: thick $hunter-highlight;
+}
+.section-body {
+    color: $hunter-highlight_pale;
+    padding: 0 1;
 }
 #dashboard-empty, #findings-empty {
     display: none;
@@ -194,40 +249,111 @@ Tab:hover {
 }
 #runs-table {
     height: 1fr;
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
 }
 #findings-filter {
     height: 3;
-    margin: 0 1;
-    border: tall $hunter-deep;
-    background: $hunter-dim;
-    color: $hunter-highlight_faint;
+    margin: 0 0 1 0;
+    border: tall $hunter-panel_bg;
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
 }
 #findings-filter:focus {
-    border: tall $hunter-base;
+    border: tall $hunter-highlight;
 }
 #findings-table {
     height: 1fr;
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
 }
 #finding-detail {
     height: 42%;
-    border-top: heavy $hunter-base 30%;
+    border: tall $hunter-panel_bg;
     padding: 0 1;
     overflow-y: auto;
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
 }
 #events-log {
     height: 1fr;
     padding: 0 1;
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
+}
+#chat-input {
+    border: tall $hunter-panel_bg;
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
+}
+#chat-input:focus {
+    border: tall $hunter-highlight;
+}
+#chat-log {
+    height: 1fr;
+    padding: 0 1;
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
 }
 #status-bar {
-    background: $hunter-deep;
-    color: $hunter-highlight_pale;
+    background: $hunter-header_bg;
+    color: $hunter-highlight;
     padding: 0 1;
+    height: 1;
 }
 #doctor-report {
     padding: 1 2;
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
 }
-TabPane {
-    padding: 0;
+#deploy-form {
+    background: $hunter-bg;
+}
+.deploy-label {
+    color: $hunter-dim;
+}
+#deploy-log {
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
+}
+Input {
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
+}
+Input:focus {
+    border: tall $hunter-highlight;
+}
+Button {
+    background: $hunter-panel_bg;
+    color: $hunter-highlight_pale;
+}
+Button:hover {
+    background: $hunter-deep;
+    color: $hunter-bg;
+}
+Button.-primary {
+    background: $hunter-highlight;
+    color: $hunter-bg;
+    text-style: bold;
+}
+DataTable > .datatable--header {
+    background: $hunter-header_bg;
+    color: $hunter-highlight;
+    text-style: bold;
+}
+DataTable > .datatable--cursor {
+    background: $hunter-deep;
+    color: $hunter-bg;
+}
+DataTable > .datatable--hover {
+    background: $hunter-panel_bg;
+}
+RichLog {
+    background: $hunter-bg;
+    color: $hunter-highlight_pale;
+}
+VerticalScroll {
+    background: $hunter-bg;
 }
 """
 
@@ -458,46 +584,6 @@ def build_config_diff(old: list[str] | str, new: list[str] | str) -> str:
     return "\n".join(difflib.unified_diff(old_lines, new_lines, lineterm=""))
 
 
-class TabHeader(Static):
-    """Tiny logo top-left + HUNTEROS centered above — static on every screen."""
-
-    DEFAULT_CSS = """
-    TabHeader {
-        height: 3;
-        width: 100%;
-        padding: 0 1;
-        dock: top;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Static("", id="tab-header-text")
-
-    def on_mount(self) -> None:
-        self._paint()
-
-    def _paint(self) -> None:
-        from hunter.branding import logo_text
-
-        try:
-            logo = logo_text("moriarty", compact=True)
-        except TypeError:
-            logo = logo_text("moriarty")
-        if isinstance(logo, Text):
-            logo = str(logo.plain) if hasattr(logo, "plain") else str(logo)
-        logo_lines = logo.splitlines() if logo else ["", ""]
-        # Row 0: tiny logo on the left, HUNTEROS centered.
-        first = logo_lines[0] if len(logo_lines) > 0 else ""
-        second = logo_lines[1] if len(logo_lines) > 1 else ""
-        title = "H U N T E R O S"
-        left_pad = max(0, (len(title) - len(first)) // 2)
-        row = f"{first}  {' ' * left_pad}{title}"
-        rows = [row]
-        if second:
-            rows.append(second)
-        self.query_one("#tab-header-text", Static).update(Text("\n".join(rows), style="bold"))
-
-
 class HunterTui(App[None]):
     """Evidence-first dashboard: runs, findings, live events, doctor."""
 
@@ -561,13 +647,16 @@ class HunterTui(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with TabbedContent():
+        with TabbedContent(initial="tab-dashboard"):
             with TabPane("Home", id="tab-home"):
-                yield Static(logo_text("moriarty"), id="logo")
-                yield Static(Text.assemble(
-                    ("H U N T E R O S", f"bold {PALETTE['base']}"),
-                    ("\nEvidence or Nothing", f"dim {PALETTE['dim']}"),
-                ), id="wordmark")
+                yield Static(logo_text("small"), id="logo")
+                yield Static(
+                    Text.assemble(
+                        ("H U N T E R O S", f"bold {PALETTE['base']}"),
+                        ("\nEvidence or Nothing", f"dim {PALETTE['dim']}"),
+                    ),
+                    id="wordmark",
+                )
                 yield Static(
                     "[bold]Welcome to HunterOs[/bold]\n\n"
                     "[1] Chat — interactive AI assistant, /scan to hunt\n"
@@ -576,20 +665,16 @@ class HunterTui(App[None]):
                 )
                 yield Static("Press 1 or 2, or use the tabs below.", id="home-hint")
             with TabPane("Chat", id="tab-chat"):
-                yield TabHeader(id="chat-header")
-                yield Input(id="chat-input", placeholder="Chat with HunterOs… ( /help for commands )")
+                yield Static("H U N T E R O S  ·  C H A T", id="chat-header", classes="section-header")
+                yield Input(id="chat-input", placeholder="Chat with HunterOs…  ( /help for commands )")
                 yield RichLog(
                     id="chat-log", markup=True, highlight=True, wrap=True, max_lines=5000
                 )
             with TabPane("Hunt", id="tab-hunt"):
-                yield TabHeader(id="hunt-header")
+                yield Static("H U N T E R O S  ·  H U N T  C O N F I G", id="hunt-header", classes="section-header")
                 yield HuntForm(id="hunt-form")
             with TabPane("Dashboard", id="tab-dashboard"):
-                yield Static(logo_text("moriarty"), id="logo")
-                yield Static(Text.assemble(
-                    ("H U N T E R   O S", f"bold {PALETTE['base']}"),
-                    ("\nEvidence or Nothing", f"dim {PALETTE['dim']}"),
-                ), id="wordmark")
+                yield Static("D A S H B O A R D", id="dashboard-header", classes="section-header")
                 yield Static(
                     "No runs yet — press [b]d[/b] to run the demo scan.",
                     id="dashboard-empty",
@@ -599,6 +684,7 @@ class HunterTui(App[None]):
                 )
 
             with TabPane("Findings", id="tab-findings"):
+                yield Static("F I N D I N G S", id="findings-header", classes="section-header")
                 yield Input(placeholder="filter findings…  ( / to focus )", id="findings-filter")
                 yield Static(
                     "No findings yet — run a scan, then pick a run on the Dashboard.",
@@ -612,10 +698,12 @@ class HunterTui(App[None]):
                     id="finding-detail",
                 )
             with TabPane("Events", id="tab-events"):
+                yield Static("L I V E   E V E N T S", id="events-header", classes="section-header")
                 yield RichLog(
                     id="events-log", markup=True, highlight=True, wrap=True, max_lines=2000
                 )
             with TabPane("Live", id="tab-hunt-live"):
+                yield Static("L I V E   H U N T", id="hunt-live-header", classes="section-header")
                 yield Static("hunt status: checking…", id="hunt-summary")
                 yield Static("agent: idle", id="hunt-agent")
                 yield Static("progress: idle", id="hunt-progress")
@@ -624,12 +712,16 @@ class HunterTui(App[None]):
                 )
                 yield Input(placeholder="steer the hunt…  ( enter to send )", id="hunt-steer")
             with TabPane("Engine", id="tab-engine"):
+                yield Static("E N G I N E", id="engine-header", classes="section-header")
                 yield Static("engine status: checking…", id="engine-report")
             with TabPane("Config", id="tab-config"):
+                yield Static("C O N F I G", id="config-header", classes="section-header")
                 yield Static("config: checking…", id="config-report")
             with TabPane("Doctor", id="tab-doctor"), VerticalScroll():
+                yield Static("D O C T O R", id="doctor-header", classes="section-header")
                 yield Static("Checking environment…", id="doctor-report")
             with TabPane("Deploy", id="tab-deploy"):
+                yield Static("D E P L O Y", id="deploy-header", classes="section-header")
                 with Vertical(id="deploy-form"):
                     yield Label("VPS Deploy — HunterOs Harness", id="deploy-title")
                     yield Label("Host/IP", classes="deploy-label")
@@ -658,7 +750,7 @@ class HunterTui(App[None]):
                     id="deploy-log", markup=True, highlight=True, wrap=True, max_lines=2000
                 )
         yield Static(
-            f"hunter {__version__} · model (unset) · tier basic · engine stopped",
+            f"hunter {__version__} · model (loading) · tier basic · engine (loading)",
             id="status-bar",
         )
         yield Footer()
@@ -666,6 +758,7 @@ class HunterTui(App[None]):
     def on_mount(self) -> None:
         # Palette colors come from Rich styles and CSS variables; avoid an
         # external theme so the TUI has the same visual language as the CLI.
+        self.query_one(TabbedContent).active = "tab-dashboard"
         runs_table = self.query_one("#runs-table", DataTable)
         runs_table.add_columns("run", "target", "engine", "status", "v/c", "ended", "phase")
         findings_table = self.query_one("#findings-table", DataTable)
