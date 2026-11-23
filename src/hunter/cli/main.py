@@ -116,18 +116,23 @@ def _root_callback(
         update_core.start_background_check(suppress_notice=sub in update_core.QUIET_COMMANDS)
     ctx.call_on_close(update_core.emit_notice)  # pop is empty when nothing spawned
     if ctx.invoked_subcommand is None:
-        from hunter._data.branding import welcome_lines
+        # Bare `hunter` → interactive TUI when a brain is already configured;
+        # first-run (no config) → welcome panel + onboarding wizard.
+        from hunter.cli.init_wizard import config_missing, offer_onboarding
 
-        body = Text("\n".join(welcome_lines(_version())))
-        console.print(
-            Panel(body, title="hunter", border_style=PALETTE["base"], subtitle="Evidence or Nothing")
-        )
-        # First-run offer: fires only when no config exists anywhere; a
-        # decline sets $HUNTEROS_ONBOARD_DECLINED so it never re-prompts
-        # within this process. --help never reaches the callback.
-        from hunter.cli.init_wizard import offer_onboarding
+        missing = config_missing(env=os.environ, home=None)
+        if missing:
+            from hunter._data.branding import welcome_lines
 
-        offer_onboarding(console=console)
+            body = Text("\n".join(welcome_lines(_version())))
+            console.print(
+                Panel(body, title="hunter", border_style=PALETTE["base"], subtitle="Evidence or Nothing")
+            )
+            offer_onboarding(console=console)
+        else:
+            from hunter.tui.app import run as run_tui
+
+            run_tui()
 
 
 def _open_ledger(state: Path | None) -> Ledger:
