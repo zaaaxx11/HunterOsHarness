@@ -124,6 +124,8 @@ class ScopedHttpClient:
                 ip = ipaddress.ip_address(ai[4][0])
             except ValueError:
                 continue
+            if self.scope.allow_private_ips:
+                return
             if (ip.is_private or ip.is_loopback or ip.is_link_local
                     or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
                 raise ScopeViolation(

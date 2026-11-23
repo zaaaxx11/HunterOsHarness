@@ -21,13 +21,12 @@ dependencies = [
     "textual>=0.86",
     "httpx>=0.27",
     "pyyaml>=6.0",
-    # The brain ships with the body: litellm is the provider seam every
-    # agent path rides on. The API key stays BYOK; the interface is core.
-    "litellm>=1.40",
+    # Provider backends are optional extras: the native HTTP wire is the
+    # default; LiteLLM opt-in (``agent.wire: litellm``) ships as [llm].
 ]
 
 [project.optional-dependencies]
-# Kept as aliases: `llm` is now part of the core install.
+# Kept as aliases: `llm` is the LiteLLM wire backend (opt-in via `agent.wire`).
 llm = ["litellm>=1.40"]
 telegram = ["python-telegram-bot>=21"]
 discord = ["discord.py>=2.3"]

@@ -103,6 +103,8 @@ class ScopeSet:
     local_roots: tuple[str, ...] = field(default_factory=tuple)
     #: Hosts that are explicitly excluded even if they match a subdomain pattern.
     exclude_hosts: frozenset[str] = field(default_factory=frozenset)
+    #: Allow private/loopback IPs in SSRF guard — tests/localhost only.
+    allow_private_ips: bool = False
 
     def allows_host(self, host: str | None) -> bool:
         normalized = _normalize_host(host)
@@ -212,8 +214,8 @@ class ScopeSet:
 
 
 def localhost_scope() -> ScopeSet:
-    """Scope for demo/tests: loopback only."""
-    return ScopeSet(frozenset(), name="localhost-only")
+    """Scope for demo/tests: loopback only (private IPs allowed)."""
+    return ScopeSet(frozenset(), name="localhost-only", allow_private_ips=True)
 
 
 def scope_from_manifest(path: str | Path) -> ScopeSet:
