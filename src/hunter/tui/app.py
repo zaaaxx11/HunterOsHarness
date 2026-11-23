@@ -46,24 +46,16 @@ from hunter.cli.doctor_core import collect_checks
 from hunter.kernel.events import Event
 from hunter.kernel.findings import Finding
 from hunter.kernel.ledger import Ledger
-from hunter.palette import PALETTE, get_token, rich_style
+from hunter.palette import PALETTE, rich_style
 from hunter.palette import SKINS as _SKINS_REGISTRY
-from hunter.palette import skin_css as _skin_css
 from hunter.phases import current_phase
+from hunter.tui.css import build_css
 from hunter.tui.hunt_form import HuntForm
 
 TAIL_WINDOW = 100  # events shown in the live tail
 PAYLOAD_WIDTH = 64  # characters of payload preview in the tail
 EVIDENCE_EXCERPT_CHARS = 280
 _CURRENT_SKIN = "teal"
-
-
-def skin_css(skin: str = "teal") -> str:
-    """TUI hot-reload seam: per-skin CSS via tokens (no hardcoded hex)."""
-    _ = get_token("base", skin=skin)
-
-    mapping = _SKINS_REGISTRY.get(skin, _SKINS_REGISTRY["teal"])
-    return "\n".join(f"$hunter-{role}: {color};" for role, color in mapping.items()) + "\n"
 
 
 def set_skin(skin: str, *, target: object = None) -> str:
@@ -147,219 +139,7 @@ KIND_STYLES = {
     "retro_recorded": rich_style("bright3", bold=True),
 }
 
-CSS = _skin_css() + """
-Screen {
-    background: $hunter-bg;
-    color: $hunter-highlight_faint;
-}
-
-/* Text defaults: muted = body, bright = accent (sparse like Claude) */
-#home-welcome {
-    color: $hunter-dim;
-    padding: 1 2;
-}
-Header {
-    background: $hunter-header_bg;
-    color: $hunter-highlight;
-    text-style: bold;
-}
-Header > .header--title {
-    color: $hunter-highlight;
-    text-style: bold;
-}
-Header > .header--clock {
-    color: $hunter-dim;
-}
-Footer {
-    background: $hunter-header_bg;
-    color: $hunter-dim;
-}
-Footer > .footer--key {
-    background: $hunter-bg;
-    color: $hunter-highlight;
-    text-style: bold;
-}
-Footer > .footer--description {
-    color: $hunter-dim;
-}
-TabbedContent {
-    background: $hunter-bg;
-}
-Tabs {
-    background: $hunter-header_bg;
-}
-Tab {
-    color: $hunter-dim;
-    background: $hunter-header_bg;
-    padding: 0 2;
-}
-Tab.-active {
-    background: $hunter-bg;
-    color: $hunter-highlight;
-    text-style: bold;
-    border-bottom: heavy $hunter-highlight;
-}
-Tab:hover {
-    background: $hunter-panel_bg;
-    color: $hunter-highlight_pale;
-}
-TabPane {
-    background: $hunter-bg;
-    padding: 1 2;
-}
-#tab-header {
-    height: auto;
-    dock: top;
-    padding: 0 1;
-    color: $hunter-dim;
-    text-style: italic;
-}
-#logo {
-    display: none;
-}
-#wordmark {
-    color: $hunter-dim;
-    padding: 0 1 1 0;
-}
-#home-menu {
-    padding: 0 0;
-    color: $hunter-highlight_pale;
-}
-#home-hint {
-    padding: 1 0 0 0;
-    color: $hunter-dim;
-    text-style: italic;
-}
-.section-header {
-    color: $hunter-highlight;
-    text-style: bold;
-    padding: 0 1;
-    margin: 0 0 1 0;
-    border-bottom: solid $hunter-dim;
-}
-.section-body {
-    color: $hunter-highlight_pale;
-    padding: 0 1;
-}
-#dashboard-empty, #findings-empty {
-    display: none;
-    height: 1fr;
-    content-align: center middle;
-    color: $hunter-dim;
-    text-style: italic;
-}
-#runs-table {
-    height: 1fr;
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-#findings-filter {
-    height: 3;
-    margin: 0 0 1 0;
-    border: tall $hunter-dim;
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-#findings-filter:focus {
-    border: tall $hunter-highlight;
-    color: $hunter-highlight;
-}
-#findings-table {
-    height: 1fr;
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-#finding-detail {
-    height: 42%;
-    border: tall $hunter-dim;
-    padding: 0 1;
-    overflow-y: auto;
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-#events-log {
-    height: 1fr;
-    padding: 0 1;
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-#chat-input {
-    border: tall $hunter-dim;
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-#chat-input:focus {
-    border: tall $hunter-highlight;
-    color: $hunter-highlight;
-}
-#chat-log {
-    height: 1fr;
-    padding: 0 1;
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-#status-bar {
-    background: $hunter-bg;
-    color: $hunter-dim;
-    padding: 0 1;
-    height: 1;
-}
-#doctor-report {
-    padding: 1 2;
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-#deploy-form {
-    background: $hunter-bg;
-}
-.deploy-label {
-    color: $hunter-dim;
-}
-#deploy-log {
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-Input {
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-Input:focus {
-    border: tall $hunter-highlight;
-    color: $hunter-highlight;
-}
-Button {
-    background: $hunter-panel_bg;
-    color: $hunter-dim;
-}
-Button:hover {
-    background: $hunter-deep;
-    color: $hunter-bg;
-}
-Button.-primary {
-    background: $hunter-highlight;
-    color: $hunter-bg;
-    text-style: bold;
-}
-DataTable > .datatable--header {
-    background: $hunter-header_bg;
-    color: $hunter-highlight;
-    text-style: bold;
-}
-DataTable > .datatable--cursor {
-    background: $hunter-deep;
-    color: $hunter-bg;
-}
-DataTable > .datatable--hover {
-    background: $hunter-panel_bg;
-}
-RichLog {
-    background: $hunter-bg;
-    color: $hunter-dim;
-}
-VerticalScroll {
-    background: $hunter-bg;
-}
-"""
+CSS = build_css()
 
 
 def _value(raw: Any) -> str:
