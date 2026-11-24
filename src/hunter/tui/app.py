@@ -376,6 +376,10 @@ class HunterTui(App[None]):
     CSS = CSS
 
     BINDINGS = [
+        Binding("left", "prev_tab", "← Prev tab", show=False),
+        Binding("right", "next_tab", "→ Next tab", show=False),
+        Binding("up", "prev_tab", "↑ Prev tab", show=False),
+        Binding("down", "next_tab", "↓ Next tab", show=False),
         Binding("d", "run_demo", "Run demo"),
         Binding("r", "refresh", "Refresh"),
         Binding("e", "config_copy", "Copy config"),
@@ -646,6 +650,27 @@ class HunterTui(App[None]):
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one(TabbedContent).active = tab_id
+
+    # -- arrow-key tab cycling ------------------------------------------------
+    _TAB_ORDER = [
+        "tab-home", "tab-chat", "tab-hunt", "tab-dashboard", "tab-findings",
+        "tab-events", "tab-hunt-live", "tab-engine", "tab-config",
+        "tab-doctor", "tab-deploy",
+    ]
+
+    def action_next_tab(self) -> None:
+        """Cycle to the next tab (wraps around)."""
+        tc = self.query_one(TabbedContent)
+        order = self._TAB_ORDER
+        idx = order.index(tc.active) if tc.active in order else 0
+        tc.active = order[(idx + 1) % len(order)]
+
+    def action_prev_tab(self) -> None:
+        """Cycle to the previous tab (wraps around)."""
+        tc = self.query_one(TabbedContent)
+        order = self._TAB_ORDER
+        idx = order.index(tc.active) if tc.active in order else 0
+        tc.active = order[(idx - 1) % len(order)]
 
     def action_config_copy(self) -> None:
         """Config pane is read-only: ``e`` copies a row, diffs it, then routes
