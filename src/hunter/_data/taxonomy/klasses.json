@@ -322,7 +322,9 @@
       "Account takeover via CORS without a PoC page reading victim data.",
       "High severity off header reflection alone."
     ],
-    "check_ids": []
+    "check_ids": [
+      "cors-misconfig"
+    ]
   },
   {
     "id": "reentrancy",

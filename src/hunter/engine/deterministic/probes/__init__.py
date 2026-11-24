@@ -121,6 +121,7 @@ def guarded_run(
 # deliberate: import order here is load-bearing.
 from . import (  # noqa: E402
     cookie_tamper,
+    cors_misconfig,
     dir_listing,
     exposed_files,
     form_injection,
@@ -148,6 +149,7 @@ PROBES = [
     method_tamper,
     idor_heuristic,
     form_injection,
+    cors_misconfig,
 ]
 
 CHECK_IDS = [probe.CHECK_ID for probe in PROBES]
@@ -167,4 +169,5 @@ RECHECKS: dict[str, Callable[..., bool]] = {
     method_tamper.CHECK_ID: method_tamper.recheck,
     idor_heuristic.CHECK_ID: idor_heuristic.recheck,
     form_injection.CHECK_ID: form_injection.recheck,
+    cors_misconfig.CHECK_ID: cors_misconfig.recheck,
 }

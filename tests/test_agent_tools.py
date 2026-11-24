@@ -172,7 +172,7 @@ def test_no_capability_tier_every_tool_visible(env):
 def test_probe_map_covers_all_checks():
     from hunter.agent.tools import ACTIVE_PROBES, PASSIVE_PROBES
     assert KNOWN_PROBES == ACTIVE_PROBES | PASSIVE_PROBES
-    assert len(KNOWN_PROBES) == 12
+    assert len(KNOWN_PROBES) == 13
 
 
 # -- dispatch safety --------------------------------------------------------------

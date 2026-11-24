@@ -394,7 +394,7 @@ def test_probe_tier_map_covers_every_probe_exactly():
     """KNOWN_PROBES and the probe modules must never drift: an entry without a
     module would raise StopIteration inside run_probe (model-triggerable)."""
     assert set(KNOWN_PROBES) == set(CHECK_IDS)
-    assert len(KNOWN_PROBES) == 12
+    assert len(KNOWN_PROBES) == 13
 
 
 @pytest.mark.parametrize("check_id", ["SQL-ERROR", "Sql_Error", "sql error", "sql_error", "sql-error "])

@@ -75,7 +75,15 @@ PASSIVE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # Probe classification. Both groups are available to every run — ACTIVE vs
 # PASSIVE is descriptive metadata (what the check does), not an access gate.
 ACTIVE_PROBES = frozenset(
-    {"sql-error", "path-traversal", "unauth-action", "auth-bypass", "reflected-xss", "form-injection"}
+    {
+        "sql-error",
+        "path-traversal",
+        "unauth-action",
+        "auth-bypass",
+        "reflected-xss",
+        "form-injection",
+        "cors-misconfig",
+    }
 )
 PASSIVE_PROBES = frozenset(
     {"missing-headers", "dir-listing", "open-redirect", "sensitive-file", "method-tamper", "idor-heuristic"}

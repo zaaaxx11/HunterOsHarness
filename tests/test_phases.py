@@ -511,7 +511,7 @@ def test_observe_ignores_early_probe_wrapper_then_transitions_on_engine_probe(tm
     assert payload["source"] == "engine"
     lanes = {row["lane"] for row in payload["classes"]}
     assert lanes == {"passive", "active"}
-    assert len(payload["classes"]) == 12  # all KNOWN_PROBES checks classified
+    assert len(payload["classes"]) == 13  # all KNOWN_PROBES checks classified
 
 
 def test_observe_ignores_detail_events_once_hunting(tmp_path):

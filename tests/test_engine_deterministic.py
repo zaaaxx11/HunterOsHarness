@@ -228,7 +228,7 @@ def test_stats_contain_request_counts(scan):
     # stats.errors may be >= 0: a rare OS-level loopback transient (WinError
     # 10053) is retried once per probe and cannot fabricate findings; the
     # recall test below still guarantees the probe results survived.
-    assert result.stats["probes_run"] == len(CHECK_IDS) == 12
+    assert result.stats["probes_run"] == len(CHECK_IDS) == 13
     assert result.stats["elapsed_ms"] >= 0
     assert result.stats["candidates"] == len(result.candidates)
 
