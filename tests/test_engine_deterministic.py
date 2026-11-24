@@ -162,11 +162,12 @@ def test_recall_at_least_7_of_9_answer_keys(scan):
     found = {candidate.key for candidate in result.candidates}
     expected = set(ANSWER_BY_KEY)
     missing = sorted(expected - found)
+    total = len(expected)
     assert len(found & expected) >= 7, (
-        f"recall {len(found & expected)}/9 below threshold; missing: {missing}; "
+        f"recall {len(found & expected)}/{total} below threshold; missing: {missing}; "
         f"found: {sorted(found)}"
     )
-    print(f"\nrecall: {len(found & expected)}/9; missing: {missing}")
+    print(f"\nrecall: {len(found & expected)}/{total}; missing: {missing}")
 
 
 def test_no_duplicate_keys(scan):

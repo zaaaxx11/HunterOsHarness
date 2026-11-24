@@ -52,5 +52,11 @@
     "title": "Sensitive backup file exposed (users.sql)",
     "severity": "high",
     "cwe": "CWE-538"
+  },
+  {
+    "key": "cors-misconfig|GET|/|origin",
+    "title": "CORS misconfiguration — arbitrary origin reflection with credentials",
+    "severity": "medium",
+    "cwe": "CWE-942"
   }
 ]

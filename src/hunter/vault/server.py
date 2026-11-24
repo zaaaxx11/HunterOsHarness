@@ -167,6 +167,11 @@ class _VaultHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        # Planted CORS misconfiguration: reflects any Origin with credentials.
+        origin = self.headers.get("Origin", "").strip()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
