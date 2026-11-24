@@ -42,7 +42,6 @@ def _fresh_router(cfg) -> ProviderRouter:
 
 def test_last_outcome_shared_across_router_instances(monkeypatch):
     """After a failing dial, a SECOND fresh router must still see the outcome."""
-    from hunter.llm import router as router_mod
     from hunter.llm.config import TierConfig
 
     cfg = default_config()
