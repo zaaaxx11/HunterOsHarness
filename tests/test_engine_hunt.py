@@ -17,6 +17,22 @@ from hunter.chat.commands import CommandContext, safe_execute
 from hunter.chat.sessions import ChatStore
 from hunter.llm.config import default_config
 
+
+def _daemon_seams_present() -> bool:
+    """v0.11 removed the real daemon module; only stub shims remain."""
+    import hunter._daemon_shim as ds
+    # The real daemon had hunt_worker, queue_dir, and drain_daemon;
+    # the stub shim lacks all three.
+    return hasattr(ds, "hunt_worker") and hasattr(ds, "queue_dir")
+
+
+# Skip all engine hunt tests: the daemon queue path was removed in v0.11.
+# The hunt command now delegates to hunter loop (no task queue semantics).
+pytestmark = pytest.mark.skipif(
+    not _daemon_seams_present(),
+    reason="daemon subsystem removed in v0.11 — hunt queue no longer exists",
+)
+
 LOCAL_A = "http://127.0.0.1:8941/"
 LOCAL_B = "http://localhost:9000/"
 

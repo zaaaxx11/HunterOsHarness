@@ -19,6 +19,24 @@ from hunter.cli.main import app
 runner = CliRunner()
 
 
+def _daemon_seams_present() -> bool:
+    """v0.11 removed the daemon start path; 'hunt start' now delegates to loop."""
+    # The old `hunter.cli.daemon` command module no longer exists — that's the
+    # discriminator. The _daemon_shim stub remains (returns 3 / refused).
+    try:
+        import hunter.cli.daemon  # noqa: F401
+
+        return True
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _daemon_seams_present(),
+    reason="daemon subsystem removed in v0.11 — hunt start delegates to hunter loop",
+)
+
+
 def _patch(monkeypatch, name: str, fn) -> None:
     monkeypatch.setattr(f"hunter._daemon_shim.{name}", fn, raising=False)
     monkeypatch.setattr(f"hunter.cli.main.{name}", fn, raising=False)

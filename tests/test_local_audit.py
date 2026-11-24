@@ -1,6 +1,8 @@
 import hashlib
 import json
 
+import pytest
+
 from hunter.tools.scope import ScopeSet, scope_from_manifest
 from hunter.kernel.ledger import Ledger
 from hunter.engine.review import ReviewEngine
@@ -112,6 +114,8 @@ def test_finding_cannot_splice_cross_run_evidence(tmp_path):
 
 
 def test_malformed_task_fails_done_not_wedge_worker(tmp_path):
+    """v0.11: daemon task queue removed; malformed-task path no longer exists."""
+    pytest.skip("daemon task queue removed in v0.11 — enqueue_task/hunt_worker not available")
     import asyncio
 
     from hunter._daemon_shim import enqueue_task, hunt_worker, queue_dir

@@ -28,9 +28,18 @@ from typing import Any
 
 import pytest
 
+pytest.skip("daemon scheduler cutover removed in v0.11 — no per-child threads in shim",
+            allow_module_level=True)
+
 
 def _needs_daemon() -> Any:
-    return pytest.importorskip("hunter._daemon_shim")
+    pytest.importorskip("hunter._daemon_shim")
+    import hunter._daemon_shim as ds
+    # v0.11 splits the daemon into a shim of stubs; the R2-A scheduler
+    # cutover needs the richer daemon API that live-deploy builds kept.
+    if not hasattr(ds, "create_scheduler") and not hasattr(ds, "heartbeat_handle"):
+        return pytest.skip("daemon runtime seams absent in this build (stub mode)")
+    return ds
 
 
 def _needs_scheduler() -> Any:
