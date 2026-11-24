@@ -123,6 +123,12 @@ class _Route:
     reasoning_effort: str = ""
 
 
+# Module-scoped last-outcome registry (same shape as the router): a FRESH
+# NativeProvider instance (as built per-tier) must still show the latest
+# dial outcome to /model-style views.
+_LAST_OUTCOMES: dict[str, str] = {}
+
+
 class NativeProvider:
     """``ChatProvider`` speaking OpenAI ``/chat/completions`` over httpx.
 
@@ -206,6 +212,7 @@ class NativeProvider:
             result = self._attempt(route, messages, tools, stream_cb, tool_choice, tier)
             if isinstance(result, TurnResult):
                 self._last_outcome = f"ok:{route.provider}"
+                _LAST_OUTCOMES[tier] = self._last_outcome
                 # Phase 2: success closes the circuit, relaxes AIMD pacing,
                 # and releases any cross-session cooldown left from an old 429.
                 _breaker.note_success(route.provider)
@@ -218,6 +225,7 @@ class NativeProvider:
                 return result
             last = result
             self._last_outcome = f"{result.reason}:{route.provider}"
+            _LAST_OUTCOMES[tier] = self._last_outcome
             if not (result.retryable or result.should_fallback):
                 break  # our request is malformed — another provider won't help
             # Phase 2: a retryable failure that has exhausted its in-route

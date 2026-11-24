@@ -898,6 +898,12 @@ def describe_chain(router: ProviderRouter, tier: str) -> str:
     if last is None:
         last = _LAST_OUTCOMES.get(tier)
     if last is None:
+        # NativeProvider carries its own module-scoped registry (per-tier last
+        # outcome) — consult it when the active brain was native.
+        from hunter.llm import native as _native_mod
+
+        last = getattr(_native_mod, "_LAST_OUTCOMES", {}).get(tier)
+    if last is None:
         lines.append("last: no attempts recorded yet")
     else:
         lines.append(f"last: {_redact(str(last))}")

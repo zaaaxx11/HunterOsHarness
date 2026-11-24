@@ -63,13 +63,55 @@ def test_last_outcome_shared_across_router_instances(monkeypatch):
 
 
 def test_describe_chain_before_any_dial_says_no_attempts(monkeypatch):
+    from hunter.llm import native as _native_mod
+
     _LAST_OUTCOMES.clear()
+    _native_mod._LAST_OUTCOMES.clear()
     cfg = default_config()
     cfg.model_tiers["orchestrator"].model = "m0"
     monkeypatch.setattr("hunter.llm.router.time.sleep", lambda *a, **k: None)
     router = ProviderRouter(cfg, litellm_module=_FakeLiteLLM(fail=True))
     view = describe_chain(router, "orchestrator")
     assert "no attempts recorded yet" in view.lower()
+
+
+def test_native_last_outcome_shared_across_instances(monkeypatch):
+    """NativeProvider records last outcome module-scopedly, like the router."""
+    from hunter.llm import native as native_mod
+    from hunter.llm.config import AgentConfig, HunterConfig, ProviderConfig, TierConfig
+
+    native_mod._LAST_OUTCOMES.clear()
+    cfg = HunterConfig(
+        model_tiers={"orchestrator": TierConfig(provider="p", model="m", base_url="https://p.test/v1")},
+        providers={"p": ProviderConfig(api_key="k")},
+        agent=AgentConfig(api_max_retries=1),
+    )
+    monkeypatch.setattr("hunter.llm.rate_guard.remaining", lambda provider: None)
+
+    class _Resp:
+        status_code = 429
+        headers = {"retry-after": "0"}
+        text = '{"error": {"message": "slow down"}}'
+
+        def json(self):
+            return {"error": {"message": "slow down"}}
+
+    class _Transport:
+        def post(self, url, **kwargs):
+            return _Resp()
+
+    p1 = native_mod.NativeProvider(cfg, transport=_Transport())
+    try:
+        p1.complete("orchestrator", [{"role": "user", "content": "hi"}])
+    except HunterError:
+        pass
+    assert "orchestrator" in native_mod._LAST_OUTCOMES
+    assert native_mod._LAST_OUTCOMES["orchestrator"]
+
+    # A fresh provider instance inherits the same registry.
+    p2 = native_mod.NativeProvider(cfg, transport=_Transport())
+    assert p2._last_outcome is None  # instance-local starts clean
+    assert "orchestrator" in native_mod._LAST_OUTCOMES  # module-scoped survives
 
 
 def test_cors_misconfig_check_registered_and_typology():
