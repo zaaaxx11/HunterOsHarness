@@ -338,7 +338,7 @@ def scaffold_tool(name: str, *, directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{safe}.py"
     rendered = _TOOL_TEMPLATE.replace("__NAME__", safe).replace(
-        "__DESC__", f"TODO: describe {safe}."
+        "__DESC__", f"User-defined tool: {safe}."
     )
     path.write_text(rendered, encoding="utf-8")
     return path
