@@ -386,6 +386,12 @@ def _to_wire_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return wire
 
 
+# Last-dial outcome per tier, module-scoped so a FRESH router (e.g. the
+# ``/model`` view, which builds one per call) can still show the latest
+# observed link outcome instead of "no attempts recorded yet".
+_LAST_OUTCOMES: dict[str, str] = {}
+
+
 class ProviderRouter:
     """ChatProvider over LiteLLM with failover, retries, and budget checks."""
 
@@ -444,6 +450,7 @@ class ProviderRouter:
             outcome = self._attempt(candidate, messages, tools, stream_cb, budget, attempts)
             if isinstance(outcome, TurnResult):
                 self._last_outcome = _redact(f"ok via {candidate.provider}/{candidate.model}")
+                _LAST_OUTCOMES[tier] = self._last_outcome
                 _breaker.note_success(candidate.provider)
                 _throttle.note_success(candidate.provider)
                 from hunter.llm.rate_guard import clear as _rate_clear
@@ -456,6 +463,7 @@ class ProviderRouter:
                 self._last_outcome = _redact(str(last.message or last.reason))
             except Exception:
                 self._last_outcome = _redact(str(last.reason))
+            _LAST_OUTCOMES[tier] = self._last_outcome
             has_next = index + 1 < len(candidates)
             if last.should_fallback:
                 if has_next:
@@ -471,6 +479,7 @@ class ProviderRouter:
 
         with contextlib.suppress(Exception):
             self._last_outcome = _redact(str(last.message or last.reason))
+            _LAST_OUTCOMES[tier] = self._last_outcome
         raise self._terminal_error(last)
 
     def classify(self, exc: BaseException) -> ClassifiedError:
@@ -886,6 +895,8 @@ def describe_chain(router: ProviderRouter, tier: str) -> str:
         marker = "active" if index == 0 else f"fallback-{index}"
         lines.append(f"  [{index}] {marker} {candidate.provider}/{candidate.model}")
     last = getattr(router, "_last_outcome", None)
+    if last is None:
+        last = _LAST_OUTCOMES.get(tier)
     if last is None:
         lines.append("last: no attempts recorded yet")
     else:
