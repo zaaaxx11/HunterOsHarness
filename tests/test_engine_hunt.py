@@ -22,7 +22,7 @@ LOCAL_B = "http://localhost:9000/"
 
 
 def _patch_daemon(monkeypatch, name: str, fn) -> None:
-    import hunter.daemon as daemon
+    import hunter._daemon_shim as daemon
 
     monkeypatch.setattr(daemon, name, fn, raising=False)
     import hunter.chat.commands as commands
@@ -48,7 +48,7 @@ def _validating_spawn(monkeypatch, state: Path) -> list[Any]:
     ``sig-child``, fresh heartbeat) and makes ``pid_alive``/``process_signature``
     agree, so the validated-start contract is exercised rather than bypassed.
     """
-    import hunter.daemon as daemon
+    import hunter._daemon_shim as daemon
 
     spawned: list[Any] = []
 
@@ -83,7 +83,7 @@ def _queue_tasks(state: Path) -> list[dict[str, Any]]:
 
 
 def test_target_free_daemon_boot_writes_no_task(tmp_path, monkeypatch):
-    from hunter.daemon import start_daemon
+    from hunter._daemon_shim import start_daemon
 
     spawned = _validating_spawn(monkeypatch, tmp_path)
     code = start_daemon(
@@ -104,7 +104,7 @@ def test_target_free_daemon_boot_writes_no_task(tmp_path, monkeypatch):
 
 
 def test_optional_target_enqueue_persists_task_fields(tmp_path, monkeypatch):
-    from hunter.daemon import start_daemon
+    from hunter._daemon_shim import start_daemon
 
     _validating_spawn(monkeypatch, tmp_path)
     code = start_daemon(

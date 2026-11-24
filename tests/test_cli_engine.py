@@ -20,8 +20,8 @@ runner = CliRunner()
 
 
 def _patch(monkeypatch, name: str, fn) -> None:
-    monkeypatch.setattr(f"hunter.daemon.{name}", fn, raising=False)
-    monkeypatch.setattr(f"hunter.cli.daemon.{name}", fn, raising=False)
+    monkeypatch.setattr(f"hunter._daemon_shim.{name}", fn, raising=False)
+    monkeypatch.setattr(f"hunter.cli.main.{name}", fn, raising=False)
 
 
 def _status(running: bool = False) -> dict[str, Any]:
@@ -61,7 +61,7 @@ def test_hunt_start_without_target_boots_engine_exactly(monkeypatch, tmp_path):
         return 0
 
     _patch(monkeypatch, "start_daemon", fake_start)
-    monkeypatch.setattr("hunter.cli.daemon._resolve_engine", lambda explicit: ("deterministic", 0))
+    monkeypatch.setattr("hunter.cli.main._resolve_engine", lambda explicit: ("deterministic", 0))
     result = runner.invoke(app, ["hunt", "start", "--state", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
@@ -88,7 +88,7 @@ def test_hunt_start_optional_target_enqueues_time_and_budget(monkeypatch, tmp_pa
         return 0
 
     _patch(monkeypatch, "start_daemon", fake_start)
-    monkeypatch.setattr("hunter.cli.daemon._resolve_engine", lambda explicit: ("deterministic", 0))
+    monkeypatch.setattr("hunter.cli.main._resolve_engine", lambda explicit: ("deterministic", 0))
     result = runner.invoke(
         app,
         [

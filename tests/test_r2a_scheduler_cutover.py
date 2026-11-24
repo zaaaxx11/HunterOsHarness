@@ -6,15 +6,15 @@ rides the same heap (no per-child / per-lease threads).
 
 Prod targets (per-fn):
 - test_r2a_scheduler_cutover_daemon_drives_heartbeat_via_scheduler
-    -> hunter.daemon.create_scheduler / hunter.daemon.heartbeat_handle
+    -> hunter._daemon_shim.create_scheduler / hunter._daemon_shim.heartbeat_handle
 - test_r2a_scheduler_cutover_daemon_worker_via_scheduler_no_overlap
-    -> hunter.daemon.worker_handle (no self-overlap)
+    -> hunter._daemon_shim.worker_handle (no self-overlap)
 - test_r2a_scheduler_cutover_single_heap_thread_for_daemon
     -> hunter.runtime.scheduler.thread_names <= 1 with heartbeat+worker+lease
 - test_r2a_scheduler_cutover_lease_refresh_without_per_child_thread
     -> hunter.gateway.durable_lease scheduler hook (no Thread per lease)
 - test_r2a_scheduler_cutover_heartbeat_interval_15_monotonic_fake
-    -> scheduler interval == hunter.daemon.HEARTBEAT_INTERVAL_SECONDS (15)
+    -> scheduler interval == hunter._daemon_shim.HEARTBEAT_INTERVAL_SECONDS (15)
 - test_r2a_scheduler_cutover_negative_cancelled_handle_never_fires
     -> cancelled handle never reschedules (strict negative)
 
@@ -30,7 +30,7 @@ import pytest
 
 
 def _needs_daemon() -> Any:
-    return pytest.importorskip("hunter.daemon")
+    return pytest.importorskip("hunter._daemon_shim")
 
 
 def _needs_scheduler() -> Any:
@@ -161,7 +161,7 @@ def test_r2a_scheduler_cutover_negative_cancelled_handle_never_fires(monkeypatch
     _fake_monotonic(monkeypatch)
     # Negative: a cancelled handle must never reschedule even when the
     # daemon seam is missing — but R2-A requires the daemon seam to exist.
-    import hunter.daemon as daemon_mod
+    import hunter._daemon_shim as daemon_mod
 
     if not hasattr(daemon_mod, "create_scheduler"):
         pytest.fail(

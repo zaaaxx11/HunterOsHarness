@@ -183,14 +183,14 @@ def test_daemon_banner_startswith_and_tip(tmp_path, monkeypatch):
     update_core.reset()
     try:
         monkeypatch.setattr("hunter.cli.daemon._resolve_engine", lambda explicit: ("deterministic", 0))
-        monkeypatch.setattr("hunter.daemon.start_daemon", lambda *a, **k: 0, raising=False)
+        monkeypatch.setattr("hunter._daemon_shim.start_daemon", lambda *a, **k: 0, raising=False)
         monkeypatch.setattr("hunter.cli.daemon.start_daemon", lambda *a, **k: 0, raising=False)
         idle = RUNNER.invoke(app, ["hunt", "start", "--state", str(tmp_path)])
         assert idle.exit_code == 0, idle.output
         assert idle.stdout.startswith("engine started"), repr(idle.stdout[:200])
         assert "tip:" in idle.stdout.lower() and "hunt start" in idle.stdout
 
-        monkeypatch.setattr("hunter.daemon.start_daemon", lambda *a, **k: 0, raising=False)
+        monkeypatch.setattr("hunter._daemon_shim.start_daemon", lambda *a, **k: 0, raising=False)
         monkeypatch.setattr("hunter.cli.daemon.start_daemon", lambda *a, **k: 0, raising=False)
         evil = RUNNER.invoke(
             app, ["hunt", "start", "--target", "https://evil.example", "--state", str(tmp_path)]

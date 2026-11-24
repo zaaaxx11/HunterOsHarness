@@ -114,7 +114,7 @@ def test_finding_cannot_splice_cross_run_evidence(tmp_path):
 def test_malformed_task_fails_done_not_wedge_worker(tmp_path):
     import asyncio
 
-    from hunter.daemon import enqueue_task, hunt_worker, queue_dir
+    from hunter._daemon_shim import enqueue_task, hunt_worker, queue_dir
 
     sd = tmp_path / "state"
     sd.mkdir()

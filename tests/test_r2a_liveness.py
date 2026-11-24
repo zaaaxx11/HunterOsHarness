@@ -6,7 +6,7 @@ new claims but lets in-flight complete; stop.file outranks drain/pause
 consumable restart marker / ledger row.
 
 Prod targets (per-fn):
-- test_r2a_liveness_probe_fresh_vs_stale -> hunter.daemon.liveness(state)
+- test_r2a_liveness_probe_fresh_vs_stale -> hunter._daemon_shim.liveness(state)
 - test_r2a_liveness_drain_stops_claims_inflight_completes -> drain + hunt_worker
 - test_r2a_liveness_stop_file_outranks_drain_pause -> stop precedence seam
 - test_r2a_liveness_heartbeat_reports_drain_paused -> heartbeat drain/paused via scheduler
@@ -27,7 +27,7 @@ import pytest
 
 
 def _needs_daemon() -> Any:
-    return pytest.importorskip("hunter.daemon")
+    return pytest.importorskip("hunter._daemon_shim")
 
 
 def _fake_monotonic(monkeypatch: Any, start: float = 4000.0) -> dict[str, float]:
@@ -63,7 +63,7 @@ def test_r2a_liveness_probe_fresh_vs_stale(tmp_path: Any, monkeypatch: Any) -> N
     _fake_monotonic(monkeypatch)
     if not hasattr(daemon, "liveness"):
         pytest.fail(
-            "EXPECTED-FAIL-R2A: hunter.daemon.liveness probe missing; "
+            "EXPECTED-FAIL-R2A: hunter._daemon_shim.liveness probe missing; "
             "only daemon_running/daemon_status exist (no scheduler liveness)"
         )
     state = tmp_path / "state"
