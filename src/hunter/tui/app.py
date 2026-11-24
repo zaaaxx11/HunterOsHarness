@@ -26,6 +26,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     DataTable,
@@ -145,6 +146,19 @@ CSS = build_css()
 def _value(raw: Any) -> str:
     """Plain string of a (str, Enum) member or anything else."""
     return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def _iter_focusable(widget: Widget) -> list[Widget]:
+    """All focusable Input/Switch/Button widgets under ``widget`` (depth-first)."""
+    from textual.widgets import Button, Switch
+    from textual.widgets import Input as _In
+
+    result: list[Widget] = []
+    if isinstance(widget, (_In, Switch, Button)) and widget.focusable:
+        result.append(widget)
+    for child in widget.children:
+        result.extend(_iter_focusable(child))
+    return result
 
 
 def _severity_cell(severity: Any) -> Text:
@@ -378,8 +392,8 @@ class HunterTui(App[None]):
     BINDINGS = [
         Binding("left", "prev_tab", "← Prev tab", show=False),
         Binding("right", "next_tab", "→ Next tab", show=False),
-        Binding("up", "prev_tab", "↑ Prev tab", show=False),
-        Binding("down", "next_tab", "↓ Next tab", show=False),
+        Binding("up", "prev_field", "↑ Prev field", show=False),
+        Binding("down", "next_field", "↓ Next field", show=False),
         Binding("d", "run_demo", "Run demo"),
         Binding("r", "refresh", "Refresh"),
         Binding("e", "config_copy", "Copy config"),
@@ -671,6 +685,57 @@ class HunterTui(App[None]):
         order = self._TAB_ORDER
         idx = order.index(tc.active) if tc.active in order else 0
         tc.active = order[(idx - 1) % len(order)]
+
+    # -- arrow-key field navigation ------------------------------------------
+    # Move focus between focusable widgets (Input, Switch, Button) in the
+    # currently visible tab.  Left/right are reserved for tab cycling;
+    # up/down move between fields within the tab.
+
+    def _visible_focusables(self) -> list[Widget]:
+        """All focusable widgets in the active tab pane, top-to-bottom order."""
+
+        tc = self.query_one(TabbedContent)
+        pane = tc.get_pane(tc.active)
+        if pane is None:
+            return []
+        # Walk the widget tree and collect focusable Input/Switch/Button
+        result: list[Widget] = []
+        for child in pane.children:
+            for node in _iter_focusable(child):
+                result.append(node)
+        return result
+
+    def action_next_field(self) -> None:
+        """Move focus to the next focusable widget in the active tab."""
+        widgets = self._visible_focusables()
+        if not widgets:
+            return
+        current = self.focused
+        if current is None:
+            widgets[0].focus()
+            return
+        try:
+            idx = widgets.index(current)
+        except ValueError:
+            widgets[0].focus()
+            return
+        widgets[(idx + 1) % len(widgets)].focus()
+
+    def action_prev_field(self) -> None:
+        """Move focus to the previous focusable widget in the active tab."""
+        widgets = self._visible_focusables()
+        if not widgets:
+            return
+        current = self.focused
+        if current is None:
+            widgets[-1].focus()
+            return
+        try:
+            idx = widgets.index(current)
+        except ValueError:
+            widgets[-1].focus()
+            return
+        widgets[(idx - 1) % len(widgets)].focus()
 
     def action_config_copy(self) -> None:
         """Config pane is read-only: ``e`` copies a row, diffs it, then routes
