@@ -15,7 +15,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 HARNESS = Path(__file__).resolve().parents[2]  # repo root

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from hunter.engine.base import CandidateFinding, EngineContext, TargetSpec
+from hunter.engine.base import EngineContext, TargetSpec
 from hunter.engine.evm import EvmEngine, _LAWS
 from hunter.kernel.findings import Severity
 from hunter.tools.scope import ScopeSet, scope_from_manifest
@@ -442,7 +442,7 @@ def test_test_lib_and_script_directories_are_pruned(tmp_path):
     for sub in ("test", "lib", "script", "tests", "scripts", "mock", "mocks"):
         d = root / sub
         d.mkdir()
-        _write(d, f"Noise.sol", _LAW_HITTING_SOURCE)
+        _write(d, "Noise.sol", _LAW_HITTING_SOURCE)
     _write(root, "Real.sol", _LAW_HITTING_SOURCE)
 
     scope = _scope_with_roots(tmp_path, root)

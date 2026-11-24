@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import re
 
-import pytest
 
 from hunter.gateway.render import (
     chunk_text,

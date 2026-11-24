@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
 
-from hunter.llm.config import AgentConfig, FallbackEntry, HunterConfig, ProviderConfig, TierConfig
+from hunter.llm.config import AgentConfig, HunterConfig, ProviderConfig, TierConfig
 from hunter.llm.native import NativeProvider
 from hunter.llm.response_cache import ResponseCache, cache_key
 

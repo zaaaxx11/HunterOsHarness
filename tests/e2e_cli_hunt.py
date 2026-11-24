@@ -8,7 +8,9 @@ Tests cover:
 5. Session state persistence across commands
 6. MarkdownV2 output rendering
 """
-import sys, json, os
+import sys
+import json
+import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 # ----- test harness -----

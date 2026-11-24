@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-from hunter.workflow.loop_v4 import HuntLoopV4, _load_soul
-from hunter.workflow.state import HuntState, new_state, save, load, count_verified, elapsed_seconds
+from hunter.workflow.loop_v4 import HuntLoopV4
+from hunter.workflow.state import count_verified
 
 # ---- simulated LLM ----
 
@@ -121,7 +121,7 @@ def main():
     print(f"State:  {state_dir}")
 
     llm = StressLLM()
-    
+
     loop = HuntLoopV4(
         llm=llm,
         verify_claim=fake_verify,
@@ -136,7 +136,7 @@ def main():
     t0 = time.time()
     errors = 0
     last_finding_count = 0
-    
+
     try:
         state = loop.run()
     except Exception as e:
@@ -160,14 +160,14 @@ def main():
     print(f"  Chains:        {len(state.chains) if state else 'N/A'}")
     print(f"  Stop reason:   {state.completion_reason if state else 'N/A'}")
     print(f"  Errors:        {errors}")
-    
+
     if state:
         by_status = {}
         for f in state.findings:
             if isinstance(f, dict):
                 by_status[f.get("status", "?")] = by_status.get(f.get("status", "?"), 0) + 1
         print(f"  By status:     {by_status}")
-    
+
     verdict = "✅ PASS" if elapsed >= 880 and errors == 0 else "⚠️  PARTIAL" if errors == 0 else "❌ FAIL"
     print(f"\n  VERDICT:       {verdict}")
     return 0 if errors == 0 else 1

@@ -7,7 +7,6 @@ faked; no API keys needed.
 
 from __future__ import annotations
 
-import importlib
 import json
 import threading
 import time

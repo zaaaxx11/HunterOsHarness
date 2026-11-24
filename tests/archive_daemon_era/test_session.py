@@ -10,9 +10,6 @@ The rules being pinned:
 
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 
 import pytest
 
@@ -93,10 +90,8 @@ def test_open_closed_session_raises(root):
 
 def test_lock_is_exclusive(root):
     create_session(target="t", state_dir=root, session_id="s1")
-    with session_lock("s1", root):
-        with pytest.raises(SessionExists):
-            with session_lock("s1", root):
-                pass
+    with session_lock("s1", root), pytest.raises(SessionExists), session_lock("s1", root):
+        pass
 
 
 def test_lock_releases_after_the_block(root):

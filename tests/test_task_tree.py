@@ -7,9 +7,7 @@ manipulation primitives independently of a live ledger.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 
-import pytest
 
 from hunter.kernel.findings import Finding, FindingStatus, Severity
 from hunter.workflow.chain_spawner import (

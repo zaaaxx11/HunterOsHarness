@@ -13,7 +13,6 @@ Tests:
   10. Multiple lanes reporting identical findings — dedup in action
 """
 import json
-import os
 import sys
 import tempfile
 import time
@@ -22,10 +21,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from hunter.workflow.loop_v4 import (
-    HuntLoopV4, LANE_SOULS, _parse_verdict, _candidates_from_args,
-    _calls_from_text, _norm_response, _number_lines, _target_files, _split_source
+    HuntLoopV4, _parse_verdict, _candidates_from_args,
+    _norm_response, _split_source
 )
-from hunter.workflow.state import HuntState, new_state, add_finding, save, load
+from hunter.workflow.state import new_state, save
 
 # ── helper: a fake LLM that returns controlled answers ──
 
@@ -310,7 +309,7 @@ def test_chunking():
     tiny = "hello\n"
     chunks = _split_source(tiny)
     assert len(chunks) == 1
-    print(f"  ✅ 6-char source -> 1 chunk")
+    print("  ✅ 6-char source -> 1 chunk")
     return True
 
 # ══════════════════════════════════════════════════════════════
@@ -361,7 +360,7 @@ if __name__ == "__main__":
     ]:
         try:
             ok = fn()
-        except Exception as e:
+        except Exception:
             import traceback
             traceback.print_exc()
             ok = False

@@ -1,5 +1,7 @@
 """E2E validation of the auto_extract pipeline against relay-settlement — no LLM."""
-import sys, json, os
+import sys
+import json
+import os
 sys.path.insert(0, '/home/simon/HunterOsHarness/src')
 os.chdir('/home/simon/HunterOsHarness')
 

@@ -62,7 +62,6 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 # typer/click apps construct Option/Argument defaults in signatures (B008).
 "src/hunter/cli/main.py" = ["B008", "E501"]
 "src/hunter/cli/config_cmd.py" = ["B008", "E501"]
-"src/hunter/cli/daemon.py" = ["B008", "E501"]
 "src/hunter/cli/model_cmd.py" = ["B008", "E501"]
 "src/hunter/cli/gc.py" = ["B008", "E501"]
 "src/hunter/cli/hunt_close.py" = ["B008", "E501"]

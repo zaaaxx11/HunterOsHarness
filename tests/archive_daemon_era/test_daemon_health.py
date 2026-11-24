@@ -10,13 +10,9 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 
-import pytest
 
 from hunter.daemon_health import (
-    DEFAULT_MIN_AVAILABLE_MB,
-    ClaimDecision,
     MemorySnapshot,
     claim_gate,
     find_zombie_daemons,

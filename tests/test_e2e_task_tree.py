@@ -17,12 +17,10 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 
 from hunter.kernel.findings import Finding, FindingStatus, Severity
 from hunter.workflow.chain_spawner import (
     Task,
-    TaskState,
     find_chain_candidates,
     should_spawn_child,
     spawn_child_tasks,

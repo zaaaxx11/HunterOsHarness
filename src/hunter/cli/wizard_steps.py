@@ -160,6 +160,9 @@ def capture_key(
         return detected, ""
     from hunter.llm.keys import keys_env_path
 
+    # For CUSTOM providers (known=None) the key_env is derived from base_url.
+    # Always prompt with a clear "paste now" path so the operator never
+    # silently skips the key step.
     console.print(f"key source for {name}:", markup=False, highlight=False)
     console.print(
         f"{_MENU_INDENT}1. Paste the key now — stored in {keys_env_path(env=env)}, "
@@ -173,7 +176,7 @@ def capture_key(
         markup=False,
         highlight=False,
     )
-    reply = ask("key", "1").strip()
+    reply = ask("key (1 = paste now)", "1").strip()
     if reply == "2":
         key_env = ask("API key env var name", default_key_env).strip()
         if not key_env:
@@ -181,16 +184,17 @@ def capture_key(
             return "", ""
         export_lines(console, key_env)
         return key_env, ""
+    # Route 1: paste the key now (works for any provider including custom).
     if name == CUSTOM_NAME:
         key_env = ask("env var name for the key", default_key_env).strip() or default_key_env
     else:
         key_env = default_key_env
     pasted = secret(f"paste the {key_env} key (input hidden)").strip()
-    if pasted:
-        return key_env, pasted
-    notes.append(f"no key pasted — set ${key_env} before first use")
-    export_lines(console, key_env)
-    return key_env, ""
+    if not pasted:
+        notes.append(f"no key pasted — set ${key_env} before first use")
+        export_lines(console, key_env)
+        return key_env, ""
+    return key_env, pasted
 
 
 def probe_endpoint_and_models(

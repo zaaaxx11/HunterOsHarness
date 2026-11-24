@@ -20,8 +20,6 @@ import gc
 import json
 import os
 import random
-import re
-import shutil
 import sys
 import tempfile
 import time
@@ -29,21 +27,19 @@ import traceback
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, "/tmp/hunteros-clone/src")
 
 # ── imports under test ────────────────────────────────────────────
 from hunter.workflow.phase0_recon import (
-    Phase0Recon, classify_input, gather_material, run_recon,
-    _deterministic_fallback, _extract_json, TARGET_JSON_SCHEMA,
+    classify_input, gather_material, run_recon,
 )
 from hunter.workflow.loop_v4 import (
-    HuntLoopV4, LANE_SOULS, _parse_verdict, _candidates_from_args,
-    _calls_from_text, _norm_response, _number_lines, read_target_source,
+    HuntLoopV4, _parse_verdict, _candidates_from_args,
+    _norm_response, read_target_source,
     _target_files, _split_source,
 )
-from hunter.workflow.state import HuntState, new_state, add_finding, save, load, SCHEMA_VERSION
+from hunter.workflow.state import new_state, SCHEMA_VERSION
 from hunter.cli.doctor_v4 import collect_v4_checks
 from hunter.cli.doctor_fix import attempt_fixes
 
@@ -56,7 +52,9 @@ WORK = Path(tempfile.mkdtemp(prefix="hunt_stress_"))
 WORK.mkdir(parents=True, exist_ok=True)
 
 # Mistral provider for cheap fast calls
-import ssl, urllib.request, urllib.error
+import ssl
+import urllib.request
+import urllib.error
 
 def fail(label: str, detail: str, exc: Exception | None = None):
     entry = {"label": label, "detail": detail, "time": time.time() - STARTED}
@@ -171,7 +169,7 @@ def test_fallback(label: str, raw: str, kind: str):
     try:
         out = run_recon(raw, None, WORK)
     except Exception as exc:
-        fail(f"fallback:{label}", f"deterministic crash", exc)
+        fail(f"fallback:{label}", "deterministic crash", exc)
         return
     if out.get("recon_confidence", 10) < 1:
         fail(f"fallback:{label}", "confidence < 1")
@@ -196,7 +194,7 @@ def test_loop_v4_short(target: str, label: str, wall_s: int = 3):
                           workdir=ws, log=lambda m: None)
         state = loop.run()
     except Exception as exc:
-        fail(f"loop:{label}", f"crash", exc)
+        fail(f"loop:{label}", "crash", exc)
         return
     if state.round < 1:
         fail(f"loop:{label}", "no cycle ran")
@@ -254,13 +252,12 @@ def test_utils():
         except Exception as exc:
             fail("split_source", "crash on len={len(text)}", exc)
 
-    ok("utils", f"_parse_verdict + _candidates + _norm_response + target_files + split_source")
+    ok("utils", "_parse_verdict + _candidates + _norm_response + target_files + split_source")
 
 
 # ── agent prompt truncation test ──────────────────────────────────
 def test_prompt_truncation():
     """Loop_v4 must not exceed provider max-token budget on large targets."""
-    from hunter.workflow.loop_v4 import read_target_source
     source = read_target_source("/tmp/hunt-target-pv", Path("/tmp"))
     if source is not None:
         n = len(source.split())
@@ -522,7 +519,7 @@ def main():
     print(f"  RSS end         : {RSS_SAMPLES[-1] if RSS_SAMPLES else '?'}MB")
     print(f"  RSS growth      : {(RSS_SAMPLES[-1]-RSS_SAMPLES[0]) if len(RSS_SAMPLES)>1 else 0}MB")
 
-    print(f"\n  FAILURE COUNT BY LABEL:")
+    print("\n  FAILURE COUNT BY LABEL:")
     by_label = Counter(f["label"] for f in FAILS)
     for l, n in by_label.most_common(15):
         print(f"    {l:45s} {n}")

@@ -11,7 +11,6 @@ salvage third, refusal last. Fail-closed is preserved at every step.
 
 from __future__ import annotations
 
-import pytest
 
 from hunter.hunt import normalize_hunt_target
 from hunter.workflow.target_resolve import (

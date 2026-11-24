@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -90,10 +89,9 @@ def test_unrelated_local_read_no_longer_unlocks_verified(tmp_path):
                 "INSERT INTO evidence (id, run_id, kind, data, sha256) VALUES (?,?,?,?,?)",
                 ("EV-OTHER", "r1", "local_read", json.dumps({"finding_id": "F-9999"}), "0" * 64),
             )
-        with pytest.raises(sqlite3.IntegrityError):
-            with led._lock:
-                led._conn.execute(
-                    "UPDATE findings SET status = 'verified' WHERE id = ?", (f.id,))
+        with pytest.raises(sqlite3.IntegrityError), led._lock:
+            led._conn.execute(
+                "UPDATE findings SET status = 'verified' WHERE id = ?", (f.id,))
     finally:
         led.close()
 

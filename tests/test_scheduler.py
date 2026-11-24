@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 from hunter.workflow.scheduler import MemorySnapshot
 from hunter.workflow.scheduler import (

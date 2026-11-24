@@ -411,10 +411,10 @@ def test_concurrent_starts_spawn_exactly_one_daemon(tmp_path):
     state = tmp_path / "state"
     state.mkdir(parents=True)
     snippet = (
-        "import sys; sys.path.insert(0, {src!r});"
+        f"import sys; sys.path.insert(0, {str(Path(daemon.__file__).resolve().parent.parent)!r});"
         "from hunter.daemon import start_daemon;"
-        "print(start_daemon({state!r}))"
-    ).format(src=str(Path(daemon.__file__).resolve().parent.parent), state=str(state))
+        f"print(start_daemon({str(state)!r}))"
+    )
     procs = [
         subprocess.Popen(
             [sys.executable, "-c", snippet],
