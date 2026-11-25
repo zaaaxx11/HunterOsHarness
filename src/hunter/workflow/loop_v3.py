@@ -1676,15 +1676,54 @@ class HuntLoop:
 # --------------------------------------------------------------------------- #
 # module-level entry points
 # --------------------------------------------------------------------------- #
+def _loop_kwargs(kwargs: dict) -> tuple[dict, dict]:
+    """Translate the CLI-facing ``run_loop`` kwargs to HuntLoop-compatible ones.
+
+    The loop command (and daemon) pass ``scope`` / ``state_dir`` / ``engine`` /
+    ``min_wall_seconds`` which HuntLoop.__init__ does not know. We map:
+      * state_dir -> state_path  (``<state_dir>/hunt_state.json``)
+      * scope / engine / min_wall_seconds -> dropped (HuntLoop enforces scope
+        via the fetched state's ``allowed_hosts``; the CLI's loop is the
+        single source of truth for those and does not re-inject them)
+
+    Returns ``(loop_kwargs, extra)`` where ``extra`` carries anything the
+    caller must apply to the loop *instance* after construction (today:
+    ``_scope_hosts``).
+    """
+    loop_kwargs: dict = dict(kwargs)
+    extra: dict = {}
+
+    state_dir = loop_kwargs.pop("state_dir", None)
+    if state_dir is not None:
+        loop_kwargs.setdefault(
+            "state_path", Path(state_dir) / "hunt_state.json"
+        )
+
+    scope = loop_kwargs.pop("scope", None)
+    if scope is not None:
+        hosts = getattr(scope, "allowed_hosts", None)
+        if hosts is not None:
+            extra["scope_hosts"] = frozenset(hosts)
+
+    loop_kwargs.pop("engine", None)          # HuntLoop has no engine knob
+    loop_kwargs.pop("min_wall_seconds", None)  # HuntLoop has no min floor
+
+    return loop_kwargs, extra
+
+
 def run_hunt(llm: Any, verify_claim: Callable | None, **kwargs: Any) -> HuntState:
     """``HuntLoop(llm, verify_claim, **kwargs).run()`` -- the llm-first entry."""
-    return HuntLoop(llm, verify_claim, **kwargs).run()
+    loop_kwargs, extra = _loop_kwargs(kwargs)
+    loop = HuntLoop(llm, verify_claim, **loop_kwargs)
+    if "scope_hosts" in extra:
+        loop._scope_hosts = extra["scope_hosts"]
+    return loop.run()
 
 
 def run_loop(target: str, llm: Any, verify_claim: Callable | None, **kwargs: Any) -> HuntState:
     """``HuntLoop(llm, verify_claim, target=..., **kwargs).run()`` -- target-first."""
     kwargs.setdefault("target", target)
-    return HuntLoop(llm, verify_claim, **kwargs).run()
+    return run_hunt(llm, verify_claim, **kwargs)
 
 
 def run(*args: Any, **kwargs: Any) -> HuntState:

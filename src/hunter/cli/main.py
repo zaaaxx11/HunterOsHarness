@@ -759,17 +759,18 @@ def hunt(
     # scope from the target-resolution pass above, and resetting it would
     # silently discard it. `kind == "dir"` re-binds it below regardless.
     #
-    # Session lifecycle is resolved HERE, before the dir/URL branches, because
-    # the dir branch exits on its own and would otherwise skip it entirely —
-    # which is how a `--session` flag silently did nothing on a local audit.
-    from hunter.session import (
-        SessionExists,
-        SessionNotFound,
-        close_session,
-        create_session,
-        open_session,
-        resume_session,
-    )
+    # Session lifecycle (daemon) only applies to URL/network targets. For a
+    # local directory the source-audit branch runs inline and exits on its own,
+    # so skip the (currently-unavailable) session wiring there.
+    if kind != "dir":
+        from hunter.session import (
+            SessionExists,
+            SessionNotFound,
+            close_session,
+            create_session,
+            open_session,
+            resume_session,
+        )
 
     active_session = None
     if resume:
@@ -1095,9 +1096,40 @@ def loop(
 
         _loop_cfg = _lc_loop()
         _loop_provider = _pfc_loop(_loop_cfg)
+
+        class _LoopLLMAdapter:
+            """Bridge the provider protocol (complete(tier, messages) -> TurnResult)
+            to the HuntLoop protocol (complete(system, user) -> str).
+
+            The provider needs a tier name and OpenAI-style messages; HuntLoop
+            passes a system prompt + a single user turn. We always dial the
+            orchestrator tier (the loop's own source-audit is the only work it
+            does) and return ``TurnResult.text`` so HuntLoop can parse the
+            tool-call JSON out of the reply.
+            """
+            def complete(self, system, user, **kw):
+                messages = [
+                    {"role": "system", "content": system or ""},
+                    {"role": "user", "content": user or ""},
+                ]
+                result = _loop_provider.complete(
+                    "orchestrator", messages, **kw
+                )
+                return getattr(result, "text", "") or ""
+
+            def complete_with_tools(self, system, user, tools=None, **kw):
+                messages = [
+                    {"role": "system", "content": system or ""},
+                    {"role": "user", "content": user or ""},
+                ]
+                result = _loop_provider.complete(
+                    "orchestrator", messages, tools=tools, **kw
+                )
+                return getattr(result, "text", "") or ""
+
         _state = _run_loop(
             normalized,
-            llm=lambda tier, messages, **kw: _loop_provider.complete(tier, messages, **kw),
+            llm=_LoopLLMAdapter(),
             verify_claim=None,  # verification ladder runs inside the loop's own layer
             scope=chosen_scope,
             state_dir=resolved_state,
