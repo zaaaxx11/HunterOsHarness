@@ -148,7 +148,7 @@ def run_model_picker(
     if name == CUSTOM_NAME:
         known = None
 
-    # ---- advisory probe + model pick ------------------------------------------
+    # ---- advisory probe + model pick -----------------------------------------
     model = ""
     if base_url:
         key_env = known.key_env if known is not None else ""
@@ -158,7 +158,17 @@ def run_model_picker(
             base_url=base_url, key_value=key_value, probe_fn=_default_probe,
             list_models_fn=list_models_fn, console=console, notes=notes,
         )
-        model = pick_model(models=models, known=known, ask=ask, console=console, notes=notes)
+        def _tool_probe(model_id: str) -> bool:
+            from hunter.llm.probe import tool_call_capable
+
+            try:
+                return tool_call_capable(base_url, model_id, key_value, timeout=20)
+            except Exception:  # noqa: BLE001 — unknown = not tagged
+                return False
+        model = pick_model(
+            models=models, known=known, ask=ask, console=console, notes=notes,
+            tool_call_probe_fn=_tool_probe,
+        )
     else:
         notes = []
         model = pick_model(models=[], known=known, ask=ask, console=console, notes=notes)

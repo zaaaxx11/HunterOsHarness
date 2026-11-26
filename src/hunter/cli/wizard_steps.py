@@ -261,10 +261,28 @@ def pick_model(
     console: Console,
     notes: list[str],
     current_model: str = "",
+    tool_call_probe_fn: Callable[[str], bool] | None = None,
 ) -> str:
     """Model selection: exactly one model → ``Detected model: {m}`` keep-default;
     several → the numbered menu plus a manual option; none → manual entry.
-    Known providers without a base URL fall back to their table default."""
+    Known providers without a base URL fall back to their table default.
+
+    ``tool_call_probe_fn`` (optional) takes a model id and returns True when the
+    model can actually emit tool calls (liveness probe). When supplied, each
+    menu entry is tagged ``[tool]``/``[no-tool]`` so operators pick a brain the
+    hunt loop can drive via ``report_finding`` instead of one that only returns
+    prose (a model that cannot call tools yields ``finish_reason=tool_calls`` but
+    no ``tool_calls`` objects — the loop silently finds nothing)."""
+    def _tag(model: str) -> str:
+        if tool_call_probe_fn is None:
+            return model
+        ok = False
+        try:
+            ok = bool(tool_call_probe_fn(model))
+        except Exception:  # noqa: BLE001 — a probe failure = unknown, not fatal
+            ok = False
+        return f"{model}  [{'tool' if ok else 'no-tool'}]"
+
     if len(models) == 1:
         console.print(f"Detected model: {models[0]}", markup=False, highlight=False)
         reply = ask("model", models[0]).strip()
@@ -278,7 +296,7 @@ def pick_model(
     if models:
         console.print("available models:", markup=False, highlight=False)
         for index, entry in enumerate(models, start=1):
-            console.print(f"{_MENU_INDENT}{index}. {entry}", markup=False, highlight=False)
+            console.print(f"{_MENU_INDENT}{index}. {_tag(entry)}", markup=False, highlight=False)
         console.print(f"{_MENU_INDENT}m. type a model id manually", markup=False, highlight=False)
         reply = ask("model", "1").strip()
         if reply.isdigit() and 1 <= int(reply) <= len(models):

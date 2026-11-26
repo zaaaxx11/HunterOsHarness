@@ -72,6 +72,86 @@ def detect_endpoint(
         client.close()
 
 
+# ---------------------------------------------------------------------------
+# tool-call capability probe
+# ---------------------------------------------------------------------------
+
+# Minimal 1-function tool — the smallest legal OpenAI tools payload.
+_TOOL_PROBE_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "probe",
+        "description": "Confirm tool calling",
+        "parameters": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+    },
+}]
+
+
+def tool_call_capable(
+    base_url: str,
+    model: str,
+    api_key: str = "",
+    timeout: float = 20.0,
+    *,
+    client_factory: Callable[[], Any] | None = None,
+) -> bool:
+    """Return True when ``model`` on ``base_url`` actually emits tool calls.
+
+    The OpenAI-compatible contract says a provider with tool-calling support
+    will respond to a ``tool_choice="required"`` + a minimal tool schema with
+    a ``tool_calls`` entry in the message.  We send the smallest possible
+    request (one tool, one user message, ``max_tokens=32``) and inspect the
+    response shape.  If the provider returns 4xx/5xx or no ``tool_calls``,
+    the model is not tool-call capable — or the gateway is dropping the
+    tool_calls field (as happened with Devora Hy3, which sets
+    ``finish_reason="tool_calls"`` but omits the actual tool_call objects).
+
+    This is a LIVENESS test, not a capability advertisement: it costs one
+    small LLM call per model checked.  ``client_factory`` is the test seam
+    so no test touches the network.
+    """
+    factory = client_factory if client_factory is not None else (lambda: httpx.Client(timeout=timeout))
+    try:
+        client = factory()
+    except Exception:  # noqa: BLE001
+        return False
+    base = base_url.rstrip("/")
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": "Call the probe tool with ok=true now. No prose."},
+        ],
+        "tools": _TOOL_PROBE_TOOL,
+        "tool_choice": "required",
+        "max_tokens": 32,
+        "temperature": 0,
+    }
+    try:
+        resp = client.post(f"{base}/chat/completions", json=body,
+                           headers=_headers(api_key), timeout=timeout)
+        if resp.status_code != 200:
+            return False
+        raw = resp.json()
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        client.close()
+    try:
+        choice = raw["choices"][0]
+        msg = choice.get("message", {})
+        tool_calls = msg.get("tool_calls") or []
+        # finish_reason="tool_calls" with an empty/missing tool_calls list
+        # is a gateway that drops the call objects (Devora Hy3 bug).
+        # Only a non-empty list with a function name proves the capability.
+        return any(
+            isinstance(tc, dict)
+            and bool((tc.get("function", {}) or {}).get("name"))
+            for tc in tool_calls
+        )
+    except (KeyError, IndexError, AttributeError, TypeError):
+        return False
+
+
 def list_models(
     base_url: str,
     api_key: str = "",
