@@ -1009,7 +1009,7 @@ def loop(
     from hunter.hunt import normalize_hunt_target
     from hunter.tools.scope import LOCAL_HOSTS, ScopeSet, localhost_scope, scope_from_manifest
     from hunter.workflow.hunt_state import _slugify, load_mission
-    from hunter.workflow.loop_v3 import run_loop as _run_loop
+    from hunter.workflow.loop import HuntLoop as _HuntLoop
 
     resolved_state: Path = _state_dir(state)
     normalized, kind = normalize_hunt_target(target)
@@ -1093,8 +1093,40 @@ def loop(
     try:
         from hunter.llm.config import load_config as _lc_loop
         from hunter.llm.router import provider_from_config as _pfc_loop
-
+        from hunter.llm.config import resolve_key as _resolve_key_loop
+        from hunter.verify import verify_claim as _verify  # L1->L2->L3->L4 anti-fabrication
         _loop_cfg = _lc_loop()
+        # If the configured key is missing (empty), ask the operator NOW.
+        # Otherwise the hunt silently fails 401 on every LLM call — the
+        # loops runs and exits with no findings, which looks like a clean
+        # audit when it was actually a dead key.
+        _primary_prov = getattr(
+            _loop_cfg.model_tiers.get("orchestrator", None), "provider", None
+        ) if hasattr(_loop_cfg, "model_tiers") else None
+        if _primary_prov and not _resolve_key_loop(_primary_prov, _loop_cfg):
+            import builtins
+            _key = builtins.input(
+                f"API key for provider '{_primary_prov}' not found. "
+                f"Paste it now (will be saved to ~/.hunter/keys.env): "
+            ).strip()
+            if _key:
+                from hunter.llm.keys import keys_env_path, write_keys_env
+                _kp = keys_env_path()
+                _env = {}
+                try:
+                    _env = __import__("hunter.llm.keys").parse_keys_env(
+                        _kp.read_text(encoding="utf-8")
+                    ) if _kp.exists() else {}
+                except Exception:
+                    pass
+                _env_key = getattr(
+                    _loop_cfg.providers.get(_primary_prov, None), "key_env", "CUSTOM_API_KEY"
+                ) if hasattr(_loop_cfg, "providers") else "CUSTOM_API_KEY"
+                _env[str(_env_key)] = _key
+                write_keys_env(_kp, _env)
+                _kp.chmod(0o600)
+                console.print(f"[hunter] key saved to {_kp} — reloading config[/hunter]")
+                _loop_cfg = _lc_loop()  # re-read to pick up the fresh key
         _loop_provider = _pfc_loop(_loop_cfg)
 
         class _LoopLLMAdapter:
@@ -1127,18 +1159,17 @@ def loop(
                 )
                 return getattr(result, "text", "") or ""
 
-        _state = _run_loop(
-            normalized,
-            llm=_LoopLLMAdapter(),
-            verify_claim=None,  # verification ladder runs inside the loop's own layer
-            scope=chosen_scope,
-            state_dir=resolved_state,
-            engine=engine_name,
-            wall_seconds=wall_s,
-            min_wall_seconds=min_wall_s,
+        _state = _HuntLoop(
+            _LoopLLMAdapter(),
+            _verify,
+            target=normalized,
+            goals={g["kind"]: g["count"] for g in goal_list},
+            wall_seconds=wall_s or None,
             idle_seconds=idle_seconds,
-            goals=goal_list,
-        )
+            state_path=str(Path(resolved_state) / "hunt_runs" / slug / "hunt_state.json"),
+            workdir=Path(normalized).resolve(),
+            max_cycles=None,
+        ).run()
         _found = len(getattr(_state, "claims", ()) or ())
         raise typer.Exit(2 if _found else 0)
     except KeyboardInterrupt as err:
