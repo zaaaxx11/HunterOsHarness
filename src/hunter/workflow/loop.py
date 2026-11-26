@@ -898,6 +898,42 @@ class HuntLoop:
             except Exception as exc:
                 self._log(f"  L3: skipped — {type(exc).__name__}: {exc}")
 
+    def _finalize_verification(self):
+        """Sweep ALL remaining unverified findings when the loop stops.
+
+        Per-round L1 only handles findings NEW this round. A stop condition
+        (time-expiry, budget, goals, idle) can leave earlier findings as
+        ``unverified`` — and the deep-dive gate for anchored+high was only
+        triggered in-round, not at stop. This sweep resolves the delta.
+        """
+        c = self._cycle
+        pending = [f for f in self.state.findings
+                   if isinstance(f, dict) and f.get("status") in ("unverified", "claim", None)]
+        if pending:
+            self._log(f"[FINALIZE] sweeping {len(pending)} unverified finding(s)")
+            for f in pending:
+                res = self._l1_verify_finding(f)
+                if "l1" in res:
+                    f["l1"] = res["l1"]
+                else:
+                    f.update(res)
+                if f.get("l1", {}).get("status") == "anchored":
+                    f["status"] = "in_code"
+                elif f.get("l1", {}).get("status") == "refuted":
+                    f["status"] = "refuted"
+                self._log(f"  {f.get('id','?')}: {f.get('l1',{}).get('status','?')}")
+
+        # Deep-dive gate for anchored+high that were missed in per-round pass
+        for f in self.state.findings:
+            if not isinstance(f, dict) or f.get("deep_dived"):
+                continue
+            l1_status = f.get("l1", {}).get("status") if isinstance(f.get("l1"), dict) else f.get("l1")
+            if l1_status == "anchored" and str(f.get("severity", "")).lower() in _HIGH_SEVERITY:
+                self._deep_dive(f)
+                f["deep_dived"] = True
+
+        save(self.state, self.state_path)
+
     # ----- main loop -------------------------------------------------------
 
     def run(self) -> HuntState:
@@ -1039,16 +1075,20 @@ class HuntLoop:
             # Stop conditions
             if self._time_exhausted():
                 self.state.completion_reason = "time-expired"
+                self._finalize_verification()
                 break
             if self._budget_exhausted():
                 self.state.completion_reason = "budget-exhausted"
+                self._finalize_verification()
                 break
             ok, _ = goals_met(self.state)
             if ok:
                 self.state.completion_reason = "goals-met"
+                self._finalize_verification()
                 break
             if self.max_cycles and self._cycle >= self.max_cycles:
                 self.state.completion_reason = "max-cycles"
+                self._finalize_verification()
                 break
             if self._idle_streak >= 3:
                 self._log(f"[C{c}] 3 empty cycles — surface likely hardened (still continuing)")
