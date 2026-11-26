@@ -1131,22 +1131,20 @@ def loop(
 
         class _LoopLLMAdapter:
             """Bridge the provider protocol (complete(tier, messages) -> TurnResult)
-            to the HuntLoop protocol (complete(system, user) -> str).
+            to the HuntLoop protocol (complete(system, user) -> TurnResult).
 
             The provider needs a tier name and OpenAI-style messages; HuntLoop
-            passes a system prompt + a single user turn. We always dial the
-            orchestrator tier (the loop's own source-audit is the only work it
-            does) and return ``TurnResult.text`` so HuntLoop can parse the
-            tool-call JSON out of the reply.
+            passes a system prompt + a single user turn. The loop's tool-call
+            parser reads .text and .tool_calls off the returned object, so we
+            forward the full TurnResult instead of just the text string.
+
+            Verdict contract: a tool-less reply is normalized by the loop into
+            a harmless 'no tool call' turn (and scanned as raw text), so the
+            adapter never fabricates calls the provider did not return.
             """
             def complete(self, system, user, **kw):
-                messages = [
-                    {"role": "system", "content": system or ""},
-                    {"role": "user", "content": user or ""},
-                ]
-                result = _loop_provider.complete(
-                    "orchestrator", messages, **kw
-                )
+                # Legacy PATH: recon (run_recon) expects a plain string session.
+                result = self.complete_with_tools(system, user, tools=None, **kw)
                 return getattr(result, "text", "") or ""
 
             def complete_with_tools(self, system, user, tools=None, **kw):
@@ -1154,10 +1152,9 @@ def loop(
                     {"role": "system", "content": system or ""},
                     {"role": "user", "content": user or ""},
                 ]
-                result = _loop_provider.complete(
+                return _loop_provider.complete(
                     "orchestrator", messages, tools=tools, **kw
                 )
-                return getattr(result, "text", "") or ""
 
         _state = _HuntLoop(
             _LoopLLMAdapter(),
