@@ -1,0 +1,5 @@
+# Real secrets must never be committed.
+gateway.env
+*.env
+!.env.example
+!gateway.env.example

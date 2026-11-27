@@ -1,0 +1,40 @@
+[Unit]
+Description=HunterOS Chat Gateway (Telegram / Discord / Webhook)
+Documentation=https://github.com/zaaaxx11/HunterOsHarness
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/HunterOsHarness
+
+# Secrets live in an EnvironmentFile with 0600 perms, NOT in this unit and
+# NOT in git. Create /etc/hunter-gateway.env from deploy/gateway.env.example.
+EnvironmentFile=/etc/hunter-gateway.env
+Environment=PATH=/home/ubuntu/hunteros-venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=HUNTEROS_NO_UPDATE_CHECK=1
+
+ExecStart=/home/ubuntu/hunteros-venv/bin/python -u -m hunter.cli.main gateway start --state /home/ubuntu/hunter_gw
+
+# Auto-restart: the gateway is the single point of entry for every hunt.
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+# Hardening — least privilege without breaking the venv / state dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/hunter_gw /home/ubuntu/.hunter
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hunter-gateway
+
+[Install]
+WantedBy=multi-user.target

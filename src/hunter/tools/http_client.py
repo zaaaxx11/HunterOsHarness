@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from .scope import ScopeSet, ScopeViolation
+from .scope import LOCAL_HOSTS, ScopeSet, ScopeViolation
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +126,16 @@ class ScopedHttpClient:
                 continue
             if self.scope.allow_private_ips:
                 return
+            # An explicit loopback literal (localhost / 127.0.0.1 / ::1) is
+            # the documented demo/test surface: check_url() already enforced
+            # the allowlist, and ScopeSet.allows_host() always admits these.
+            # Blocking them here contradicted that doctrine and broke every
+            # localhost CLI run (quick_recon, scripts, offline vault tests).
+            # The guard's real job is DNS REBINDING — a hostname that *looks*
+            # public but resolves to a private IP — so keep failing closed for
+            # every non-loopback host.
+            if host in LOCAL_HOSTS:
+                continue
             if (ip.is_private or ip.is_loopback or ip.is_link_local
                     or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
                 raise ScopeViolation(

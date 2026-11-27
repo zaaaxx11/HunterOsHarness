@@ -1,0 +1,12 @@
+# Install: sudo cp deploy/hunter-gateway.logrotate /etc/logrotate.d/hunter-gateway
+# Keeps the journal/state logs from filling the disk on a long-running VPS.
+/home/ubuntu/hunter_gw/*.log /home/ubuntu/hunter_gw/**/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su ubuntu ubuntu
+}

@@ -258,17 +258,12 @@ class ChatEngine:
             if reply.data.get("audit_auto"):
                 from hunter.agent.prompts import build_goal
                 from hunter.engine.base import TargetSpec
-                from hunter.tools.scope import ScopeSet
+                from hunter.tools.scope import scope_from_summary
 
-                scope_data = spec.get("scope", {})
                 goal = build_goal(
                     TargetSpec(
                         url=spec["target"],
-                        scope=ScopeSet(
-                            frozenset(scope_data.get("hosts") or ()),
-                            allow_subdomains=bool(scope_data.get("allow_subdomains")),
-                            name=str(scope_data.get("name", "chat-audit")),
-                        ),
+                        scope=scope_from_summary(spec.get("scope")),
                         notes={},
                     )
                 )
@@ -616,7 +611,6 @@ class ChatEngine:
         from hunter.kernel.events import EventKind
         from hunter.kernel.ledger import Ledger
         from hunter.tools.http_client import ScopedHttpClient
-        from hunter.tools.scope import ScopeSet
 
         if self._audit is not None:
             self._audit_finish("aborted")
@@ -629,11 +623,9 @@ class ChatEngine:
             else None
         )
         run_id = f"R-{uuid.uuid4().hex[:12]}"
-        scope = ScopeSet(
-            frozenset(spec.get("scope", {}).get("hosts") or ()),
-            allow_subdomains=bool(spec.get("scope", {}).get("allow_subdomains")),
-            name=str(spec.get("scope", {}).get("name", "chat-audit")),
-        )
+        from hunter.tools.scope import scope_from_summary
+
+        scope = scope_from_summary(spec.get("scope"))
         target = str(spec.get("target", ""))
         engine_name = str(spec.get("engine_name", "agent-chat"))
         ledger.create_run(run_id, target, engine_name, scope.name)

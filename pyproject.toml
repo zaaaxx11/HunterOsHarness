@@ -52,7 +52,9 @@ hunter = ["_data/**/*.md", "_data/**/*.json", "_data/**/*.txt", "_data/**/*.jinj
 
 [tool.ruff]
 line-length = 110
-target-version = "py310"
+# Match the package floor (requires-python >=3.11): linting against py310
+# would permit syntax/APIs that the oldest supported interpreter cannot run.
+target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -72,7 +74,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 "tests/*.py" = ["I001", "E501", "SIM115"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 ignore_missing_imports = true
 check_untyped_defs = true
 

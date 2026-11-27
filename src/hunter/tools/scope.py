@@ -120,9 +120,7 @@ class ScopeSet:
                 return True
             if self.allow_subdomains and normalized.endswith("." + allowed):
                 # Subdomain match is overruled by an exclusion on the subdomain itself.
-                if self.exclude_hosts and normalized in self.exclude_hosts:
-                    return False
-                return True
+                return not (self.exclude_hosts and normalized in self.exclude_hosts)
         return False
 
     def check_url(self, url: str, *, base_url: str = "") -> str:
@@ -210,7 +208,30 @@ class ScopeSet:
             "allow_subdomains": self.allow_subdomains,
             "localhost": True,
             "local_roots": list(self.local_roots),
+            # Round-trip the SSRF-guard exemption: without this, a ScopeSet
+            # rebuilt from summary() silently loses allow_private_ips and
+            # localhost/private targets fail closed in the HTTP client.
+            "allow_private_ips": self.allow_private_ips,
+            "exclude_hosts": sorted(self.exclude_hosts),
         }
+
+
+def scope_from_summary(data: dict | None) -> ScopeSet:
+    """Rebuild a ScopeSet from ``ScopeSet.summary()`` without losing fields.
+
+    Fail-closed by default: an unknown/absent ``allow_private_ips`` stays
+    False (the dataclass default), so only scopes that explicitly carried the
+    flag — e.g. :func:`localhost_scope` — get the loopback exemption.
+    """
+    data = data or {}
+    return ScopeSet(
+        frozenset(str(h).strip().lower() for h in (data.get("hosts") or ())),
+        allow_subdomains=bool(data.get("allow_subdomains", False)),
+        name=str(data.get("name", "chat-audit")),
+        local_roots=tuple(data.get("local_roots") or ()),
+        exclude_hosts=frozenset(str(h).strip().lower() for h in (data.get("exclude_hosts") or ())),
+        allow_private_ips=bool(data.get("allow_private_ips", False)),
+    )
 
 
 def localhost_scope() -> ScopeSet:
