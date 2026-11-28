@@ -70,6 +70,21 @@ def _unglue_scheme(candidate: str) -> str | None:
     """
     if not candidate or candidate.startswith("/"):
         return None
+    # Shape: https://hosthttps  (scheme present, host glued with a second
+    # scheme and NO :// after it). e.g. https://airvpn.orghttps — urljoin
+    # produced this from base + "https" href. Strip the trailing glued scheme.
+    if "://" in candidate:
+        scheme, _, rest = candidate.partition("://")
+        host_head, sep, tail = rest.partition("/")
+        host_part = host_head.lower()
+        for glued in _GLUED_SCHEME_SUFFIXES:
+            if host_part.endswith(glued) and len(host_part) > len(glued):
+                bare = host_head[: -len(glued)]
+                if bare.endswith(".") or "." not in bare:
+                    return None
+                tail_sfx = sep + tail if sep else ""
+                return f"{scheme}://{bare}" + tail_sfx
+        return None
     head, sep, tail = candidate.partition("/")
     host_part = head.lower()
     for scheme in _GLUED_SCHEME_SUFFIXES:
