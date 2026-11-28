@@ -6,6 +6,23 @@ Compare releases: `v0.3.1...v0.6.0`.
 
 ## [Unreleased]
 
+- **No invented endpoints**: the RAG feeder's LLM planner could previously
+  answer "propose 4 in-scope follow-up URLs" with paths the hunt never
+  visited — `/transfer?amount=100`, `/withdraw`, `/deposit`,
+  `/admin/transfer`. Because they sit on in-scope *hosts*, the scope gate has
+  never stopped them, so the cycle enqueued them as real targets and full hunts
+  ran against `airvpn.org/transfer`, `ipleak.net/deposit` and friends.
+  Two independent causes, both fixed in `hunter.workflow.rag`:
+  1. `wonder_followups()` now receives the run's OBSERVED URLs (every
+     `http_exchange` in the ledger, normalised to scheme/host/path) and the
+     prompt/response is bounded to that list — the model may recombine and
+     rank what the hunt actually touched, never invent a route. An empty
+     observed set disables the check rather than refusing everything.
+  2. `Ledger.findings()` has no run filter, so `RagLoop._cycle()` read the
+     localhost vault demo's verified `POST /transfer` finding back and
+     concatenated its endpoint onto the current origin — the actual origin of
+     `https://airvpn.org/transfer`. Findings whose own endpoint maps to no
+     observed exchange are dropped before the planner sees them.
 - Provider wizard now offers inline `api_key` storage in config.yaml (option [2]
   during key capture). The default remains `keys.env`. Config example updated.
 - TUI: Deploy tab (6) — one-click deploy HunterOs to a remote VPS via SSH.

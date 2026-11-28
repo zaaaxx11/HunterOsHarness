@@ -36,9 +36,11 @@ __all__ = [
     "RagLoop",
     "derive_child_targets",
     "existing_targets",
+    "finding_was_observed",
     "followed_findings",
     "mark_followed",
     "normalize_finding_target",
+    "observed_urls",
     "update_rag_state",
     "wonder_followups",
 ]
@@ -204,30 +206,146 @@ def _parse_json_list(text: str) -> list[str]:
     return [str(x).strip() for x in data if str(x).strip()]
 
 
-def wonder_followups(provider: Any, finding: Finding, scope: ScopeSet, origin: str) -> list[str]:
+def observed_urls(exchanges: list[dict[str, Any]]) -> set[str]:
+    """Every URL this run actually requested, as a set of normalised strings.
+
+    ``Ledger.evidence()`` returns ``http_exchange`` rows whose payload carries
+    the request the harness itself made. This is the ONLY source an LLM-planned
+    follow-up target may be drawn from: a path that appears in no exchange is
+    a path the hunt never visited, so it is a guess, not a lead.
+    """
+    seen: set[str] = set()
+    for row in exchanges or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("kind", "")) != "http_exchange":
+            continue
+        data = row.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        url = str(data.get("url") or "").strip()
+        if not url:
+            continue
+        seen.add(_normalize_url(url))
+    return seen
+
+
+def _normalize_url(url: str) -> str:
+    """Scheme/host/path identity, ignoring query and fragment.
+
+    A follow-up proposal is about WHERE to look, not which parameters were
+    tried, so ``/x?a=1`` and ``/x?a=2`` are the same surface. Comparing on
+    path alone is what makes the observed-set check stable.
+    """
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return url.strip()
+    if not parsed.scheme or not parsed.netloc:
+        return url.strip()
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+
+
+def _observed_urls_for_state(state_dir: Path) -> set[str]:
+    """All http_exchange URLs in the ledger, read-only, never raising."""
+    try:
+        ledger = Ledger(RuntimePaths.resolve(state=state_dir, migrate=False).ledger)
+    except Exception:  # noqa: BLE001 — an unreadable ledger must not kill the cycle
+        return set()
+    try:
+        return observed_urls(ledger.evidence())
+    except Exception:  # noqa: BLE001
+        return set()
+    finally:
+        with contextlib.suppress(Exception):
+            ledger.close()
+
+
+def finding_was_observed(finding: Finding, origin: str, observed: set[str]) -> bool:
+    """True when THIS hunt actually requested the surface the finding is about.
+
+    ``Ledger.findings()`` is global — it returns every finding in the database,
+    from every target and every past run. The vault demo app (hunter/vault/
+    server.py) plants a real ``POST /transfer`` finding, so on a shared state
+    directory the RAG feeder reads that finding back and hands it to the
+    planner as if it were about the current target. Concatenating that
+    finding's endpoint onto the current origin fabricates
+    ``https://airvpn.org/transfer`` — a route the target never had and the run
+    never visited.
+
+    The guard is evidence, not heuristics: the finding's endpoint, resolved
+    against this run's origin, must be a URL this run actually requested.
+    An unknown endpoint (no exchange ever visited it) is never a lead.
+    """
+    if not observed:
+        # Nothing has been requested yet — no finding can be shown to be real.
+        return False
+    endpoint = str(getattr(finding, "endpoint", "") or "").strip()
+    if not endpoint or endpoint == ".":
+        return False
+    if not origin.lower().startswith(("http://", "https://")):
+        # A repo/dir origin has no URL surface; nothing can be observed.
+        return False
+    if "://" in endpoint:
+        resolved = endpoint
+    else:
+        base = origin.rstrip("/")
+        resolved = f"{base}{endpoint}" if endpoint.startswith("/") else f"{base}/{endpoint}"
+    return _normalize_url(resolved) in observed
+
+
+def wonder_followups(
+    provider: Any,
+    finding: Finding,
+    scope: ScopeSet,
+    origin: str,
+    observed: set[str] | None = None,
+) -> list[str]:
+    """Ask the LLM (utility tier) for up to 4 in-scope follow-up targets.
+
+    Every returned URL must be one this run OBSERVED (its scheme/host/path
+    appears in a stored ``http_exchange``). The LLM may recombine and rank
+    what the hunt actually touched; it may NOT invent paths. Without that
+    constraint the utility tier answers "propose 4 follow-up URLs" with
+    DeFi-shaped guesses — ``/transfer?amount=100``, ``/withdraw``,
+    ``/deposit``, ``/admin/transfer`` — and the RAG loop then enqueued those
+    guesses as real hunt targets, producing runs against hosts that have no
+    such route (airvpn.org/transfer, ipleak.net/deposit, ...). The scope gate
+    cannot catch it: the invented path is on an in-scope HOST, so it passes.
+
+    ``observed=None`` (the default) disables the check — the deterministic
+    feeder with no provider never reaches here, and unit tests that exercise
+    the prompt/parse path directly stay representative of the old behaviour.
+    """
     from hunter.agent.soul import CORE_IDENTITY
-    """Ask the LLM (utility tier) for exactly 4 in-scope follow-up targets."""
     if provider is None:
         return []
     endpoint = str(getattr(finding, "endpoint", "") or "")
     title = str(getattr(finding, "title", "") or "")
     severity = getattr(getattr(finding, "severity", None), "value", str(getattr(finding, "severity", "")))
+    observed_norm = {_normalize_url(u) for u in (observed or set())}
+    allowed = ", ".join(sorted(scope.allowed_hosts))
     messages = [
         {
             "role": "system",
             "content": (
                 f"{CORE_IDENTITY}\n\n"
-                "You are a security-hunt planner. Given one finding, propose EXACTLY 4 "
-                "in-scope follow-up URLs to hunt next (deeper variants, siblings, "
-                "parameters). Return ONLY a JSON array of 4 strings. No prose."
+                "You are a security-hunt planner. Given one finding, choose which of "
+                "the URLs this run ALREADY VISITED deserve a deeper pass (deeper "
+                "variants, siblings, parameters). You may ONLY return URLs that appear "
+                "in the Observed URLs list below. Never invent, guess, or construct a "
+                "path that is not in that list. Return ONLY a JSON array of at most 4 "
+                "strings. If nothing observed is worth a deeper pass, return []."
             ),
         },
         {
             "role": "user",
             "content": (
                 f"Finding: {title}\nSeverity: {severity}\nEndpoint: {endpoint}\n"
-                f"Origin: {origin}\nAllowed hosts: {sorted(scope.allowed_hosts)}\n"
-                "Return JSON array of exactly 4 URLs."
+                f"Origin: {origin}\nAllowed hosts: {allowed}\n"
+                "Observed URLs (the only ones you may return):\n"
+                + ("\n".join(f"- {u}" for u in sorted(observed_norm)) or "(none)")
+                + "\nReturn a JSON array of at most 4 URLs from that list."
             ),
         },
     ]
@@ -240,13 +358,22 @@ def wonder_followups(provider: Any, finding: Finding, scope: ScopeSet, origin: s
     out: list[str] = []
     seen: set[str] = set()
     for cand in candidates:
+        cand = str(cand).strip()
+        if not cand:
+            continue
+        # 1) scope: a proposal on an unapproved host is refused outright.
         try:
             scope.check_url(cand)
         except Exception:  # noqa: BLE001
             continue
-        if cand in seen:
+        # 2) evidence: a proposal the run never visited is a guess, not a
+        #    lead — drop it instead of hunting an invented endpoint.
+        if observed_norm and _normalize_url(cand) not in observed_norm:
             continue
-        seen.add(cand)
+        cand_key = _normalize_url(cand)
+        if cand_key in seen:
+            continue
+        seen.add(cand_key)
         out.append(cand)
         if len(out) >= 4:
             break
@@ -295,16 +422,46 @@ class RagLoop:
             return f"{parsed.scheme}://{parsed.netloc}"
         return self.config.target.rstrip("/")
 
+    def _task_scope(self) -> dict[str, Any]:
+        """The approved scope, serialized so NOTHING is lost in transit.
+
+        This used to be a hand-rolled three-key dict (name / hosts /
+        allow_subdomains). Anything a consumer later rebuilt from it —
+        :func:`hunter.tools.scope.scope_from_summary`, the queue's own
+        ``scope_from_manifest`` on a materialised manifest, the daemon-era
+        worker — silently dropped ``exclude_hosts``, ``local_roots`` and
+        ``allow_private_ips``, so an operator's explicit exclusions vanished
+        downstream and an excluded host could be hunted again.
+
+        ``ScopeSet.summary()`` is the canonical serialization and
+        ``scope_from_summary()`` is its exact inverse (the prior fix made it
+        round-trip ``allow_private_ips`` / ``exclude_hosts``), so building the
+        task payload from it makes the manifest authoritative end to end: what
+        the operator approved at ``--scope`` is what every child hunt enforces.
+        """
+        scope = self.config.scope
+        summary = getattr(scope, "summary", None)
+        if callable(summary):
+            data = summary()
+            if isinstance(data, dict):
+                return dict(data)
+        # Defensive fallback for a duck-typed scope without summary():
+        # preserve at least the fields the old dict carried.
+        return {
+            "name": str(getattr(scope, "name", "scope")),
+            "hosts": sorted(getattr(scope, "allowed_hosts", ()) or ()),
+            "allow_subdomains": bool(getattr(scope, "allow_subdomains", False)),
+            "exclude_hosts": sorted(getattr(scope, "exclude_hosts", ()) or ()),
+            "local_roots": list(getattr(scope, "local_roots", ()) or ()),
+            "allow_private_ips": bool(getattr(scope, "allow_private_ips", False)),
+        }
+
     def _enqueue(self, target: str, parent_finding_id: str | None = None) -> bool:
         from hunter._daemon_shim import _validate_hunt_task
 
         task = {
             "target": str(target),
-            "scope": {
-                "name": str(self.config.scope.name),
-                "hosts": sorted(self.config.scope.allowed_hosts),
-                "allow_subdomains": bool(self.config.scope.allow_subdomains),
-            },
+            "scope": self._task_scope(),
             "engine": str(self.config.engine),
             "max_wall_seconds": float(self.config.time_budget_s),
             "max_cost_usd": 0.0,
@@ -395,6 +552,28 @@ class RagLoop:
             with contextlib.suppress(Exception):
                 ledger.close()
 
+        # What this hunt has actually PUT ON THE WIRE. The LLM planner may only
+        # propose follow-ups among these; a path in no stored exchange is a
+        # guess. Without this bound the utility tier answered "propose 4
+        # follow-up URLs" with invented DeFi routes (/transfer, /withdraw,
+        # /deposit, /admin/transfer), and because they sit on in-scope HOSTS
+        # the scope gate let them through — the RAG loop then ran full hunts
+        # against airvpn.org/transfer, ipleak.net/deposit and friends.
+        observed = _observed_urls_for_state(self.state_dir)
+
+        # Cross-run containment: `Ledger.findings()` is GLOBAL (no run filter),
+        # so it hands back findings from every target and every past run in
+        # this state directory. A finding whose own endpoint was never
+        # requested by THIS run is not a lead for it — the vault demo's
+        # `POST /transfer` was how airvpn.org/transfer was born. Drop those
+        # before the planner can see them.
+        origin_now = self._origin()
+        findings = [
+            f
+            for f in findings
+            if finding_was_observed(f, origin_now, observed)
+        ]
+
         pending = len(list(queue_dir(self.state_dir).glob("task-*.json")))
 
         # Smart scheduling. The old rule was a flat "4 hunters per finding",
@@ -418,7 +597,11 @@ class RagLoop:
         for finding, allowance in plan:
             fid = str(getattr(finding, "id", "") or "")
             origin = self._origin()
-            targets = list(wonder_followups(self.config.provider, finding, self.config.scope, origin))
+            targets = list(
+                wonder_followups(
+                    self.config.provider, finding, self.config.scope, origin, observed=observed
+                )
+            )
             # Pad to the allowance with deterministic derivations when possible.
             if len(targets) < allowance:
                 for t in derive_child_targets(finding, self.config.scope, origin):

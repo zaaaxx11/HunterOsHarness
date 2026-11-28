@@ -605,10 +605,16 @@ def hunt(
 
         target_specs: list[TargetSpec] = []
         for tgt_idx, tgt in enumerate(targets or []):
-            # Resolve scope per target. For multi-target (len>1), use per-target
-            # auto-detection even when --scope was provided — each target may
-            # need different local_roots or host lists.
-            tgt_scope = manifest_scope if len(targets or []) <= 1 else None
+            # A --scope manifest is authoritative for EVERY target, including
+            # multi-target runs. This loop used to reset tgt_scope to None for
+            # len(targets) > 1 and fall back to recognize_scope() — an LLM
+            # guess per target that silently dropped allow_subdomains and
+            # exclude_hosts from the approved manifest (run R-78795bd6a350
+            # recorded scope {"allow_subdomains": false} for an operator
+            # manifest that says true) and could invent hosts nobody
+            # authorized. Recognition is the fallback ONLY when the operator
+            # gave no manifest at all.
+            tgt_scope = manifest_scope
             if tgt_scope is None:
                 from hunter.tools.scope import ScopeSet as _ScopeSet
 
@@ -621,6 +627,24 @@ def hunt(
                     )
                 else:
                     tgt_scope = recognize_scope(provider, tgt)
+            else:
+                # The manifest owns the network allowlist. A local DIRECTORY
+                # target still needs its own path as a local root: the file /
+                # forge / slither tools gate allows_local_root(), so a manifest
+                # with no local_roots would refuse the very directory the
+                # operator named (it used to get an auto scope instead). This
+                # is additive and fail-closed: the host allowlist, subdomain
+                # flag and exclusions are untouched, and the root is only
+                # added when the manifest declares none.
+                tgt_path = Path(tgt).expanduser()
+                if not tgt_scope.local_roots and tgt_path.is_dir():
+                    from dataclasses import replace as _dc_replace
+
+                    tgt_scope = _dc_replace(
+                        tgt_scope,
+                        name=f"{tgt_scope.name}+local:{tgt_path.name}",
+                        local_roots=(str(tgt_path.resolve()),),
+                    )
             if tgt_scope is None:
                 if not json_out:
                     err_console.print(f"[hunter.error]BLOCKED:[/hunter.error] no scope for {tgt}")
