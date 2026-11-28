@@ -139,7 +139,48 @@ class LLMEngine:
                     auto_allow=True,
                 )
         try:
-            goal = build_goal(target, injected_goal=task.get("injected_goal") if (task := ctx.config.get("task")) else None)
+            injected_goal = task.get("injected_goal") if (task := ctx.config.get("task")) else None
+            # RECON-FIRST: crawl the REAL same-origin surface before the model
+            # sees the target. Without this the agent opens on the root URL and
+            # invents paths from its priors (/transfer, /withdraw, /deposit) —
+            # paths the site never had. run_recon() is deterministic and goes
+            # through the scope-gated ctx.http, so it cannot widen scope.
+            # The discovered URLs/forms are handed to the model as observed
+            # facts: it may test them, never fabricate unseen routes.
+            if not injected_goal and target.url.lower().startswith(("http://", "https://")):
+                try:
+                    from hunter.engine.deterministic.recon import run_recon
+
+                    recon = run_recon(ctx.http, target.url.rstrip("/"))
+                    ctx.emit("engine_event", {
+                        "stage": "pre_agent_recon",
+                        "pages": len(recon.pages),
+                        "links": len(recon.links),
+                        "forms": len(recon.forms),
+                    })
+                    if recon.links or recon.forms:
+                        observed = "\n".join(f"- {u}" for u in sorted(recon.links)[:40])
+                        forms = "\n".join(
+                            f"- {f.method.upper()} {f.action} fields={list(f.fields)}"
+                            for f in recon.forms[:20]
+                        )
+                        injected_goal = (
+                            f"Audit {target.url.rstrip('/')}. A deterministic crawl ALREADY "
+                            f"visited the URLs below. Test ONLY these observed URLs and "
+                            f"forms (and variants of them) — NEVER invent a path that is "
+                            f"not listed here.\n\nObserved URLs:\n{observed or '(none)'}\n\n"
+                            f"Observed forms:\n{forms or '(none)'}\n\n"
+                            "Probe each observed surface for evidence-backed findings, "
+                            "record coverage as you go, and ship only findings backed by "
+                            "an http_exchange from THIS run via create_finding_request. "
+                            "Finish with finish_scan when the audit is reconciled."
+                        )
+                except Exception as exc:  # noqa: BLE001 — recon is an aid, never fatal
+                    ctx.emit("engine_event", {
+                        "stage": "pre_agent_recon", "status": "failed",
+                        "error": f"{type(exc).__name__}: {exc}"[:200],
+                    })
+            goal = build_goal(target, injected_goal=injected_goal)
             registry = build_registry(browser_enabled=browser_enabled)
             # Delegation needs the provider and the full registry in the tool
             # context: a child AgentLoop is built from these.  Both stay inside
