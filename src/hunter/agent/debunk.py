@@ -34,6 +34,11 @@ from hunter.engine.deterministic.probes import RECHECKS
 from hunter.kernel.findings import Finding, FindingStatus
 from hunter.tools.http_client import Exchange
 
+from .open_redirect_verify import (
+    _build_open_redirect_poc,
+    _is_open_redirect_finding,
+    _verify_open_redirect,
+)
 from .tools_base import ToolContext
 
 __all__ = ["debunk_pass"]
@@ -237,6 +242,53 @@ def debunk_pass(
 
     recheck = RECHECKS.get(check_id)
     if recheck is None:
+        # Generic open-redirect verifier: any finding whose check_id is a
+        # custom agent slug (e.g. "airvpn-001") but whose endpoint contains an
+        # open-redirect probe is independently reproducible by issuing the
+        # original request and checking for an immediate (3xx with Location)
+        # redirect to an attacker-controlled host. This closes the gap where
+        # `debunk_pass` returned "needs_follow_up" simply because the slug
+        # was not in the deterministic RECHECKS registry.
+        if _is_open_redirect_finding(finding):
+            reproduced = _verify_open_redirect(ctx, finding)
+            if reproduced is None:
+                # transport error — fall through to needs_follow_up below
+                pass
+            else:
+                poc_path = _build_open_redirect_poc(finding, reproduced)
+                if reproduced:
+                    data = {
+                        "check_id": "open-redirect-generic",
+                        "replay": True,
+                        "finding_id": finding.id,
+                    }
+                    if challenger_note:
+                        data["challenger_note"] = challenger_note
+                    evidence_id = ctx.ledger.add_evidence(ctx.run_id, "http_exchange", data)
+                    ctx.emit(
+                        "evidence_stored",
+                        {"evidence_id": evidence_id, "kind": "http_exchange", "tool": "debunk_pass"},
+                    )
+                    ctx.ledger.set_finding_status(
+                        finding.id, FindingStatus.VERIFIED,
+                        "independent replay succeeded",
+                        poc_path=poc_path,
+                    )
+                    _coverage_row(
+                        ctx, finding, "open-redirect", "reported",
+                        "open-redirect replay reproduced", [evidence_id],
+                    )
+                    return "verified"
+                ctx.ledger.set_finding_status(
+                    finding.id, FindingStatus.RULED_OUT,
+                    "debunk replay did not reproduce the signal",
+                    poc_path=poc_path,
+                )
+                _coverage_row(
+                    ctx, finding, "open-redirect", "ruled_out",
+                    "open-redirect replay did not reproduce", [],
+                )
+                return "ruled_out"
         note = f"no replay handler for check '{check_id}'; stays candidate"
         if challenger_note:
             note = f"{note} (challenger: {challenger_note})"
