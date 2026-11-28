@@ -35,7 +35,6 @@ from hunter.kernel.findings import Finding, FindingStatus
 from hunter.tools.http_client import Exchange
 
 from .open_redirect_verify import (
-    _build_open_redirect_poc,
     _is_open_redirect_finding,
     _verify_open_redirect,
 )
@@ -255,7 +254,6 @@ def debunk_pass(
                 # transport error — fall through to needs_follow_up below
                 pass
             else:
-                poc_path = _build_open_redirect_poc(finding, reproduced)
                 if reproduced:
                     data = {
                         "check_id": "open-redirect-generic",
@@ -269,10 +267,13 @@ def debunk_pass(
                         "evidence_stored",
                         {"evidence_id": evidence_id, "kind": "http_exchange", "tool": "debunk_pass"},
                     )
+                    # poc_path was bound at INSERT time (create_finding_request
+                    # auto-materialises it for open-redirect claims) — it is an
+                    # append-only protected column, so promotion here is
+                    # evidence-only.
                     ctx.ledger.set_finding_status(
                         finding.id, FindingStatus.VERIFIED,
                         "independent replay succeeded",
-                        poc_path=poc_path,
                     )
                     _coverage_row(
                         ctx, finding, "open-redirect", "reported",
@@ -282,7 +283,6 @@ def debunk_pass(
                 ctx.ledger.set_finding_status(
                     finding.id, FindingStatus.RULED_OUT,
                     "debunk replay did not reproduce the signal",
-                    poc_path=poc_path,
                 )
                 _coverage_row(
                     ctx, finding, "open-redirect", "ruled_out",

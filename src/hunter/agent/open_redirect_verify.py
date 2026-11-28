@@ -21,7 +21,6 @@ from .tools_base import ToolContext
 __all__ = [
     "_is_open_redirect_finding",
     "_verify_open_redirect",
-    "_build_open_redirect_poc",
 ]
 
 
@@ -68,20 +67,3 @@ def _verify_open_redirect(ctx: ToolContext, finding: Finding) -> bool | None:
         return True
     body = str(getattr(resp, "response_body", "") or "")
     return bool(status == 200 and "evil.com" in body and "whitelist" not in body.lower())
-
-
-def _build_open_redirect_poc(finding: Finding, reproduced: bool) -> str:
-    from pathlib import Path
-
-    poc_dir = Path.home() / ".hunter" / "pocs"
-    poc_dir.mkdir(parents=True, exist_ok=True)
-    poc_path = poc_dir / f"{finding.id}.md"
-    poc_path.write_text(
-        f"# PoC — {finding.title}\n\n"
-        f"Endpoint: {finding.endpoint}\n"
-        f"Replay: {'reproduced' if reproduced else 'not reproduced'}\n\n"
-        "## Reproduce\n"
-        f"GET {finding.endpoint}?url=https://evil.com/\n",
-        encoding="utf-8",
-    )
-    return str(poc_path)

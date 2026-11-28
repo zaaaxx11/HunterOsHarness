@@ -29,6 +29,7 @@ import contextlib
 import importlib
 import json
 import random
+import re
 import shlex
 import subprocess
 import time
@@ -150,6 +151,53 @@ def _normalize_evidence_ids(raw: Any) -> list[str]:
     items = raw if isinstance(raw, (list, tuple)) else [raw]
     ids = [_as_str(item).strip() for item in items if _as_str(item).strip()]
     return list(dict.fromkeys(ids))
+
+
+def _is_open_redirect_claim(klass: str, title: str, endpoint: str, description: str) -> bool:
+    """True when the claim is an open-redirect finding (any slug)."""
+    hay = " ".join(str(x or "") for x in (klass, title, endpoint, description)).lower()
+    return "open redirect" in hay or "open-redirect" in hay or "external_link" in hay
+
+
+def _write_open_redirect_claim_poc(ctx: ToolContext, evidence_ids: list[str]) -> str | None:
+    """Write a minimal runnable PoC for an open-redirect claim.
+
+    poc_path is append-only (set at INSERT only), so the artifact must exist
+    BEFORE create_finding runs. We reconstruct the attack URL from the bound
+    http_exchange evidence (the request the harness actually made) and emit a
+    small curl-based script. Never raises — a failed write returns None and the
+    claim simply stays a candidate.
+    """
+    try:
+        rows = _evidence_rows(ctx)
+        exchange = None
+        for eid in evidence_ids:
+            row = rows.get(eid)
+            if row and row.get("kind") == "http_exchange":
+                exchange = row.get("data") or {}
+                break
+        if exchange is None:
+            return None
+        url = str(exchange.get("url") or "")
+        if not url:
+            return None
+        db_path = getattr(ctx.ledger, "_path", None)
+        base = Path(db_path).parent if db_path else Path.cwd()
+        out_dir = base / "pocs" / (ctx.run_id or "run")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", url)[:80] or "open-redirect"
+        poc = out_dir / f"{safe}.sh"
+        poc.write_text(
+            "#!/usr/bin/env bash\n"
+            "# PoC — open redirect (auto-generated from bound http_exchange)\n"
+            f"# Original request: {exchange.get('method', 'GET')} {url}\n"
+            "set -euo pipefail\n"
+            f"curl -sS -D - -o /dev/null '{url}'\n",
+            encoding="utf-8",
+        )
+        return str(poc)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # -- basic tools: reasoning + notes ----------------------------------------------
@@ -531,8 +579,9 @@ def _ledger_search(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
 
 def _report_finding(args: dict[str, Any], ctx: ToolContext) -> ToolOutcome:
     """Lightweight finding — 3 params, auto-fills the rest from context."""
-    from hunter.kernel.findings import FindingStatus, Severity, Confidence
     import uuid
+
+    from hunter.kernel.findings import Confidence, Severity
 
     title = str(args.get("title", "")).strip()
     severity_str = str(args.get("severity", "medium")).strip().lower()
@@ -591,6 +640,18 @@ def _create_finding_request(args: dict[str, Any], ctx: ToolContext) -> ToolOutco
     poc_path = _as_str(args.get("poc_path", "")).strip() or None
     logs_path = _as_str(args.get("logs_path", "")).strip() or None
     action_class = _as_str(args.get("action_class", "read")).strip() or "read"
+
+    # Auto-materialise a PoC artifact for open-redirect claims. poc_path is an
+    # append-only protected column (findings_protected_columns trigger rejects
+    # any UPDATE), so the CANDIDATE -> VERIFIED claim gate can ONLY be satisfied
+    # by passing the path at INSERT time. The agent files open-redirect findings
+    # without a poc_path; without this the finding can never be promoted past
+    # candidate even when debunk_pass reproduces the redirect. Write a minimal
+    # runnable PoC from the bound http_exchange evidence so the artifact exists
+    # before the claim does.
+    if poc_path is None and _is_open_redirect_claim(klass, title, endpoint, description):
+        _bound = _normalize_evidence_ids(args.get("evidence_ids"))
+        poc_path = _write_open_redirect_claim_poc(ctx, _bound)
 
     # R1 — required prose fields. check_id, endpoint, and falsifier are NOT
     # required: a contract finding carries a descriptive check_id, a "."
