@@ -170,10 +170,15 @@ class LLMEngine:
                             f"forms (and variants of them) — NEVER invent a path that is "
                             f"not listed here.\n\nObserved URLs:\n{observed or '(none)'}\n\n"
                             f"Observed forms:\n{forms or '(none)'}\n\n"
-                            "Probe each observed surface for evidence-backed findings, "
-                            "record coverage as you go, and ship only findings backed by "
-                            "an http_exchange from THIS run via create_finding_request. "
-                            "Finish with finish_scan when the audit is reconciled."
+                            "Probe each observed surface. When a probe or request shows a "
+                            "real signal (open redirect, reflected input, missing security "
+                            "header that matters, auth bypass, injection), you MUST file it "
+                            "with create_finding_request in the SAME turn — cite the "
+                            "evidence_id of the http_exchange that proves it. Do NOT re-request "
+                            "the same URL more than twice; two identical requests are enough "
+                            "to confirm a signal. Record coverage with coverage_record as you "
+                            "go. Finish with finish_scan only after every observed surface is "
+                            "either filed or explicitly ruled out."
                         )
                 except Exception as exc:  # noqa: BLE001 — recon is an aid, never fatal
                     ctx.emit("engine_event", {

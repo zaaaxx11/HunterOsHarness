@@ -57,12 +57,12 @@ def test_p1_guardrail_same_tool_failure_halts_at_eight() -> None:
     assert decision is not None and decision.action == "halt"
 
 
-def test_p1_guardrail_identical_result_notice_at_three_halt_at_five() -> None:
+def test_p1_guardrail_identical_result_notice_at_three_halt_at_eight() -> None:
     guardrails = _needs_guardrails()
     controller = guardrails.GuardrailController()
-    seen = [_observe(controller, "read_file", {"p": "x"}, "same-bytes", ok=True) for _ in range(5)]
+    seen = [_observe(controller, "read_file", {"p": "x"}, "same-bytes", ok=True) for _ in range(8)]
     assert seen[2].action == "notice"
-    assert seen[4].action == "halt"
+    assert seen[7].action == "halt"
 
 
 def test_p1_guardrail_cycle_period_up_to_four_detected() -> None:

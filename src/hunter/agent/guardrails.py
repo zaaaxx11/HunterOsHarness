@@ -19,12 +19,23 @@ _EXACT_FAIL_BLOCK_AFTER = 5
 _SAME_TOOL_HALT_AFTER = 8
 _TOLERANT_SAME_TOOL_HALT_AFTER = 100
 _IDENTICAL_NOTICE_AFTER = 3
-_IDENTICAL_HALT_AFTER = 5
+# Raised from 5: a hunt legitimately re-requests the same URL to confirm a
+# signal (e.g. open-redirect replay, header re-check). Three identical
+# http_request calls used to halt the loop as "identical_result" before the
+# agent could file the finding. 8 gives room to verify without allowing a
+# true stall loop.
+_IDENTICAL_HALT_AFTER = 8
 _CYCLE_NOTICE_LAPS = 3
 _MAX_CYCLE_PERIOD = 4
 _HISTORY_WINDOW = 64
 
 _FAILURE_TOLERANT = frozenset({"terminal", "execute_code", "process_manage", "process"})
+
+# http_request is the hunt's core verification tool: identical-result and
+# same-tool-failure halts must not fire on it the way they do for chat tools.
+# A real stall (identical args + identical result) is still caught by the
+# raised _IDENTICAL_HALT_AFTER above; this only relaxes the failure counter.
+_IDENTICAL_EXEMPT = frozenset({"http_request"})
 
 _CAP_LIMITS: dict[str, int] = {
     "web_search": 50,
@@ -95,18 +106,22 @@ class GuardrailController:
 
         if not ok:
             sig = (name, key)
-            self._exact_fail[sig] = self._exact_fail.get(sig, 0) + 1
-            self._tool_fail[name] = self._tool_fail.get(name, 0) + 1
-            same_count = self._tool_fail[name]
-            limit = _TOLERANT_SAME_TOOL_HALT_AFTER if name in _FAILURE_TOLERANT else _SAME_TOOL_HALT_AFTER
-            if same_count >= limit:
-                return self._halt(f"same_tool_failure:{name}")
-            if self._exact_fail[sig] >= _EXACT_FAIL_BLOCK_AFTER:
-                return GuardrailDecision(
-                    action="block",
-                    code="exact_failure",
-                    signature=sig,
-                )
+            # http_request failures during a hunt are data (a 404/500 is a
+            # result, not a tool malfunction) — never count them toward the
+            # same-tool-failure halt.
+            if name not in _IDENTICAL_EXEMPT:
+                self._exact_fail[sig] = self._exact_fail.get(sig, 0) + 1
+                self._tool_fail[name] = self._tool_fail.get(name, 0) + 1
+                same_count = self._tool_fail[name]
+                limit = _TOLERANT_SAME_TOOL_HALT_AFTER if name in _FAILURE_TOLERANT else _SAME_TOOL_HALT_AFTER
+                if same_count >= limit:
+                    return self._halt(f"same_tool_failure:{name}")
+                if self._exact_fail[sig] >= _EXACT_FAIL_BLOCK_AFTER:
+                    return GuardrailDecision(
+                        action="block",
+                        code="exact_failure",
+                        signature=sig,
+                    )
         return GuardrailDecision(action="allow", code="ok")
 
     def _check_cap(self, name: str) -> GuardrailDecision | None:
